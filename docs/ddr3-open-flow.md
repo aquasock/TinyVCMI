@@ -316,6 +316,36 @@ database no longer applies: the fork's `DLL0` tables are already per-tile-type
 correct for three of the four corners, and the measured evidence above was read
 out of them rather than the old offsets.
 
+## What a lane build can and cannot tell us
+
+A complete vendor lane (`DDRDLL` -> `DQS.DLLSTEP`, `DQS.DQSW0` ->
+`OSER8_MEM.TCLK`) now builds, which is the first time all three primitives have
+been placed together in this project. The tool put the lane's `DQSIN` on
+`Y3`, and this board's DDR3 constraint file names `Y3` as `ddr_dqs[0]`: a real
+lane binds DDR3 pads, because the `DQS` block for a byte lane lives with that
+lane's pins. That is why the preflight probes can never place these three
+primitives -- they are forbidden the very pins the blocks exist at.
+
+Diffing the lane bitstream against a control was the planned way to recover the
+`DQS` pin names, and it does not work as hoped, for two separate reasons:
+
+1. The pair has to be *matched*. A control with different ports and different
+   IO placement changes hundreds of bits in the IO tiles, and the 424-bit diff
+   spread over 43 tiles is mostly that noise. The pad's own tile, `(68,0)`,
+   moved only five bits.
+2. More fundamentally, a diff only shows what the router *routed*. In this
+   design the `DQS` inputs are tied to constants, and a constant does not
+   become a pip: it is selected by the site's own configuration. So the 21
+   names that are missing -- `DQSIN`, `READ`, `RCLKSEL`, `RLOADN`, `RMOVE`,
+   `RDIR`, `WLOADN`, `WMOVE`, `WDIR`, `HOLD` and the status outputs -- would
+   not all appear even with a perfectly matched pair.
+
+The method that can work is the one that produced the `DDRDLL` feature table:
+vary one port at a time between `VCC` and `GND` in matched builds and read the
+site's configuration bits, rather than looking for routing. That is one build
+pair per port, which is why it should be done deliberately rather than started
+in passing.
+
 ## Internal paths
 
 The chip database now has a first-class way to state a link the silicon

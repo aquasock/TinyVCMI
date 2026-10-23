@@ -436,3 +436,32 @@ Get the `DQS` fabric pins, which is the one input the lane bel set needs and the
 - User Test: N/A
 
 ---
+## 15 COMMIT Unreleased 2026-10-23T00:52:31-07:00
+
+#### Coming From:
+
+Unreleased cdad486
+
+#### Purpose:
+
+Run the lane bitstream diff and recover the DQS fabric pin names.
+
+#### Outcome:
+
+Ran the lane diff and established what it can and cannot deliver. A complete vendor lane -- `DDRDLL` feeding `DQS.DLLSTEP` and `DQS.DQSW0` feeding an `OSER8_MEM.TCLK` -- builds, the first time all three primitives have been placed together in this project, and the tool put `DQSIN` on `Y3`, which this board's DDR3 constraints name as `ddr_dqs[0]`. That confirms a real lane binds DDR3 pads and explains why the preflight probes cannot place these primitives at all: they are forbidden the only pins the blocks exist at. The planned diff, lane against control, produced 424 changed bits over 43 tiles, and it is mostly noise for two reasons that are worth writing down rather than working around. The pair has to be matched, because a control with different ports and different IO placement moves hundreds of IO bits on its own -- the pad's own tile, `(68,0)`, moved just five. And more fundamentally a diff only shows what the router routed, while this design ties the `DQS` inputs to constants, and a constant is selected by the site's configuration rather than becoming a pip, so the 21 missing names would not all appear even with a perfect pair. The method that can work is the one that produced the `DDRDLL` feature table: vary one port at a time between `VCC` and `GND` in matched builds and read the site's configuration bits. That is a build pair per port and belongs in its own cycle rather than being started in passing. No repository code changed, no Tang access occurred, and the five probe files remain removed from the card. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering and active-log capacity.
+
+#### Next Steps:
+
+Write the per-port probe generator before running it: a small deterministic script that emits matched vendor build pairs varying one `DQS` input between `VCC` and `GND`, runs Gowin on each, and reports which site configuration bits move, then repeat for the status outputs by driving them to pins. That turns 21 unknown names into a table the same way features 12 to 15 were recovered, and it needs no board access. Once the table exists the lane bel set lands on `create_internal_net()` and the remaining implementation is the cross-tile form of the `DDRDLL` `LOCK` path. Touching the Tang needs the user's explicit approval.
+
+#### Files Modified:
+
+- docs/ddr3-open-flow.md
+
+#### Status:
+
+- Build: PASS
+- Deployment: N/A
+- User Test: N/A
+
+---
