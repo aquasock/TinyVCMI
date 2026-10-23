@@ -291,3 +291,32 @@ One measurement is still outstanding and cheap: drive `UPDNCNTL` as a pulse rath
 - User Test: N/A
 
 ---
+## 10 COMMIT Unreleased 2026-10-23T00:21:37-07:00
+
+#### Coming From:
+
+Unreleased bde6804
+
+#### Purpose:
+
+Test the last stated difference from a working controller, driving UPDNCNTL as a pulse instead of a level, and settle whether STEP can serve the first milestone.
+
+#### Outcome:
+
+Ran the last outstanding test and closed the `STEP` investigation. A build at 400 MHz with `STOP` high and `UPDNCNTL` driven as a pulse -- low for 16 of every 65536 fast cycles, about 40 ns every 164 us, which is how both the hardware-proven controller's init machine and the vendored LiteDRAM PHY use it -- closed timing at 414.94 MHz and returned `aa 00 04 06 00 01 cb 26 4a 36`, `aa 00 04 06 00 01 bc 30 d2 85` and `aa 00 04 06 00 01 ac f0 52 85`: `STEP` zero, `lock` one, both counters advancing. That is the sixth configuration to return zero, after 50 MHz and 400 MHz, `STOP` low and high, `UPDNCNTL` low and high, the six vendor-default corner bits, a `DQS` lane beside the primitive, and the vendor toolchain itself. The conclusion recorded is deliberately narrow: the site, parameters, placement, routing, packing and readout path are all proven by these same images, and what cannot be reached from an isolated island is the PHY around the primitive, which is milestone 3's subject regardless. `STEP` is therefore struck from the first milestone's signal set and the DLL and `LOCK` work folds into the first x8 lane. Nothing was probed on a pin, no DDR3 package pin was exposed or driven, and the board was returned to the desktop core. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering and active-log capacity.
+
+#### Next Steps:
+
+Stop measuring and start building the lane: implement `DQS`, `OSER8_MEM` and `IDES8_MEM` placement in the Apicula and nextpnr forks, and add a way to express the dedicated `LOCK` escape -- either a segment model for the row-99 track or a remote-tap extension to the bel pins -- since `LOCK` is the signal the first lane diagnostic will actually use. Include at least one complete x8 lane in the next hardware image so the DLL has the PHY context these six tests showed it needs. Measure the TL, TR and BR port tiles and close TR's missing `DLL0` entries alongside. Touching the Tang again needs the user's approval.
+
+#### Files Modified:
+
+- docs/ddr3-open-flow.md
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: N/A
+
+---

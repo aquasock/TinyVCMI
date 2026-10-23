@@ -255,7 +255,35 @@ Three reads of `aa 00 04 07 00 01 81 6a 82 e9 02`, `... 03 f3 10 a5 02`,
 the lane byte steady at `0x02`, so the DQS block answers. A DQS beside the DLL
 changes nothing.
 
-That closes the campaign of cheap explanations. `STEP` has now been read at
+### UPDNCNTL as a pulse
+
+The last stated difference was the one control the working controller never
+holds: both the proven init machine and the vendored LiteDRAM PHY pulse
+`UPDNCNTL` low rather than leaving it at a level. A build at 400 MHz with
+`STOP=1` and `UPDNCNTL` low for 16 fast cycles every 65536 (about 40 ns every
+164 us, met at 414.94 MHz) returned the same three readings:
+
+- `aa 00 04 06 00 01 cb 26 4a 36`
+- `aa 00 04 06 00 01 bc 30 d2 85`
+- `aa 00 04 06 00 01 ac f0 52 85`
+
+`step = 0x00`, `lock = 1`, both counters advancing.
+
+### The STEP question is closed
+
+`STEP` has been read six ways: 50 MHz and 400 MHz, `STOP` low and high,
+`UPDNCNTL` low, high and pulsed, with the six vendor-default corner bits
+packed, with a `DQS` lane beside it, and through the vendor toolchain. It has
+never been anything but zero. Whatever produces a tap code inside the
+hardware-proven controller, this project cannot reach it from an isolated
+island, and `STEP` is not a usable signal for the first milestone.
+
+That is a negative result, not a dead end: the site, the parameters, the
+placement, the routing, the packing and the readout path are all proven to work
+by the same images. What is missing is the PHY around the primitive, which is
+milestone 3's subject anyway.
+
+ `STEP` has now been read at
 50 MHz and 400 MHz, with `STOP` and `UPDNCNTL` in all four static
 combinations, with the six vendor-default corner bits packed, and under the
 vendor toolchain -- always zero. The one structural difference left between
