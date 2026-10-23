@@ -23,8 +23,8 @@ QT_QPA_PLATFORM=offscreen \
         exit 1
     }
 
-if rg -q 'Error|unknown option:|License verification failed' gw_sh.log; then
-    rg 'Error|unknown option:|License verification failed' gw_sh.log >&2
+if grep -Eq 'Error|unknown option:|License verification failed' gw_sh.log; then
+    grep -E 'Error|unknown option:|License verification failed' gw_sh.log >&2
     exit 1
 fi
 

@@ -145,8 +145,8 @@ PROT-001: "TinyNES/TinyGBC load AE350 ELF-derived images through a checked UART 
 VCMI-001: "MiSTer-VCMI pins VCMI 1.7.5 at commit 6901839ae9760dfcd1d5ff2c4aa4ef6968fee752"
 VCMI-002: "The MiSTer port measured roughly 100-115 MB resident at 800x600, so 64 MiB is not a qualified full-engine target"
 TOOL-001: "The current open flow supports the AE350 and SDR SDRAM design but not the complete Gowin DDR3 PHY/controller netlist"
-TOOL-002: "Yosys declares all required PHY cells; current GW5AST place-and-route supports static IODELAY and CLKDIV but lacks BELs for DDRDLL, DQS, OSER8_MEM and IDES8_MEM"
-TOOL-003: "The four DDRDLL master sites, BL configuration features and BL fabric port wires are measured; open-tool support is not implemented yet"
+TOOL-002: "Yosys declares all required PHY cells; the GW5AST backend supports static IODELAY, CLKDIV and the bottom-left DDRDLL master, and still lacks BELs for DQS, OSER8_MEM and IDES8_MEM"
+TOOL-003: "DDRDLL is a two-cell macro: ports in the column-1 tile, configuration fuses in the corner, LOCK on a dedicated row-99 escape; open flow covers the bottom-left master only"
 PROV-001: "Reuse source and interface ideas with their original license boundaries and attribution intact"
 ```
 
@@ -373,29 +373,32 @@ PROV-001: "Reuse source and interface ideas with their original license boundari
   title: "Primitive-level boundary of the current GW5AST DDR3 open flow"
   status: VERIFIED
   verified_date: 2026-10-22
-  statement: "Yosys 0.52 declares DDRDLL, DQS, OSER8_MEM, IDES8_MEM, IODELAY and CLKDIV for GW5A synthesis. With nextpnr-himbaechel commit 8be8657 and Apicula commit 8918f14, isolated GW5AST-138C probes place and route static IODELAY and CLKDIV, while DDRDLL, DQS, OSER8_MEM and IDES8_MEM each fail because the device database exposes no BEL able to implement that cell type. The qualified vendor reference contains one DDRDLL, four DQS, 40 OSER8_MEM, 32 IDES8_MEM, 32 IODELAY and one CLKDIV."
-  consequence: "The next implementation boundary is DDRDLL database, placement, routing and packing support followed by a lock-and-step hardware probe that drives no DDR3 package pin. DQS and memory serializer/deserializer work follows at one x8 lane before expanding to x32. Static IODELAY support does not establish dynamic calibration support."
+  statement: "Yosys 0.52 declares DDRDLL, DQS, OSER8_MEM, IDES8_MEM, IODELAY and CLKDIV for GW5A synthesis. With the aquasock/nextpnr epic/gw5ast138c tree and Apicula commit 8918f14, isolated GW5AST-138C probes place and route static IODELAY, CLKDIV and the bottom-left DDRDLL master, while DQS, OSER8_MEM and IDES8_MEM still fail because the device database exposes no BEL able to implement those cell types. The qualified vendor reference contains one DDRDLL, four DQS, 40 OSER8_MEM, 32 IDES8_MEM, 32 IODELAY and one CLKDIV."
+  consequence: "The remaining primitive boundary is DQS and the two memory serializers, whose support follows at one x8 lane before expanding to x32. DDRDLL placement and parameter packing exist for one site only, and the primitive's LOCK output has no modelled fabric path, so no lock-and-step evidence exists yet. Static IODELAY support does not establish dynamic calibration support."
   sources:
     - "Yosys 0.52, share/yosys/gowin/cells_xtra_gw5a.v"
-    - "nextpnr-himbaechel commit 8be8657, himbaechel/uarch/gowin"
+    - "aquasock/nextpnr branch epic/gw5ast138c; binary nextpnr-0.11.1-65-g7d1b131c produced the 2026-10-22 evidence, and 8be8657b is the commit at the tip of that tree (not the binary's own describe)"
     - "Apicula commit 8918f14, apycula/GW5AST-138C.msgpack.xz and apycula/gowin_pack.py"
+    - "TinyVCMI docs/ddr3-open-flow.md: DDRDLL reverse-engineering and open-flow implementation"
     - "Tang-PSX Gowin EDA 1.9.11.03 post-PnR simulation model, ddr3_memory_interface.vo"
     - "TinyVCMI tools/ddr3_openflow_preflight.sh and fpga/ddr3_phy_probe/ddr3_phy_probe.sv"
-  verification: "The deterministic TinyVCMI preflight synthesized all six probes on 2026-10-22, reproduced the four no-BEL failures, and routed IODELAY and CLKDIV. A separate DDR-free open-flow image passed simulation, synthesis, placement, routing and packing, then was SRAM-loaded on the target and answered TinyTang core ID 0x56 at 2 Mbaud. The missing four primitives have not yet been implemented or tested."
+  verification: "The deterministic TinyVCMI preflight synthesized all six probes on 2026-10-22, reproduced the four no-BEL failures, and routed IODELAY and CLKDIV. A separate DDR-free open-flow image passed simulation, synthesis, placement, routing and packing, then was SRAM-loaded on the target and answered TinyTang core ID 0x56 at 2 Mbaud. Revised 2026-10-22 after the DDRDLL bel was added: the same preflight now reports DDRDLL PASS/PASS, with DQS, OSER8_MEM and IDES8_MEM unchanged, and the earlier citation of commit 8be8657b is corrected because the binary that produced the evidence self-reports 7d1b131c. DQS and the two memory serializers have not been implemented or tested."
 
 - record_id: TOOL-003
   topic_id: TOOL
-  title: "Measured GW5AST-138C DDRDLL master sites, configuration features and BL ports"
+  title: "Measured GW5AST-138C DDRDLL master sites, cells, features and ports"
   status: VERIFIED
   verified_date: 2026-10-22
-  statement: "Gowin EDA 1.9.11.03 exposes four DDRDLL master placement macros, DDRDLLM_TL, DDRDLLM_TR, DDRDLLM_BL and DDRDLLM_BR. Vendor bitstreams localize their configuration to cells (0,0), (0,181), (108,0) and (108,181). At the BL site, CODESCAL 111 selects DLL0 feature 12, SCAL_EN TRUE feature 13, DIV_SEL 1 feature 14 and DLL_FORCE TRUE feature 15. The device database's BL port records map CLKIN, STOP, RESET and UPDNCNTL to one-based cell (109,2) wires CLK0, A6, LSR0 and A5; STEP[0:7] map to Q0 through Q7 and LOCK maps to (100,2,Q7)."
-  consequence: "The next open-flow change can add the DDRDLL BEL, symbolic placement, port aliases and packer features from measured device-local evidence. The current Apicula hard-coded DDRDLL table offsets are stale for this database, and no DDRDLL open-flow image or hardware lock test has passed yet."
+  statement: "Gowin EDA 1.9.11.03 exposes four DDRDLL master placement macros, DDRDLLM_TL, DDRDLLM_TR, DDRDLLM_BL and DDRDLLM_BR. Vendor bitstreams localize their configuration to cells (0,0), (0,181), (108,0) and (108,181). The primitive is a two-cell macro: at the bottom-left master the port wires land in the column-1 tile, the vendor's one-based cell (109,2), while every configuration fuse sits in the corner cell (108,0). At that site CODESCAL 111 selects DLL0 feature 12 and 000 selects none, SCAL_EN TRUE feature 13, DIV_SEL 1 feature 14 and DLL_FORCE TRUE feature 15. The port map is CLKIN to CLK0, STOP to A6, RESET to LSR0, UPDNCNTL to A5 and STEP[0:7] to Q0 through Q7. LOCK reaches no configurable wire: with LOCK open the bitstream changes only on the row-99 track of column 1, wire Q7 driving E820, which is the recorded tap (100,2,Q7). The vendor baseline also sets DLL0 features 5, 17, 18 and 19 plus corner bits (1,12) and (9,13), none of which any parameter sweep moved."
+  consequence: "Open-flow support can be built and has been built from this evidence for the bottom-left master: a bel on the port tile, a symbolic DDRDLLM_BL macro, and packing that writes the measured DLL0 features in the configuration cell, with LOCK deliberately unmapped so a design that uses it fails placement instead of routing a dead net. Three things stay open and are not claims about the silicon: the other three masters' port tiles are unmeasured, LOCK's escape has no modelled fabric path, and the six default corner bits are unexplained. No DDRDLL image has been built for or tested on hardware."
   sources:
     - "TinyVCMI tools/ddrdll_oracle and tools/run_ddrdll_oracle.sh"
-    - "TinyVCMI docs/ddr3-open-flow.md: DDRDLL reverse-engineering checkpoint"
+    - "TinyVCMI docs/ddr3-open-flow.md: DDRDLL reverse-engineering and open-flow implementation"
     - "Gowin EDA 1.9.11.03 GW5AST-138C.fse and GW5AST-138C.dat"
     - "Apicula commit 8918f14, apycula/attrids.py, apycula/chipdb.py and apycula/dat_parser.py"
-  verification: "Eight offline vendor builds covered all four master placements and isolated CODESCAL, SCAL_EN, DIV_SEL and DLL_FORCE changes. Tile-level bitstream comparison changed only the BL configuration cell for each parameter sweep. No Tang access occurred."
+    - "aquasock/nextpnr branch epic/gw5ast138c, himbaechel/uarch/gowin/{gowin_arch_gen.py,cst.cc,constids.inc}"
+    - "aquasock/apicula branch epic/gw5ast138c, apycula/gowin_pack.py get_DDRDLL_fuses"
+  verification: "Eight offline vendor builds covered all four master placements and isolated CODESCAL, SCAL_EN, DIV_SEL and DLL_FORCE changes, and the BL deltas were re-derived from the raw bitstreams rather than the tile tables. Revised 2026-10-22: three further offline builds isolated the ports and LOCK (constants on STOP, UPDNCNTL and RESET; LOCK open; STEP open). The corner DLL0 tables agree with the TL, BL and BR baselines on features 12 to 15; TR's table has no entry for feature 12 or 13. The open-flow path reproduces the four measured feature sets and sets none of the three unset bits, which shows the packing is derived from the measurement; it does not show the primitive works. No Tang access occurred."
 
 - record_id: PROV-001
   topic_id: PROV

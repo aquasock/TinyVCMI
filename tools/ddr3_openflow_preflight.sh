@@ -37,7 +37,7 @@ for probe in "${probes[@]}"; do
         write_json $json
     "
 
-    if ! rg -q "\\\"type\\\"[[:space:]]*:[[:space:]]*\\\"${cell[$probe]}\\\"" "$json"; then
+    if ! grep -Eq "\"type\"[[:space:]]*:[[:space:]]*\"${cell[$probe]}\"" "$json"; then
         printf '%-12s %-10s %-12s\n' "${cell[$probe]}" FAIL NOT-RUN
         echo "synthesis did not retain ${cell[$probe]} in $json" >&2
         exit 1
@@ -55,7 +55,7 @@ for probe in "${probes[@]}"; do
     else
         printf '%-12s %-10s %-12s\n' "${cell[$probe]}" PASS GAP
         gap_count=$((gap_count + 1))
-        rg -m1 "unconstrained|not supported|not found|no BELs|no valid BEL|unknown|ERROR|Error" \
+        grep -m1 -E "unconstrained|not supported|not found|no BELs|no valid BEL|unknown|ERROR|Error" \
             "$pnr_log" | sed 's/^/  /' || tail -1 "$pnr_log" | sed 's/^/  /'
     fi
 done

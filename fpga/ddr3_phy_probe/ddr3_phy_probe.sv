@@ -3,6 +3,13 @@
 // Isolated primitive probes for offline toolchain characterization. None of
 // these tops exposes or drives a DDR3 package pin.
 
+// The DDRDLL probe drives its result from `STEP`, not from `LOCK`.  `LOCK`
+// leaves the primitive on a dedicated path that reaches the fabric on the
+// row-99 track of column 1 with no configurable bit in between, so the open
+// flow has no honest bel pin for it yet and refuses any design that uses one.
+// Wiring `STEP` instead keeps this probe a real placement and routing test of
+// the pins the toolchain does model; the lock-and-step diagnostic waits for a
+// LOCK model, not for a guess.
 module probe_ddrdll (
     input  wire sys_clk,
     input  wire probe_in,
@@ -20,9 +27,10 @@ module probe_ddrdll (
         .STOP(1'b0),
         .UPDNCNTL(1'b1),
         .RESET(1'b0),
-        .STEP(step),
-        .LOCK(probe_out)
+        .STEP(step)
     );
+
+    assign probe_out = ^step;
 endmodule
 
 module probe_dqs (

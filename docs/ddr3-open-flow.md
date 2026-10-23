@@ -34,7 +34,7 @@ The `OSER8_MEM` total is 32 DQ serializers, four DQS serializers, and four DM
 serializers. The exact support report can be reproduced with
 `tools/ddr3_openflow_preflight.sh`.
 
-## DDRDLL reverse-engineering checkpoint
+## DDRDLL reverse-engineering and open-flow implementation
 
 `tools/run_ddrdll_oracle.sh` builds a measurement-only Gowin EDA oracle for a
 single `DDRDLL` constrained to `DDRDLLM_BL`. It does not program hardware and
@@ -59,35 +59,82 @@ localize the four master configuration cells as follows:
 | `DDRDLLM_BL` | `(108, 0)` | 48 |
 | `DDRDLLM_BR` | `(108, 181)` | 49 |
 
+### The primitive is a two-cell macro
+
+The configuration cell above is not where the primitive's ports are. They land
+in the column-1 tile of the same edge row, which is the vendor's one-based cell
+`(109,2)` for the bottom-left master:
+
+- `CLKIN` -> `CLK0`, `STOP` -> `A6`, `RESET` -> `LSR0`, `UPDNCNTL` -> `A5`
+- `STEP[0]` .. `STEP[7]` -> `Q0` .. `Q7`
+
+This is measured, not read off a name. Tying `STOP`, `UPDNCNTL` and `RESET` to
+constants and diffing the bitstream against the reference removes exactly the
+pips into `A6`, `A5` and `LSR0` of that tile and moves nothing in the corner.
+
+`LOCK` is not a configurable connection at all. With `.LOCK()` left open, the
+only bits that change are the row-99 track of column 1 (`Q7 -> E820`) and the
+sink IO; no bit in the corner or port tile moves. `LOCK` therefore leaves the
+primitive on a dedicated path to the row-99 long track, which matches the
+recorded tap `(100,2,Q7)`. A bel's pins must be wires of the bel's own tile, so
+the current chip database cannot express that pin, and it is not invented.
+
+### Parameter fuses, re-verified bit by bit
+
 For the BL site, changing only `CODESCAL` from `111` to `000` clears tile bits
 `(20,17)`, `(20,19)`, and `(20,20)`. Changing only `SCAL_EN` to `TRUE` sets
 `(20,18)`; changing only `DIV_SEL` to one sets `(21,14)`; and changing only
 `DLL_FORCE` to `TRUE` sets `(20,16)`. These bits correspond to numbered
 features 12, 13, 14, and 15 in the existing `DLL0` short-value table.
 
-The vendor `.dat` also contains the BL fabric-port records. The master inputs
-are at one-based cell `(109,2)` on wires `CLK0`, `A6`, `LSR0`, and `A5`, in
-`CLKIN`, `STOP`, `RESET`, and `UPDNCNTL` order. Its first eight outputs are
-`Q0` through `Q7`, in `STEP[0]` through `STEP[7]` order; `LOCK` is the remote
-tap `(100,2,Q7)`. The historical hard-coded DDRDLL offsets in Apicula's
-`Datfile.read_5Astuff()` do not point at these records in the installed
-GW5AST-138C database, so the next implementation must locate or encode the
-measured tables rather than consuming the current misparsed values.
+A re-check of all eight sweep bitstreams confirms those deltas exactly and
+corrects one earlier reading: `(21,9)` is set in every build, including
+`CODESCAL=000`, so it is not a `CODESCAL` bit and `DLL0` feature 5 is not the
+`000` code; `000` emits no fuses at all. The vendor baseline also sets `DLL0`
+features 5, 17, 18 and 19 (`(21,7)`, `(21,8)`, `(21,9)`, `(21,15)`) plus
+`(1,12)` and `(9,13)`, and no parameter sweep moved any of them. What those six
+bits configure is unmeasured, and the open-flow bitstream does not set them.
 
-No Apicula or nextpnr source was changed in this checkpoint. The next agent
-should add the DDRDLL sites and aliases to the chip database, expose the BEL
-and four placement macros in the Himbaechel architecture, encode the measured
-`DLL0` features in the packer, rebuild the database and nextpnr, and then run
-the checked-in oracle shape through the open flow. Hardware remains deferred;
-coordinate with the user before querying, resetting, or programming the Tang.
+### Per-corner table coverage
+
+The `DLL0` tables agree with the TL, BL and BR vendor baselines on features 12
+to 15. TR's table has no entry for feature 12 or 13, so the `CODESCAL=111`
+encoding cannot be emitted at TR from this database at all.
+
+### Open-flow status
+
+- Apicula's `get_DDRDLL_fuses` maps the four parameters onto the measured
+  `DLL0` features at the configuration cell. It refuses any site other than the
+  measured bottom-left master, refuses `CODESCAL` values other than `111` and
+  `000` because their bit weights are unproven, and refuses a feature whose
+  table entry is absent at that site.
+- The Himbaechel Gowin arch creates one `DDRDLL` bel at the port tile with the
+  four control pins and eight `STEP` pins, and `INS_LOC "<cell>" DDRDLLM_BL`
+  resolves to it through the chipdb's macro table. There is deliberately no
+  `LOCK` pin: a design that uses `LOCK` fails placement with "No wire found for
+  port LOCK" instead of routing a net that reaches nothing.
+- `tools/ddr3_openflow_preflight.sh` reports `DDRDLL PASS/PASS`, and packing
+  the routed probe writes the measured `CODESCAL=111` bits at the configuration
+  cell and none of the three unset parameter bits.
+- Nothing above was run on hardware. Whether the six unexplained baseline bits
+  are required for the primitive to operate is an open question for the first
+  lock-and-step image, not something the offline toolchain can settle.
+
+The earlier note that Apicula's hard-coded DDRDLL tables are unusable on this
+database no longer applies: the fork's `DLL0` tables are already per-tile-type
+correct for three of the four corners, and the measured evidence above was read
+out of them rather than the old offsets.
 
 ## Milestones
 
 1. Keep a passing non-DDR open-flow smoke build and executable primitive
    preflight as controls.
 2. Reverse engineer and implement `DDRDLL` placement, routing, parameters, and
-   packing. First hardware diagnostic: lock and step stability only, with all
-   DDR pins undriven.
+   packing. Placement, routing, the `STEP` ports and the four measured
+   parameters are done offline; `LOCK` is refused rather than guessed. What
+   remains is a model for the `LOCK` escape, an explanation of the six default
+   corner bits, and then the first lock-and-step diagnostic with every DDR3
+   package pin undriven. Touching the Tang needs the user's approval first.
 3. Implement one complete x8 lane: `DQS`, `OSER8_MEM`, `IDES8_MEM`, and the
    required dynamic delay behavior. Calibrate and margin the lane.
 4. Expand to four x8 lanes and add the minimum JEDEC initialization, refresh,
