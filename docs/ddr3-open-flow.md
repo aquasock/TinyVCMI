@@ -352,6 +352,13 @@ serializers beside it. Per lane the vendor instantiates one `DQS`, ten
 `OSER8_MEM` and eight `IDES8_MEM`, and the four lanes hold the 40, 32 and 4
 counts in the primitive inventory.
 
+A second vendor attempt makes the same point from the other end. A lone `DQS`
+cannot be built at all: Gowin answers `PR0015`, "DLLSTEP pin of 'u'(INS_DQS) is
+not driven by DDRDLL". The tool itself enforces the dedicated
+`DDRDLL` -> `DQS.DLLSTEP` and `DQS` -> `OSER8_MEM.TCLK` paths, which is why
+neither connection exists as a named wire, and why a probe that isolates one
+primitive can never be built.
+
 That makes the unit of work the **lane complex**, not three BELs: the site
 model has to carry internal connections between a `DQS` and its serializers,
 the same way the `DDRDLL`'s `LOCK` needs a dedicated path rather than a named

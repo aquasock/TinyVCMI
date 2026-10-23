@@ -438,13 +438,13 @@ PROV-001: "Reuse source and interface ideas with their original license boundari
   title: "The memory-mode IOLOGIC primitives are one lane complex"
   status: VERIFIED
   verified_date: 2026-10-23
-  statement: "In the hardware-proven vendor DDR3 netlist every one of the 40 OSER8_MEM instances takes TCLK from its own lane's DQS output, dqsw0 for nine per lane and dqsw270 for the tenth, and Gowin EDA rejects driving TCLK from an ordinary pin because TCLK_SOURCE is DQSW or DQSW270. Per lane the vendor instantiates one DQS, ten OSER8_MEM and eight IDES8_MEM, which is where the inventory's 4, 40 and 32 counts come from."
+  statement: "In the hardware-proven vendor DDR3 netlist every one of the 40 OSER8_MEM instances takes TCLK from its own lane's DQS output, dqsw0 for nine per lane and dqsw270 for the tenth, and Gowin EDA rejects driving TCLK from an ordinary pin because TCLK_SOURCE is DQSW or DQSW270, and it refuses to build a DQS at all unless its DLLSTEP pin is driven by a DDRDLL instance, answering PR0015. Per lane the vendor instantiates one DQS, ten OSER8_MEM and eight IDES8_MEM, which is where the inventory's 4, 40 and 32 counts come from."
   consequence: "TCLK, DLLSTEP and the DQSW group are not fabric wires to be named; they are dedicated connections inside a lane between the DQS block and the serializers beside it. The unit of implementation is therefore the lane complex, and the chip database has to express those internal connections rather than three independent BELs, exactly as the DDRDLL LOCK output needs a dedicated path. Measuring three separate wire names would be measuring something that does not exist."
   sources:
     - "Tang-PSX build/ddr3-vendor/ip/ddr3_memory_interface/ddr3_memory_interface.vo, the 40 OSER8_MEM TCLK connections and per-lane instance counts"
     - "Gowin EDA 1.9.11.03 IDE/simlib/gw5a/prim_sim.v, module OSER8_MEM TCLK_SOURCE parameter"
     - "Gowin EDA 1.9.11.03 error CK2060 observed when TCLK was driven from a pin in TinyVCMI build/meas_oser/oser"
-  verification: "Read from the vendored post-place-and-route netlist and confirmed against one vendor build attempt that Gowin refuses a pin on TCLK. The four-lane split was checked by counting instances per data_lane_gen index."
+  verification: "Read from the vendored post-place-and-route netlist and confirmed against two vendor build attempts: one that Gowin refused for driving TCLK from a pin, and one it refused for a DQS without a DDRDLL on DLLSTEP. The four-lane split was checked by counting instances per data_lane_gen index."
 
 - record_id: PROV-001
   topic_id: PROV

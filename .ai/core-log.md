@@ -378,3 +378,32 @@ Model one lane site before writing any lane RTL: decide how the chip database ex
 - User Test: N/A
 
 ---
+## 13 COMMIT Unreleased 2026-10-23T00:36:54-07:00
+
+#### Coming From:
+
+Unreleased d51b3e6
+
+#### Purpose:
+
+Attempt the DQS pin measurement and establish whether the primitive can be isolated at all.
+
+#### Outcome:
+
+Took the DQS measurement one step further and found the constraint that ends the approach. A control design built cleanly, and the DQS variant was refused by Gowin with `PR0015`, "DLLSTEP pin of 'u'(INS_DQS) is not driven by DDRDLL". The vendor tool enforces the dedicated `DDRDLL` -> `DQS.DLLSTEP` link the same way it already enforces `TCLK_SOURCE` on the serializers, so a lone `DQS` cannot be built at all and there is no isolated primitive whose pins could be named. Together with entry 12's finding that every `OSER8_MEM` takes `TCLK` from its own lane's `DQS`, this makes the conclusion firm from both directions: the lane-internal connections are dedicated paths the tool itself refuses to let a design invent, which is why they are absent from the fabric wire model and why three independent BELs could never work. Both findings are recorded in `docs/ddr3-open-flow.md` and in TOOL-006, which now carries both vendor refusals as evidence. No chipdb or fork changes, no Tang access, and no deployment: the board is still running the desktop core. The remaining work in this cycle is a design decision rather than a measurement -- how the chip database expresses internal bel-to-bel paths -- and the measurement path for naming the DQS fabric pins is closed because the primitive cannot be isolated. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering and active-log capacity.
+
+#### Next Steps:
+
+Design the internal-path mechanism, since measuring the primitives in isolation is now known to be impossible: the chip database needs a way to state that one bel's pin feeds another bel's pin inside a site, covering `DDRDLL` -> `DQS.DLLSTEP`, `DQS` -> `OSER8_MEM.TCLK` and the `DDRDLL` `LOCK` escape to the row-99 track, and the packer must skip fuses for those paths the way it already does for fuse-less elements. The fabric pins that remain genuinely external -- `DQSIN`, `RLOADN`, `RMOVE`, `RCLKSEL`, `READ`, `HOLD` and the status outputs -- are still unnamed and can only be recovered from a full lane build in the vendor tool, which is the next measurement after the mechanism exists. No deployment until the user asks.
+
+#### Files Modified:
+
+- docs/ddr3-open-flow.md
+
+#### Status:
+
+- Build: N/A
+- Deployment: N/A
+- User Test: N/A
+
+---
