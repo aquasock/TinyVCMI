@@ -524,3 +524,32 @@ Turn the bit sets into a table: for each port, intersected against the site's `a
 - User Test: N/A
 
 ---
+## 18 COMMIT Unreleased 2026-10-23T01:17:09-07:00
+
+#### Coming From:
+
+Unreleased 654773e
+
+#### Purpose:
+
+Turn the measured per-port bit sets into a port-to-wire table and see what the chipdb can supply.
+
+#### Outcome:
+
+Tried to turn the measured bit sets into a port-to-wire table through the chipdb and found that the table cannot come from there. Type 241, the `DQS` site, carries only one short-value table named `unknown_17` -- no `longfuses`, no `longval` and no `const` bits -- so the 102 measured bits have no existing table to name them against. The `alonenode` entries do not explain them either: none of the eight ports' bit sets matches an entry exactly, and none of the overlapping entries even lists `VCC` or `GND` among its sources, which also retires the earlier reading of `CE2` as a constant-select mux -- that was an intersection, not a match. The result is a clean split rather than a dead end. The per-port configuration bits are measured and are sufficient on their own for a packer, in the same shape as the `DDRDLL`'s `DLL0` features, and they need no wire names. Only the routed pins -- `DQSIN`, `PCLK`, `FCLK`, `DLLSTEP` and the status outputs -- need wire names, and those must come from the routing side rather than the constant side. So the lane bel set is buildable in two layers and only one of them is still missing data. No repository code changed beyond the documentation, no Tang access occurred, and the probe images remain off the card. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering and active-log capacity.
+
+#### Next Steps:
+
+Extend the probe to the routed side, which is the only missing layer. The constants are done; what remains is naming `DQSIN`, `PCLK`, `FCLK`, `DLLSTEP` and the status outputs, and the way to do that is a matched pair where the one routed pin of interest moves while everything else is held, so the diff shows that pin's pips in the site's tile rather than the placement noise the earlier lane diff produced. Then write the lane bel set: routed pins in the site type 241 bel, configuration bits from the measured table, internal nets for `DLLSTEP` and `TCLK` through `create_internal_net()`. Touching the Tang needs the user's explicit approval.
+
+#### Files Modified:
+
+- docs/ddr3-open-flow.md
+
+#### Status:
+
+- Build: PASS
+- Deployment: N/A
+- User Test: N/A
+
+---

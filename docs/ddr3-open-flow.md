@@ -396,6 +396,31 @@ Three of the pairs share bit groups, which is a caution rather than a shortcut:
 a common reset path through both, only the per-port mux entries can say, so the
 table has to be built entry by entry rather than by grouping.
 
+### What the site model has, and what it needs
+
+Type 241 is close to unmodelled. It carries one short-value table named
+`unknown_17`, no `longfuses`, no `longval` and no `const` bits at all, so the
+102 measured bits have no existing table to be named against. The
+`alonenode` entries do not explain them either: none of the eight ports'
+bit sets matches an entry exactly, and none of the entries that overlap a port
+even lists `VCC` or `GND` among its sources. The earlier read of `CE2` as a
+constant-select mux was an intersection, not a match.
+
+That splits the remaining work in two, and the split matters:
+
+- **Configuration bits.** The per-port bit sets are measured and are enough on
+  their own. They are what a packer needs, in the same shape as the `DDRDLL`'s
+  `DLL0` features, and they need no wire names.
+- **Routed pins.** `DQSIN`, `PCLK`, `FCLK`, `DLLSTEP` and the status outputs are
+  real fabric connections, and those do need wire names. They are the ones the
+  site model lacks, and they have to come from the routing side, not from the
+  constant side.
+
+So the lane bel set is buildable in two layers: the pins that route, named by
+measurement, and the configuration bits, already measured. What is missing is
+only the routed-pin names, and the probe framework now in `tools` is what
+produces them.
+
 ## Internal paths
 
 The chip database now has a first-class way to state a link the silicon
