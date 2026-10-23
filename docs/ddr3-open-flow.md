@@ -316,18 +316,44 @@ database no longer applies: the fork's `DLL0` tables are already per-tile-type
 correct for three of the four corners, and the measured evidence above was read
 out of them rather than the old offsets.
 
+## Placement boundary for the lane primitives
+
+The three primitives a lane needs sit at IOLOGIC sites in the vendor's design.
+The GW5AST-138C chipdb carries a 54-pin port map for those sites on tile types
+229 to 232 and 243: enough for the data path, not enough for the memory-mode
+control path. Against Gowin's own port lists:
+
+- `OSER8_MEM`: 17 of 18 pins have a wire. Missing: `TCLK`.
+- `IDES8_MEM`: 13 of 16. Missing: `ICLK`, `WADDR`, `RADDR`.
+- `DQS`: 3 of 24. Missing `DQSIN` and every control and status pin -- `READ`,
+  `RCLKSEL`, `DLLSTEP`, `WSTEP`, `RLOADN`, `RMOVE`, `RDIR`, `WLOADN`, `WMOVE`,
+  `WDIR`, `HOLD`, `DQSR90`, `DQSW0`, `DQSW270`, `RPOINT`, `WPOINT`, `RVALID`,
+  `RBURST`, `RFLAG`, `WFLAG`.
+
+The present failure is therefore not "no BEL exists" in the abstract; the site
+model does not name the wires these primitives use for control. Building BELs
+from the 54-pin map would place and route and would invent 21 `DQS`
+connections, which is the same defect as guessing at corner bits. The missing
+names have to be measured the way the DDRDLL's were: one primitive constrained
+to one site in a vendor build and diffed against a control bitstream.
+
+`TCLK` is the cheapest to settle; `DQS` is the most valuable, since `DQSIN`
+and `DLLSTEP` are what a lane test needs.
+
 ## Milestones
 
 1. Keep a passing non-DDR open-flow smoke build and executable primitive
    preflight as controls.
-2. Reverse engineer and implement `DDRDLL` placement, routing, parameters, and
-   packing. Placement, routing, the `STEP` ports and the four measured
-   parameters are done offline; `LOCK` is refused rather than guessed. What
-   remains is a model for the `LOCK` escape, an explanation of the six default
-   corner bits, and then the first lock-and-step diagnostic with every DDR3
-   package pin undriven. Touching the Tang needs the user's approval first.
-3. Implement one complete x8 lane: `DQS`, `OSER8_MEM`, `IDES8_MEM`, and the
-   required dynamic delay behavior. Calibrate and margin the lane.
+2. `DDRDLL` placement, routing, parameters and packing are done for the
+   bottom-left master, and `STEP` is struck as a first-milestone signal: six
+   configurations across two toolchains produced no tap code, so the primitive
+   only means something inside its PHY. The `LOCK` escape still needs a model,
+   and that work now lands with the lane rather than before it.
+3. Measure the memory-mode site wires (`TCLK`, `ICLK`, `WADDR`, `RADDR` and the
+   `DQS` control and status pins), then implement one complete x8 lane:
+   `DQS`, `OSER8_MEM`, `IDES8_MEM`, the dynamic delay behaviour and `LOCK`.
+   Calibrate and margin the lane. This is the first milestone where a hardware
+   result would mean anything.
 4. Expand to four x8 lanes and add the minimum JEDEC initialization, refresh,
    read, and write controller. Test deterministic patterns over progressively
    larger address ranges before exposing a system bus.

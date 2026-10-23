@@ -320,3 +320,32 @@ Stop measuring and start building the lane: implement `DQS`, `OSER8_MEM` and `ID
 - User Test: N/A
 
 ---
+## 11 COMMIT Unreleased 2026-10-23T00:24:37-07:00
+
+#### Coming From:
+
+Unreleased 036cbb3
+
+#### Purpose:
+
+Establish what the lane primitives actually need before writing placement support for DQS, OSER8_MEM and IDES8_MEM.
+
+#### Outcome:
+
+Started the placement cycle by establishing what the three lane primitives actually need, instead of writing BELs for them. In the vendor's placed design `DQS`, `OSER8_MEM` and `IDES8_MEM` all sit at IOLOGIC sites, and the GW5AST-138C chipdb does carry a port map for those sites on tile types 229 to 232 and 243, so the failure was worth re-measuring rather than assuming. Against Gowin's own port lists the 54-pin site map covers 17 of `OSER8_MEM`'s 18 pins and is missing `TCLK`, 13 of `IDES8_MEM`'s 16 and is missing `ICLK`, `WADDR` and `RADDR`, and only 3 of `DQS`'s 24 -- `DQSIN` plus every control and status pin including `DLLSTEP`, `RLOADN`, `RMOVE`, `HOLD` and the `RPOINT`/`WPOINT`/`RVALID` group. That redefines the boundary: it is not a missing BEL type but unnamed wires at the site, and building BELs from the 54-pin map would place and route while inventing 21 `DQS` connections, the same defect as guessing at configuration bits. No BEL was written and no chipdb was changed, because the honest next step is measurement: one primitive constrained to one site in a vendor build, diffed against a control bitstream, the way the DDRDLL's site and features were recovered. The milestone list was also re-scoped in the same commit, which closes the loose end left by entry 10: `STEP` is struck as a first-milestone signal, the `DDRDLL` and `LOCK` work lands with the lane, and measuring the memory-mode site wires becomes the entry point to milestone 3, which is the first milestone where a hardware result would mean anything. No Tang access occurred in this cycle. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering and active-log capacity.
+
+#### Next Steps:
+
+Measure the missing site wires, cheapest first. `OSER8_MEM` needs only `TCLK`, so a vendor oracle constrained to one IOLOGIC site and diffed against a control build settles it in one pair of bitstreams. `IDES8_MEM` needs `ICLK`, `WADDR` and `RADDR`; `DQS` needs 21 names and is the most valuable, since `DQSIN` and `DLLSTEP` are what a lane test uses. Only after those names exist should BELs be written, and then the lane RTL follows as the second half of the split cycle. Touching the Tang again needs the user's approval.
+
+#### Files Modified:
+
+- docs/ddr3-open-flow.md
+
+#### Status:
+
+- Build: N/A
+- Deployment: N/A
+- User Test: N/A
+
+---
