@@ -120,6 +120,7 @@ Topic IDs are the `record_id` prefix. An entry reserves a namespace; it does not
 | Why is 64 MiB not yet a qualified VCMI capacity? | VCMI | VCMI-002 |
 | Which open-flow gaps block DDR3 today? | TOOL | TOOL-001 |
 | Which required DDR3 PHY primitives are currently placeable? | TOOL | TOOL-002 |
+| What has been measured for the GW5AST DDRDLL? | TOOL | TOOL-003 |
 | Which sources and licenses constrain reuse? | PROV | PROV-001 |
 
 ---
@@ -145,6 +146,7 @@ VCMI-001: "MiSTer-VCMI pins VCMI 1.7.5 at commit 6901839ae9760dfcd1d5ff2c4aa4ef6
 VCMI-002: "The MiSTer port measured roughly 100-115 MB resident at 800x600, so 64 MiB is not a qualified full-engine target"
 TOOL-001: "The current open flow supports the AE350 and SDR SDRAM design but not the complete Gowin DDR3 PHY/controller netlist"
 TOOL-002: "Yosys declares all required PHY cells; current GW5AST place-and-route supports static IODELAY and CLKDIV but lacks BELs for DDRDLL, DQS, OSER8_MEM and IDES8_MEM"
+TOOL-003: "The four DDRDLL master sites, BL configuration features and BL fabric port wires are measured; open-tool support is not implemented yet"
 PROV-001: "Reuse source and interface ideas with their original license boundaries and attribution intact"
 ```
 
@@ -380,6 +382,20 @@ PROV-001: "Reuse source and interface ideas with their original license boundari
     - "Tang-PSX Gowin EDA 1.9.11.03 post-PnR simulation model, ddr3_memory_interface.vo"
     - "TinyVCMI tools/ddr3_openflow_preflight.sh and fpga/ddr3_phy_probe/ddr3_phy_probe.sv"
   verification: "The deterministic TinyVCMI preflight synthesized all six probes on 2026-10-22, reproduced the four no-BEL failures, and routed IODELAY and CLKDIV. A separate DDR-free open-flow image passed simulation, synthesis, placement, routing and packing, then was SRAM-loaded on the target and answered TinyTang core ID 0x56 at 2 Mbaud. The missing four primitives have not yet been implemented or tested."
+
+- record_id: TOOL-003
+  topic_id: TOOL
+  title: "Measured GW5AST-138C DDRDLL master sites, configuration features and BL ports"
+  status: VERIFIED
+  verified_date: 2026-10-22
+  statement: "Gowin EDA 1.9.11.03 exposes four DDRDLL master placement macros, DDRDLLM_TL, DDRDLLM_TR, DDRDLLM_BL and DDRDLLM_BR. Vendor bitstreams localize their configuration to cells (0,0), (0,181), (108,0) and (108,181). At the BL site, CODESCAL 111 selects DLL0 feature 12, SCAL_EN TRUE feature 13, DIV_SEL 1 feature 14 and DLL_FORCE TRUE feature 15. The device database's BL port records map CLKIN, STOP, RESET and UPDNCNTL to one-based cell (109,2) wires CLK0, A6, LSR0 and A5; STEP[0:7] map to Q0 through Q7 and LOCK maps to (100,2,Q7)."
+  consequence: "The next open-flow change can add the DDRDLL BEL, symbolic placement, port aliases and packer features from measured device-local evidence. The current Apicula hard-coded DDRDLL table offsets are stale for this database, and no DDRDLL open-flow image or hardware lock test has passed yet."
+  sources:
+    - "TinyVCMI tools/ddrdll_oracle and tools/run_ddrdll_oracle.sh"
+    - "TinyVCMI docs/ddr3-open-flow.md: DDRDLL reverse-engineering checkpoint"
+    - "Gowin EDA 1.9.11.03 GW5AST-138C.fse and GW5AST-138C.dat"
+    - "Apicula commit 8918f14, apycula/attrids.py, apycula/chipdb.py and apycula/dat_parser.py"
+  verification: "Eight offline vendor builds covered all four master placements and isolated CODESCAL, SCAL_EN, DIV_SEL and DLL_FORCE changes. Tile-level bitstream comparison changed only the BL configuration cell for each parameter sweep. No Tang access occurred."
 
 - record_id: PROV-001
   topic_id: PROV

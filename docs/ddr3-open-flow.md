@@ -34,6 +34,53 @@ The `OSER8_MEM` total is 32 DQ serializers, four DQS serializers, and four DM
 serializers. The exact support report can be reproduced with
 `tools/ddr3_openflow_preflight.sh`.
 
+## DDRDLL reverse-engineering checkpoint
+
+`tools/run_ddrdll_oracle.sh` builds a measurement-only Gowin EDA oracle for a
+single `DDRDLL` constrained to `DDRDLLM_BL`. It does not program hardware and
+its output is not an open-flow deliverable. The checked-in case uses the
+parameters from the qualified Tang-PSX controller:
+
+- `DLL_FORCE="FALSE"`
+- `CODESCAL="111"`
+- `SCAL_EN="FALSE"`
+- `DIV_SEL=0`
+
+Gowin EDA 1.9.11.03 reports four master resources and accepts the symbolic
+locations `DDRDLLM_TL`, `DDRDLLM_TR`, `DDRDLLM_BL`, and `DDRDLLM_BR`. A sweep
+of all four locations and one parameter at a time completed successfully.
+The GW5AST-138C `.fse` configuration tables and the vendor bitstream deltas
+localize the four master configuration cells as follows:
+
+| Vendor location | Configuration cell | Tile type |
+| --- | ---: | ---: |
+| `DDRDLLM_TL` | `(0, 0)` | 50 |
+| `DDRDLLM_TR` | `(0, 181)` | 51 |
+| `DDRDLLM_BL` | `(108, 0)` | 48 |
+| `DDRDLLM_BR` | `(108, 181)` | 49 |
+
+For the BL site, changing only `CODESCAL` from `111` to `000` clears tile bits
+`(20,17)`, `(20,19)`, and `(20,20)`. Changing only `SCAL_EN` to `TRUE` sets
+`(20,18)`; changing only `DIV_SEL` to one sets `(21,14)`; and changing only
+`DLL_FORCE` to `TRUE` sets `(20,16)`. These bits correspond to numbered
+features 12, 13, 14, and 15 in the existing `DLL0` short-value table.
+
+The vendor `.dat` also contains the BL fabric-port records. The master inputs
+are at one-based cell `(109,2)` on wires `CLK0`, `A6`, `LSR0`, and `A5`, in
+`CLKIN`, `STOP`, `RESET`, and `UPDNCNTL` order. Its first eight outputs are
+`Q0` through `Q7`, in `STEP[0]` through `STEP[7]` order; `LOCK` is the remote
+tap `(100,2,Q7)`. The historical hard-coded DDRDLL offsets in Apicula's
+`Datfile.read_5Astuff()` do not point at these records in the installed
+GW5AST-138C database, so the next implementation must locate or encode the
+measured tables rather than consuming the current misparsed values.
+
+No Apicula or nextpnr source was changed in this checkpoint. The next agent
+should add the DDRDLL sites and aliases to the chip database, expose the BEL
+and four placement macros in the Himbaechel architecture, encode the measured
+`DLL0` features in the packer, rebuild the database and nextpnr, and then run
+the checked-in oracle shape through the open flow. Hardware remains deferred;
+coordinate with the user before querying, resetting, or programming the Tang.
+
 ## Milestones
 
 1. Keep a passing non-DDR open-flow smoke build and executable primitive

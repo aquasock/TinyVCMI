@@ -69,3 +69,38 @@ Reverse engineer and implement the GW5AST `DDRDLL` BEL, placement, routing, para
 - User Test: PASS
 
 ---
+
+## 3 COMMIT Unreleased 2026-10-22T22:38:22-07:00
+
+#### Coming From:
+
+Unreleased d201083
+
+#### Purpose:
+
+Measure the GW5AST-138C DDRDLL placement, configuration and routing boundary needed for the first open-flow DDR3 PHY primitive.
+
+#### Outcome:
+
+Added an offline, measurement-only Gowin EDA 1.9.11.03 DDRDLL oracle and completed eight vendor builds covering all four master placements plus isolated `CODESCAL`, `SCAL_EN`, `DIV_SEL` and `DLL_FORCE` changes. The measurements identified the four corner configuration cells, mapped the BL parameter changes to existing `DLL0` features 12 through 15, and recovered the BL `CLKIN`, `STOP`, `RESET`, `UPDNCNTL`, `STEP[0:7]` and `LOCK` fabric wires from the device database. The detailed handoff is in `docs/ddr3-open-flow.md`; no Apicula or nextpnr source was changed, no open-flow DDRDLL image was built, and the Tang was not accessed because the user stopped the cycle for agent handoff. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated all three active entries' six-section ordering, prose, Status values, sequential numbering and active-log capacity.
+
+#### Next Steps:
+
+Implement the measured DDRDLL sites, port aliases, placement macros and `DLL0` packing in the Apicula and nextpnr forks, rebuild both tools, and route the oracle shape through the strict open flow; coordinate with the user before any Tang access for the later lock-and-step hardware test.
+
+#### Files Modified:
+
+- docs/ddr3-open-flow.md
+- tools/ddrdll_oracle/run.tcl
+- tools/ddrdll_oracle/top.cst
+- tools/ddrdll_oracle/top.sdc
+- tools/ddrdll_oracle/top.v
+- tools/run_ddrdll_oracle.sh
+
+#### Status:
+
+- Build: PASS
+- Deployment: NOT RUN
+- User Test: NOT RUN
+
+---
