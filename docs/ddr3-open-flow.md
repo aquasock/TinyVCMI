@@ -346,6 +346,29 @@ site's configuration bits, rather than looking for routing. That is one build
 pair per port, which is why it should be done deliberately rather than started
 in passing.
 
+## Probing the DQS site one port at a time
+
+`tools/dqs_port_probe.py` is the working version of the method: for each `DQS`
+control input it builds a matched pair that differs only in that port's
+constant, `VCC` against `GND`, with the pins fixed so placement cannot move.
+Two pairs are enough to place the site.
+
+The first attempt returned identical bitstreams for both constants, and the
+fault was in the tool, not the silicon: the template substituted every control
+port before substituting the target, so both builds tied the same port to
+`1'b0`. Fixed, the pairs differ and the diffs are small and local.
+
+The site is **tile `(81, 5)`, tile type 241**:
+
+- `HOLD`: 8 bits, all inside that tile.
+- `RESET`: 74 bits over three tiles, 66 of them in `(81, 5)` and the rest in
+  its neighbours, which fits a reset that also gates nearby logic.
+
+Type 241 carries no modelled bels in the chipdb, which is the other half of why
+`nextpnr` cannot place a `DQS`: there is no site there to hold it. The probe
+gives the site and, port by port, the configuration bits that select each
+constant.
+
 ## Internal paths
 
 The chip database now has a first-class way to state a link the silicon

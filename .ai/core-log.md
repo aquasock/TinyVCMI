@@ -465,3 +465,33 @@ Write the per-port probe generator before running it: a small deterministic scri
 - User Test: N/A
 
 ---
+## 16 COMMIT Unreleased 2026-10-23T00:59:38-07:00
+
+#### Coming From:
+
+Unreleased 22fa420
+
+#### Purpose:
+
+Build and run the deterministic per-port probe that recovers the DQS site's configuration bits one port at a time.
+
+#### Outcome:
+
+Wrote and ran the per-port probe that the lane diff said was needed, `tools/dqs_port_probe.py`, and it now does what it claims. The tool builds a matched pair per `DQS` control input differing only in that port's constant, `VCC` against `GND`, with pins fixed so placement cannot drift, and it needs no board. Its first run produced byte-identical bitstreams for both constants, which was a bug in the tool rather than a result: the template substituted every control port before the target, so both builds tied the same port low. With the substitution order fixed the pairs differ and the diffs are small and local. `HOLD` moves 8 bits and `RESET` moves 74, 66 of them in one tile, and both point at **tile `(81,5)`, tile type 241** -- the `DQS` site. Type 241 carries no modelled bels in the chipdb, which is the other half of why `nextpnr` cannot place a `DQS`: there is no site to hold it. Two pairs were run to establish the method; the remaining control ports have not been probed yet. No repository code other than the new tool changed, no Tang access occurred, and the five probe files remain removed from the card. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering and active-log capacity.
+
+#### Next Steps:
+
+Run the remaining six control pairs (`RLOADN`, `RMOVE`, `RDIR`, `WLOADN`, `WMOVE`, `WDIR`) and the three buses a bit at a time, then map each port's moved bits onto the wire names in tile type 241 using the chipdb's `alonenode` tables. That produces the port-to-wire table the lane bel set needs, entirely offline. After it, the remaining work is the lane bel set on `create_internal_net()` and the cross-tile form of the `DDRDLL` `LOCK` path. Touching the Tang needs the user's explicit approval.
+
+#### Files Modified:
+
+- docs/ddr3-open-flow.md
+- tools/dqs_port_probe.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: N/A
+- User Test: N/A
+
+---
