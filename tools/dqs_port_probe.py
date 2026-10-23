@@ -1,25 +1,56 @@
 #!/usr/bin/env python3
-"""Recover which site bits a DQS port's constant selection uses.
+"""Recover which site wires and site bits a `DQS` port's source uses.
 
-A bitstream diff only shows what the router routed, and most DQS inputs are
-tied to constants, which the site selects through its own configuration rather
-than through a pip. So the way to name them is to change one thing at a time:
-build a matched pair that differs only in one port's constant, VCC against GND,
-and read which configuration bits move. This is the method that recovered the
-DDRDLL's `DLL0` features 12 to 15.
+A bitstream diff only shows what changed between two builds, so the way to
+name a pin is to change one thing at a time.  This script builds that pair:
+every port held at a fixed value except one, so the diff between the two
+members can only be that port's selection.
+
+Two modes, because a port's source is chosen two different ways:
+
+`--mode const` (the original experiment)
+    VCC against GND on one port.  A constant source is chosen by the site's
+    own configuration, not by a pip, so the diff reads the port's *site bits*.
+    This is the method that recovered the `DDRDLL`'s `DLL0` features 12 to 15,
+    and it produced the per-port bit sets in `docs/ddr3-open-flow.md`.
+
+`--mode routed`
+    A plain fabric net against a constant on one port.  Here the source is a
+    routed wire, so the diff reads the port's *destination wire in the site
+    tile* -- which is the `portmap` entry a bel needs.  `sig_r` is a
+    free-running register driven from `clk`; it exists in both members of the
+    pair and reaches `q` in both, so it is never trimmed and the only
+    difference between the two builds is where the target port takes its
+    source from.
+
+`--mode swap`
+    A pad input against a fabric register, both live.  Some pins cannot take
+    a constant: tie a clock or a reset down and the vendor tool demotes the
+    block, which shows up as a diff across every destination in the tile
+    (`PCLK` 93 changed fuses, `RESET` 72, against 6 to 10 for the live
+    pairs).  Swapping two live sources measures the same portmap entry
+    without giving the tool a reason to redraw the block.
 
 The design is the smallest thing the vendor tool will accept for a lane: a
-DDRDLL feeding a DQS's DLLSTEP (Gowin refuses a DQS without one, PR0015), a pad
-on DQSIN, and a passthrough output. Pins are fixed in both builds of a pair so
-the diff cannot pick up placement noise.
+DDRDLL feeding a DQS's DLLSTEP (Gowin refuses a DQS without one, PR0015), a
+pad on DQSIN, and a passthrough output.  Pins are fixed in both builds of a
+pair so the diff cannot pick up placement noise.
 
 The pad on DQSIN is a DDR3 pad, because a DQS block lives with its byte lane.
 That is harmless here -- nothing in this script programs hardware -- and it is
 why the shape cannot be used for a probe image.
 
+`DLLSTEP` is deliberately not probeable: its only legal source is a DDRDLL's
+`STEP`, so there is no second source to compare against.  That link is
+hard-wired and is modelled with `create_internal_net()`, not with pips.
+
 Usage:
-    tools/dqs_port_probe.py --ports RESET,RLOADN
-    tools/dqs_port_probe.py            # every single-bit control input
+    tools/dqs_port_probe.py --mode const --ports RESET,RLOADN
+    tools/dqs_port_probe.py --mode routed --ports RCLKSEL[0],READ[0]
+    tools/dqs_port_probe.py --mode routed          # every probeable input
+
+The pair directories are `routed/` and `const/` in routed mode, `vcc/` and
+`gnd/` in const mode.  `tools/fs_site_diff.py` reads either pair.
 """
 
 import argparse
@@ -31,10 +62,33 @@ import sys
 GOWIN = os.environ.get("GOWINHOME", "/home/vash/tools/gowin-1.9.11.03")
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-#: Single-bit DQS control inputs.  A bus is handled a bit at a time by naming
-#: the element, e.g. READ[0].
+#: Scalars are named directly; a bus is named one bit at a time, e.g.
+#: `READ[0]`.  Every name here has a matching `@NAME@` placeholder in the
+#: template, and every placeholder defaults to `1'b0`.
+SCALARS = ["DQSIN", "PCLK", "FCLK", "RESET",
+           "RLOADN", "RMOVE", "RDIR", "WLOADN", "WMOVE", "WDIR", "HOLD"]
+BUSSES = {"READ": 4, "RCLKSEL": 3, "WSTEP": 8}
+
+PROBES = SCALARS + [f"{bus}[{i}]" for bus, n in BUSSES.items() for i in range(n)]
+
+#: The original experiment's subset: the single-bit control inputs that were
+#: probed against constants.
 CONTROL_PORTS = ["RESET", "RLOADN", "RMOVE", "RDIR",
                  "WLOADN", "WMOVE", "WDIR", "HOLD"]
+
+MODES = {
+    "const": ("vcc", "1'b1", "gnd", "1'b0"),
+    "routed": ("routed", "sig_r", "const", "1'b0"),
+    # `swap` keeps both members live: two separate fabric registers.  A
+    # constant is not a legal source for a clock or a reset -- tying one of
+    # those down makes the vendor tool demote the whole block, so its pair
+    # differs in every destination of the tile and says nothing about the pin
+    # (measured: `PCLK` 93 changed fuses, `RESET` 72, against 6 to 10 for the
+    # live pairs).  The DQS pad cannot be the second source either: it is
+    # already on DQSIN, and the tool refuses to let one DQS buffer drive two
+    # (`CK3001`).
+    "swap": ("fab", "sig_r", "fab2", "sig_s"),
+}
 
 TCL = """\
 set_device GW5AST-LV138PG484AC1/I0 -device_version C
@@ -62,12 +116,27 @@ INS_LOC "dll" DDRDLLM_BL;
 
 SDC = "create_clock -name clk -period 20.000 [get_ports {clk}]\n"
 
+
+def _bus(name: str, n: int) -> str:
+    """`{@READ3@, @READ2@, ...}`, most significant bit first."""
+    return "{" + ", ".join("@" + name + str(i) + "@" for i in reversed(range(n))) + "}"
+
+
 TEMPLATE = """\
 `default_nettype none
 module top (input wire clk, input wire dqsi, output wire q);
     wire [7:0] step;
     wire [2:0] rp, wp;
     wire r90, w0, w270, rv, rb, rf, wf, unused;
+
+    // Two plain fabric sources for the swapped pairs: each pair uses two of
+    // these so both members stay live.  They are registered so a port under
+    // test can never close a combinational loop through the DQS, and both are
+    // XORed into `q` so neither is ever trimmed.
+    reg sig_r = 1'b0;
+    reg sig_s = 1'b0;
+    always @(posedge clk) sig_r <= ~sig_r;
+    always @(posedge clk) sig_s <= sig_r ^ sig_s;
 
     DDRDLL #(.DLL_FORCE("FALSE"), .CODESCAL("111"),
              .SCAL_EN("FALSE"), .DIV_SEL(1'b0)) dll (
@@ -76,37 +145,61 @@ module top (input wire clk, input wire dqsi, output wire q);
 
     DQS #(.FIFO_MODE_SEL(1'b0), .RD_PNTR(3'b000),
           .DQS_MODE("X4"), .HWL("true")) u (
-        .DQSIN(dqsi), .PCLK(clk), .FCLK(clk),
-        .RESET({RESET}), .READ(4'b0000), .RCLKSEL(3'b000),
-        .DLLSTEP(step), .WSTEP(8'h00),
-        .RLOADN({RLOADN}), .RMOVE({RMOVE}), .RDIR({RDIR}),
-        .WLOADN({WLOADN}), .WMOVE({WMOVE}), .WDIR({WDIR}), .HOLD({HOLD}),
+        .DQSIN(@DQSIN@), .PCLK(@PCLK@), .FCLK(@FCLK@),
+        .RESET(@RESET@), .READ(@READ@), .RCLKSEL(@RCLKSEL@),
+        .DLLSTEP(step), .WSTEP(@WSTEP@),
+        .RLOADN(@RLOADN@), .RMOVE(@RMOVE@), .RDIR(@RDIR@),
+        .WLOADN(@WLOADN@), .WMOVE(@WMOVE@), .WDIR(@WDIR@), .HOLD(@HOLD@),
         .DQSR90(r90), .DQSW0(w0), .DQSW270(w270),
         .RPOINT(rp), .WPOINT(wp),
         .RVALID(rv), .RBURST(rb), .RFLAG(rf), .WFLAG(wf));
 
     assign unused = 1'b0;
-    assign q = dqsi ^ r90 ^ w0 ^ w270 ^ rv ^ rb ^ rf ^ wf ^ ^rp ^ ^wp;
+    assign q = dqsi ^ r90 ^ w0 ^ w270 ^ rv ^ rb ^ rf ^ wf ^ ^rp ^ ^wp
+               ^ sig_r ^ sig_s;
 endmodule
 `default_nettype wire
-"""
+""".replace("@READ@", _bus("READ", 4)) \
+   .replace("@RCLKSEL@", _bus("RCLKSEL", 3)) \
+   .replace("@WSTEP@", _bus("WSTEP", 8))
 
 
-def write_pair(outdir: str, port: str):
-    for level in ("1'b1", "1'b0"):
-        name = "vcc" if level == "1'b1" else "gnd"
+#: Everything the pair does not vary keeps the sanest possible source, so the
+#: DQS still looks like a lane: a pad on DQSIN and the board clock on both
+#: clock inputs.  The original constant experiment used the same base.
+BASE = {"DQSIN": "dqsi", "PCLK": "clk", "FCLK": "clk"}
+
+
+def render(port: str, source: str) -> str:
+    """Template with every probe placeholder resolved; `port` gets `source`."""
+    values = {p: BASE.get(p, "1'b0") for p in SCALARS}
+    for bus, n in BUSSES.items():
+        for i in range(n):
+            values[f"{bus}[{i}]"] = "1'b0"
+    if port:
+        values[port] = source
+    source_text = TEMPLATE
+    for name, value in values.items():
+        source_text = source_text.replace("@" + name.replace("[", "").replace("]", "") + "@", value)
+    missing = [n for n in ("DQSIN", "PCLK", "FCLK", "RESET") if "@" + n + "@" in source_text]
+    if missing:
+        raise SystemExit(f"template left {missing} unsubstituted")
+    return source_text
+
+
+def write_pair(outdir: str, port: str, mode: str):
+    """Write the two members of one matched pair; return their directories."""
+    first, first_source, second, second_source = MODES[mode]
+    dirs = []
+    for name, source in ((first, first_source), (second, second_source)):
         d = os.path.join(outdir, name)
         os.makedirs(d, exist_ok=True)
-        source = TEMPLATE
-        for p in CONTROL_PORTS:
-            if p != port:                      # the target keeps its placeholder
-                source = source.replace("{" + p + "}", "1'b0")
-        source = source.replace("{" + port + "}", level)
-        for fn, body in (("top.v", source), ("top.cst", CST),
+        for fn, body in (("top.v", render(port, source)), ("top.cst", CST),
                          ("top.sdc", SDC), ("run.tcl", TCL)):
             with open(os.path.join(d, fn), "w") as f:
                 f.write(body)
-    return os.path.join(outdir, "vcc"), os.path.join(outdir, "gnd")
+        dirs.append(d)
+    return dirs
 
 
 def build(d: str) -> bool:
@@ -120,27 +213,44 @@ def build(d: str) -> bool:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--ports", default=",".join(CONTROL_PORTS))
-    ap.add_argument("--out", default=os.path.join(ROOT, "build/dqs_ports"))
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--mode", choices=sorted(MODES), default="const")
+    ap.add_argument("--ports", default=None,
+                    help="comma-separated; defaults to the control inputs in "
+                         "const mode and to every probeable input in routed mode")
+    ap.add_argument("--out", default=None,
+                    help="defaults to build/dqs_ports in const mode and "
+                         "build/dqs_routed in routed mode")
     args = ap.parse_args()
 
-    ports = [p for p in args.ports.split(",") if p]
+    default_ports = CONTROL_PORTS if args.mode == "const" else PROBES
+    ports = [p for p in (args.ports or ",".join(default_ports)).split(",") if p]
+    unknown = [p for p in ports if p not in PROBES]
+    if unknown:
+        print(f"unknown port(s): {unknown}; known: {PROBES}", file=sys.stderr)
+        return 2
+
+    out = args.out or os.path.join(
+        ROOT, {"const": "build/dqs_ports",
+               "routed": "build/dqs_routed",
+               "swap": "build/dqs_swap"}[args.mode])
     if not os.path.isdir(os.path.join(GOWIN, "IDE")):
         print(f"missing Gowin EDA at {GOWIN}", file=sys.stderr)
         return 2
 
     for port in ports:
-        outdir = os.path.join(args.out, port.replace("[", "_").replace("]", ""))
+        outdir = os.path.join(out, port.replace("[", "_").replace("]", ""))
         if os.path.isdir(outdir):
             shutil.rmtree(outdir)
-        vcc, gnd = write_pair(outdir, port)
-        ok = build(vcc) and build(gnd)
+        pair = write_pair(outdir, port, args.mode)
+        ok = all(build(d) for d in pair)
         print(f"{port}: {'built' if ok else 'FAILED'}")
         if not ok:
             return 1
-    print(f"\nBuilt {len(ports)} matched pairs under {args.out}.")
-    print("Diff each pair's impl/pnr/probe.fs to read that port's site bits.")
+    first, _, second, _ = MODES[args.mode]
+    print(f"\nBuilt {len(ports)} matched pairs under {out}.")
+    print(f"Diff each pair's {first}/ against {second}/ to read that port's selection.")
     print("Hardware was not accessed.")
     return 0
 

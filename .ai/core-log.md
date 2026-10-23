@@ -553,3 +553,35 @@ Extend the probe to the routed side, which is the only missing layer. The consta
 - User Test: N/A
 
 ---
+
+## 19 COMMIT Unreleased 2026-10-23T02:32:52-07:00
+
+#### Coming From:
+
+Unreleased ddbce92
+
+#### Purpose:
+
+Name the `DQS` site's routed pins by measuring matched pairs with the vendor tool instead of inferring them from the bitstream shape.
+
+#### Outcome:
+
+Extended `tools/dqs_port_probe.py` with a routed mode and added `tools/fs_site_diff.py` to decode a pair, then measured the site's pins on tile `(81,5)`. The decoder was validated against a landmark before its answers were trusted: on the `DDRDLL` port tile `(108,1)` it returns `A6`, `A5`, `LSR0` and `CLK0` with the documented `Q7 -> E820` lock escape, which are the pins established independently in the DDRDLL work. Ten pins are now measured: `RDIR`, `RLOADN`, `RMOVE` and `READ[0]` on `A0` to `A3`; `WDIR`, `WLOADN`, `WMOVE` and `HOLD` on `B0` to `B3`; `RCLKSEL[0]` on `C0`; and `FCLK` on `CLK0`. Two earlier readings were retired by the same runs. The vendor DDR3 build's absolute decode, which had suggested 84 programmed pips in the tile, is not evidence: the `pips` table's per-source fuse sets are mux select fields, so several sources of one destination read as satisfied at once and only a difference between two builds names anything. And the shape-based guess that `A0` to `A7` was `DLLSTEP[7:0]` is wrong, since `READ[0]` measured on `A3`. `DQSIN` cannot be probed at all, because the vendor tool refuses both a fabric source and a second DQS buffer on it (`PR0014`, `CK3001`), so its wire must come from the pad side or become an internal net like `DLLSTEP`. `PCLK` and `RESET` remain unresolved: tying either to a constant makes the tool demote the block and the pair then differs across the whole tile, 93 and 72 changed fuses against 6 to 10 for every live pair, and a second pair holding both members live with two fabric registers changed only upstream wire choices and left every destination fixed. Twenty-three pairs are built in `build/dqs_routed/` and twelve decoded; the rest are built but unread. Separately, the SD card's `root/cores/` directory was found empty and `desktop.bin` was restored to `/run/media/vash/TINYTANG/root/cores/console138k/` from `TINYTANG_SD` with digest `b9af4f06221e`, the user taking the remaining core files. No hardware was deployed, the FPGA was not reprogrammed, and no probe image is on the card. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering and active-log capacity.
+
+#### Next Steps:
+
+Decode the eleven pairs that are built but unread -- `READ[1]` to `READ[3]`, `RCLKSEL[1]`, `RCLKSEL[2]` and `WSTEP[0]` to `WSTEP[5]` -- and finish building `WSTEP[6]` and `WSTEP[7]`, which brings every probeable input bit to a measurement. Then settle `PCLK` and `RESET`, whose constant and swapped pairs both fail to name them, by decoding the vendor `.dat`'s `Dqs` block, which `apycula/dat_parser.py` leaves commented out in `read_something5A` along with the per-side `LeftIO`, `RightIO`, `TopIO` and `BottomIO` tables and the twenty-two `DqsRLoc` and `DqsCLoc` entries. With the portmap closed, write the type 241 bel from the measured wires, the constant-selection bits already recorded, and internal nets for `DLLSTEP` and `DQSIN`. Touching the Tang needs the user's explicit approval.
+
+#### Files Modified:
+
+- docs/ddr3-open-flow.md
+- tools/dqs_port_probe.py
+- tools/fs_site_diff.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: N/A
+- User Test: N/A
+
+---

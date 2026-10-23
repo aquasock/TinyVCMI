@@ -530,3 +530,50 @@ early firmware, but the completed MiSTer port observed roughly 100 to 115 MiB
 resident use. TinyVCMI therefore treats the 1 GiB DDR3 array as the main-memory
 path while retaining SDR SDRAM as a possible boot, staging, or diagnostic
 resource.
+
+## DQS site pin measurement
+
+The `DQS` site is tile `(81,5)`, tile type 241, and it has no bels, so every
+port's wire had to be measured rather than read off the chipdb. The method is
+a matched pair built by the vendor tool, differing only in the source of one
+port, decoded with `tools/fs_site_diff.py`: a port routed from a fabric
+register against the same port tied to a constant changes exactly one
+destination's mux inside the site tile, and that destination is the port's
+wire.
+
+The decoder was validated against a landmark before it was trusted. On the
+`DDRDLL` port tile `(108,1)` it returns `A6` (STOP), `A5` (UPDNCNTL), `LSR0`
+(RESET), `CLK0` (CLKIN) and the documented `Q7 -> E820` lock escape, which are
+the pins established independently in the DDRDLL work above.
+
+Measured on the GW5AST-138C with Gowin EDA 1.9.11.03:
+
+    RDIR  -> A0     WDIR   -> B0     RCLKSEL[0] -> C0
+    RLOADN -> A1    WLOADN -> B1     FCLK       -> CLK0
+    RMOVE  -> A2    WMOVE  -> B2
+    READ[0] -> A3   HOLD   -> B3
+
+Two things the same runs settled. First, an absolute decode of a bitstream is
+not evidence: the `pips` table's per-source fuse sets are mux select fields,
+so several sources of one destination can read as satisfied at once, and any
+count of "programmed pips" taken that way is inflated. Only a difference
+between two builds names anything. Second, `DQSIN` cannot be probed this way
+at all -- driving it from fabric or from another DQS buffer is refused
+(`PR0014` "DQSIN pin of INS_DQS is not driven by buffer", `CK3001` "one DQS
+buffer cannot drive two"), so its wire has to come from the pad side or be
+modelled as an internal net like `DLLSTEP`.
+
+`PCLK` and `RESET` are unresolved. A constant is not a legal control for
+either: with the pin tied down the vendor tool demotes the block, and the pair
+then differs across the whole tile (93 changed fuses for `PCLK`, 72 for
+`RESET`, against 6 to 10 for every live pair), which names nothing. A second
+pair that kept both members live -- two separate fabric registers -- changed
+only upstream wire choices and left every destination fixed, so it cannot
+distinguish the pin either. `FCLK -> CLK0` is measured; the tile holds exactly
+two clock destinations, which makes `CLK2` the expected home for `PCLK`, but
+that is inference and is not recorded as a measurement.
+
+Pairs live in `build/dqs_routed/<PORT>/{routed,const}/`, built by
+`tools/dqs_port_probe.py --mode routed`. At the end of this cycle 23 pairs are
+built and 12 decoded; the read ports, the remaining `RCLKSEL` bits and the
+first six `WSTEP` bits are built but not yet read.
