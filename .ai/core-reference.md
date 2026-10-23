@@ -121,6 +121,7 @@ Topic IDs are the `record_id` prefix. An entry reserves a namespace; it does not
 | Which open-flow gaps block DDR3 today? | TOOL | TOOL-001 |
 | Which required DDR3 PHY primitives are currently placeable? | TOOL | TOOL-002 |
 | What has been measured for the GW5AST DDRDLL? | TOOL | TOOL-003 |
+| Does the open-flow DDRDLL produce a tap code on hardware? | TOOL | TOOL-004 |
 | Which sources and licenses constrain reuse? | PROV | PROV-001 |
 
 ---
@@ -147,6 +148,7 @@ VCMI-002: "The MiSTer port measured roughly 100-115 MB resident at 800x600, so 6
 TOOL-001: "The current open flow supports the AE350 and SDR SDRAM design but not the complete Gowin DDR3 PHY/controller netlist"
 TOOL-002: "Yosys declares all required PHY cells; the GW5AST backend supports static IODELAY, CLKDIV and the bottom-left DDRDLL master, and still lacks BELs for DQS, OSER8_MEM and IDES8_MEM"
 TOOL-003: "DDRDLL is a two-cell macro: ports in the column-1 tile, configuration fuses in the corner, LOCK on a dedicated row-99 escape; open flow covers the bottom-left master only"
+TOOL-004: "The open-flow DDRDLL image loads and answers over the TinyTang link, but STEP reads zero under four control combinations and with the vendor-default bits packed"
 PROV-001: "Reuse source and interface ideas with their original license boundaries and attribution intact"
 ```
 
@@ -399,6 +401,19 @@ PROV-001: "Reuse source and interface ideas with their original license boundari
     - "aquasock/nextpnr branch epic/gw5ast138c, himbaechel/uarch/gowin/{gowin_arch_gen.py,cst.cc,constids.inc}"
     - "aquasock/apicula branch epic/gw5ast138c, apycula/gowin_pack.py get_DDRDLL_fuses"
   verification: "Eight offline vendor builds covered all four master placements and isolated CODESCAL, SCAL_EN, DIV_SEL and DLL_FORCE changes, and the BL deltas were re-derived from the raw bitstreams rather than the tile tables. Revised 2026-10-22: three further offline builds isolated the ports and LOCK (constants on STOP, UPDNCNTL and RESET; LOCK open; STEP open). The corner DLL0 tables agree with the TL, BL and BR baselines on features 12 to 15; TR's table has no entry for feature 12 or 13. The open-flow path reproduces the four measured feature sets and sets none of the three unset bits, which shows the packing is derived from the measurement; it does not show the primitive works. No Tang access occurred."
+
+- record_id: TOOL-004
+  topic_id: TOOL
+  title: "The open-flow DDRDLL produces no tap code on hardware"
+  status: VERIFIED
+  verified_date: 2026-10-22
+  statement: "An open-flow image carrying one DDRDLL at the measured bottom-left site, a 2 Mbaud TinyTang responder and a free-running counter was loaded into SRAM on 2026-10-22. The core answered core ID 0x56 and a query frame returning STEP with the counter. The counter advanced on every query while STEP read 0x00 in all of: STOP low with UPDNCNTL low, STOP low with UPDNCNTL high, STOP high with either UPDNCNTL level, and STOP low with UPDNCNTL low with the six vendor-default corner bits packed. Gowin's own model of the primitive, IDE/simlib/gw5a/prim_sim.v, predicts 200 (0xC8) for a 50 MHz CLKIN with SCAL_EN FALSE, and it also fixes RESET as active high."
+  consequence: "The primitive is placeable, routable, packable and loadable, and the host readout is sound, so a lock-and-step diagnostic cannot be scheduled on the assumption that packaging alone makes the block run. Either the tap value needs the DDR clock and protocol context the primitive is designed to serve, or configuration outside everything the vendor parameter sweeps exposed is required. No DDR3 capacity or timing conclusion follows from this result."
+  sources:
+    - "TinyVCMI fpga/ddrdll_liveness/ddrdll_liveness.sv, tools/build_ddrdll_liveness.sh, tools/tang_console.py"
+    - "TinyVCMI docs/ddr3-open-flow.md: hardware observation"
+    - "Gowin EDA 1.9.11.03, IDE/simlib/gw5a/prim_sim.v, module DDRDLL"
+  verification: "Four builds of one parameterised design were loaded in turn, each answering over the link; the reply carries a free-running counter that advanced between queries, which separates a silent primitive from a silent link. CLKIN was confirmed to be the port tile's CLK0 wire from the vendor const-input build's GB10 to CLK0 pip. No pin was probed and no DDR3 package pin was driven or exposed."
 
 - record_id: PROV-001
   topic_id: PROV

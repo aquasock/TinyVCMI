@@ -120,6 +120,42 @@ encoding cannot be emitted at TR from this database at all.
   are required for the primitive to operate is an open question for the first
   lock-and-step image, not something the offline toolchain can settle.
 
+### Hardware: the open-flow DDRDLL reports no tap code
+
+One image carrying a single `DDRDLL` at the measured bottom-left site, a
+2 Mbaud TinyTang responder and a free-running counter was loaded into SRAM on
+2026-10-22. There was no scope on the bench, so the readout travels over the
+TinyTang link instead of pins: the core answers the core-ID request that
+`fpga` uses, and a query request that returns `STEP` with the counter. A reply
+whose counter advances proves the clock, fabric and link are alive, which is
+what makes a zero `STEP` a measurement rather than a dead link.
+
+`STEP` read `0x00` in every case:
+
+- `STOP` low with `UPDNCNTL` low, the configuration Gowin's model calls "run".
+- `STOP` low with `UPDNCNTL` high.
+- `STOP` high with either `UPDNCNTL` level.
+- `STOP` low, `UPDNCNTL` low, with the six vendor-default corner bits packed
+  through `APICULA_DDRDLL_VENDOR_DEFAULTS=1`.
+
+Gowin's model (`IDE/simlib/gw5a/prim_sim.v`) predicts 200 = `0xC8` for a 50 MHz
+`CLKIN` with `SCAL_EN="FALSE"`, so the silicon is not following the model in
+this context. What that means is genuinely unresolved: either the tap value
+only moves with the DDR clock and protocol context the primitive is meant to
+serve, or configuration outside everything the vendor parameter sweeps exposed
+is required. Neither the control levels nor the six default bits explain it.
+
+Two facts were established along the way and are worth keeping. `RESET` is
+active high, from the same model's `reset_sig = RESET | ~GSRO`. And `CLKIN` is
+the `CLK0` wire of the port tile: the vendor const-input build routes
+`GB10 -> CLK0` in tile `(108,1)`, next to the `A6`, `A5` and `LSR0` pips that
+were measured directly.
+
+`LOCK` remains unmodelled, so a lock-based check is not available either. The
+probe answers on the link and can be re-run at any time:
+`tools/build_ddrdll_liveness.sh` builds it, `tools/tang_console.py` uploads it,
+loads it and reads the reply.
+
 The earlier note that Apicula's hard-coded DDRDLL tables are unusable on this
 database no longer applies: the fork's `DLL0` tables are already per-tile-type
 correct for three of the four corners, and the measured evidence above was read
