@@ -6,7 +6,7 @@ name a pin is to change one thing at a time.  This script builds that pair:
 every port held at a fixed value except one, so the diff between the two
 members can only be that port's selection.
 
-Two modes, because a port's source is chosen two different ways:
+Probe modes:
 
 `--mode const` (the original experiment)
     VCC against GND on one port.  A constant source is chosen by the site's
@@ -24,12 +24,19 @@ Two modes, because a port's source is chosen two different ways:
     source from.
 
 `--mode swap`
-    A pad input against a fabric register, both live.  Some pins cannot take
+    Two fabric registers, both live.  Some pins cannot take
     a constant: tie a clock or a reset down and the vendor tool demotes the
     block, which shows up as a diff across every destination in the tile
     (`PCLK` 93 changed fuses, `RESET` 72, against 6 to 10 for the live
     pairs).  Swapping two live sources measures the same portmap entry
     without giving the tool a reason to redraw the block.
+
+`--mode clock`
+    A fabric register against the live board clock.  This gives `PCLK` and
+    `RESET` two structurally different live sources: unlike a constant, the
+    clock does not demote the DQS block, and unlike the two fabric registers
+    in `swap` it may require a different selection at the site's destination
+    mux.  This mode exists only to resolve those two controls.
 
 The design is the smallest thing the vendor tool will accept for a lane: a
 DDRDLL feeding a DQS's DLLSTEP (Gowin refuses a DQS without one, PR0015), a
@@ -48,6 +55,7 @@ Usage:
     tools/dqs_port_probe.py --mode const --ports RESET,RLOADN
     tools/dqs_port_probe.py --mode routed --ports RCLKSEL[0],READ[0]
     tools/dqs_port_probe.py --mode routed          # every probeable input
+    tools/dqs_port_probe.py --mode clock --ports PCLK,RESET
 
 The pair directories are `routed/` and `const/` in routed mode, `vcc/` and
 `gnd/` in const mode.  `tools/fs_site_diff.py` reads either pair.
@@ -88,6 +96,7 @@ MODES = {
     # already on DQSIN, and the tool refuses to let one DQS buffer drive two
     # (`CK3001`).
     "swap": ("fab", "sig_r", "fab2", "sig_s"),
+    "clock": ("fabric", "sig_r", "clock", "clk"),
 }
 
 TCL = """\
@@ -234,7 +243,8 @@ def main() -> int:
     out = args.out or os.path.join(
         ROOT, {"const": "build/dqs_ports",
                "routed": "build/dqs_routed",
-               "swap": "build/dqs_swap"}[args.mode])
+               "swap": "build/dqs_swap",
+               "clock": "build/dqs_clock"}[args.mode])
     if not os.path.isdir(os.path.join(GOWIN, "IDE")):
         print(f"missing Gowin EDA at {GOWIN}", file=sys.stderr)
         return 2

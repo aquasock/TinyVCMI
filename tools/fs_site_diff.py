@@ -58,6 +58,14 @@ def load_matrix(path: str):
 
 
 def changed_bits(ma, mb) -> set:
+    # Apicula returns numpy arrays when numpy is installed and Python lists
+    # otherwise.  Comparing two numpy rows produces an array of booleans, not
+    # the single boolean the list path below expects, so use numpy's own
+    # nonzero result without importing or requiring numpy here.
+    if hasattr(ma, "shape") and hasattr(mb, "shape"):
+        rows, cols = (ma != mb).nonzero()
+        return set(zip(rows.tolist(), cols.tolist()))
+
     out = set()
     for r, row in enumerate(ma):
         other = mb[r]

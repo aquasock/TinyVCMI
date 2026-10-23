@@ -585,3 +585,35 @@ Decode the eleven pairs that are built but unread -- `READ[1]` to `READ[3]`, `RC
 - User Test: N/A
 
 ---
+
+## 20 COMMIT Unreleased 2026-10-23T15:33:00-07:00
+
+#### Coming From:
+
+Unreleased 1451206
+
+#### Purpose:
+
+Complete the offline DQS port measurements needed for an accurate multi-tile architecture model and preserve the stopped cycle as an agent handoff.
+
+#### Outcome:
+
+Completed the remaining matched vendor probes without accessing the Tang. The input map is now closed: `RDIR`, `RLOADN`, `RMOVE`, and `READ[0:3]` use `A0`, `A1`, `A2`, `A3`, `A4`, `A5`, and `A7`; `WDIR`, `WLOADN`, `WMOVE`, and `HOLD` use `B0` through `B3`; `RCLKSEL[0:2]` use `C0` through `C2`; and `WSTEP[0:7]` use `D3`, `D4`, `D5`, `D7`, `CLK2`, `LSR2`, `CE1`, and `CE2`. A new live-clock probe and cross-tile comparison established `PCLK -> CLK0` and `RESET -> LSR0` in tile `(81,5)`, while `FCLK -> CLK2` is in tile `(81,0)`; this retires entry 19's `FCLK -> CLK0` reading as global-clock allocation noise and proves that `DQS` is a multi-tile macro rather than one type-241 bel. The vendor `.dat` `Dqs` arrays are empty on this device and cannot supply the missing names. `tools/dqs_output_probe.py` built thirteen fixed-placement matched pairs and exposed every status output: `DQSR90 -> E202` through `W800` at `(69,7)`, `DQSW0 -> F1` through `EW10` at `(81,5)`, `DQSW270 -> W814` through `N210` at `(81,1)`, `RBURST -> F6` through `N830`, `RFLAG -> Q6` through `W830`, `RVALID -> W834` through `N250`, `WFLAG -> Q7` through `EW10`, `RPOINT[0:2] -> F2/Q2/F4` through `W810/W810/EW10`, and `WPOINT[0:2] -> F3/Q3/F5` through `N800/N800/N830`; full mux fuse-state equality, rather than the ambiguous satisfied-source subset, selected each source. The final unresolved input is the dedicated differential path: board pin `Y3` is `IOL69A`, its ordinary input-output wire is `F6` in tile `(68,0)`, and the proven vendor netlist connects `ELVDS_IOBUF.O` directly to `DQS.DQSIN`, but the correct fuse-free cross-tile representation has not been implemented. NumPy support was added to `tools/fs_site_diff.py`, the three Python tools compile, and a NumPy-backed `RVALID` decode reproduces `W834 -> N250`. The user stopped the cycle before the DQS architecture bel or deterministic full-output regression decoder was implemented. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering, and active-log capacity.
+
+#### Next Steps:
+
+First add a deterministic decoder that checks all thirteen output pairs by exact destination-mux fuse state, then settle how nextpnr should represent the fuse-free `ELVDS_IOBUF.O -> DQS.DQSIN` connection across tiles `(68,0)` and `(81,5)`. Only after that port map is complete should the DQS multi-tile macro be implemented, with configuration and `FCLK` at `(81,0)`, control pins at `(81,5)`, and output taps at `(81,1)`, `(81,5)`, and `(69,7)`; update `docs/ddr3-open-flow.md` and the relevant core-reference records in that implementation cycle. Continue offline and do not touch the Tang unless the user explicitly changes that instruction.
+
+#### Files Modified:
+
+- tools/dqs_output_probe.py
+- tools/dqs_port_probe.py
+- tools/fs_site_diff.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: N/A
+- User Test: N/A
+
+---
