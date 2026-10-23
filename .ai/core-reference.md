@@ -119,6 +119,7 @@ Topic IDs are the `record_id` prefix. An entry reserves a namespace; it does not
 | How much memory did that port consume? | VCMI | VCMI-002 |
 | Why is 64 MiB not yet a qualified VCMI capacity? | VCMI | VCMI-002 |
 | Which open-flow gaps block DDR3 today? | TOOL | TOOL-001 |
+| Which required DDR3 PHY primitives are currently placeable? | TOOL | TOOL-002 |
 | Which sources and licenses constrain reuse? | PROV | PROV-001 |
 
 ---
@@ -143,6 +144,7 @@ PROT-001: "TinyNES/TinyGBC load AE350 ELF-derived images through a checked UART 
 VCMI-001: "MiSTer-VCMI pins VCMI 1.7.5 at commit 6901839ae9760dfcd1d5ff2c4aa4ef6968fee752"
 VCMI-002: "The MiSTer port measured roughly 100-115 MB resident at 800x600, so 64 MiB is not a qualified full-engine target"
 TOOL-001: "The current open flow supports the AE350 and SDR SDRAM design but not the complete Gowin DDR3 PHY/controller netlist"
+TOOL-002: "Yosys declares all required PHY cells; current GW5AST place-and-route supports static IODELAY and CLKDIV but lacks BELs for DDRDLL, DQS, OSER8_MEM and IDES8_MEM"
 PROV-001: "Reuse source and interface ideas with their original license boundaries and attribution intact"
 ```
 
@@ -363,6 +365,21 @@ PROV-001: "Reuse source and interface ideas with their original license boundari
     - "nextpnr-himbaechel commit 8be8657, himbaechel/uarch/gowin"
     - "OSS CAD Suite local Yosys Gowin cell declarations, cells_xtra_gw5a.v"
   verification: "TinyNES proves the stated open-flow features on hardware. Direct inspection of the current backend and the Gowin post-PnR primitive list establishes the DDR3 support gap; no open DDR3 image has been built or tested."
+
+- record_id: TOOL-002
+  topic_id: TOOL
+  title: "Primitive-level boundary of the current GW5AST DDR3 open flow"
+  status: VERIFIED
+  verified_date: 2026-10-22
+  statement: "Yosys 0.52 declares DDRDLL, DQS, OSER8_MEM, IDES8_MEM, IODELAY and CLKDIV for GW5A synthesis. With nextpnr-himbaechel commit 8be8657 and Apicula commit 8918f14, isolated GW5AST-138C probes place and route static IODELAY and CLKDIV, while DDRDLL, DQS, OSER8_MEM and IDES8_MEM each fail because the device database exposes no BEL able to implement that cell type. The qualified vendor reference contains one DDRDLL, four DQS, 40 OSER8_MEM, 32 IDES8_MEM, 32 IODELAY and one CLKDIV."
+  consequence: "The next implementation boundary is DDRDLL database, placement, routing and packing support followed by a lock-and-step hardware probe that drives no DDR3 package pin. DQS and memory serializer/deserializer work follows at one x8 lane before expanding to x32. Static IODELAY support does not establish dynamic calibration support."
+  sources:
+    - "Yosys 0.52, share/yosys/gowin/cells_xtra_gw5a.v"
+    - "nextpnr-himbaechel commit 8be8657, himbaechel/uarch/gowin"
+    - "Apicula commit 8918f14, apycula/GW5AST-138C.msgpack.xz and apycula/gowin_pack.py"
+    - "Tang-PSX Gowin EDA 1.9.11.03 post-PnR simulation model, ddr3_memory_interface.vo"
+    - "TinyVCMI tools/ddr3_openflow_preflight.sh and fpga/ddr3_phy_probe/ddr3_phy_probe.sv"
+  verification: "The deterministic TinyVCMI preflight synthesized all six probes on 2026-10-22, reproduced the four no-BEL failures, and routed IODELAY and CLKDIV. A separate DDR-free open-flow image passed simulation, synthesis, placement, routing and packing, then was SRAM-loaded on the target and answered TinyTang core ID 0x56 at 2 Mbaud. The missing four primitives have not yet been implemented or tested."
 
 - record_id: PROV-001
   topic_id: PROV

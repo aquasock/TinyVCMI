@@ -1,0 +1,11 @@
+IO_LOC "sys_clk" V22;
+IO_PORT "sys_clk" IO_TYPE=LVCMOS33 PULL_MODE=NONE;
+
+IO_LOC "uart_tx" U15;
+IO_PORT "uart_tx" IO_TYPE=LVCMOS33;
+
+IO_LOC "uart_rx" V14;
+IO_PORT "uart_rx" IO_TYPE=LVCMOS33 PULL_MODE=UP;
+
+IO_LOC "heartbeat" V18;
+IO_PORT "heartbeat" IO_TYPE=LVCMOS33 PULL_MODE=NONE;
