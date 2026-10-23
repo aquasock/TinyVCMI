@@ -533,47 +533,113 @@ resource.
 
 ## DQS site pin measurement
 
-The `DQS` site is tile `(81,5)`, tile type 241, and it has no bels, so every
-port's wire had to be measured rather than read off the chipdb. The method is
-a matched pair built by the vendor tool, differing only in the source of one
-port, decoded with `tools/fs_site_diff.py`: a port routed from a fabric
-register against the same port tied to a constant changes exactly one
-destination's mux inside the site tile, and that destination is the port's
-wire.
+The `DQS` control and status pins sit in tile `(81,5)`, tile type 241, which
+has no bels, so every port's wire had to be measured rather than read off the
+chipdb. The method is a matched pair built by the vendor tool, differing only
+in the source of one port: `tools/dqs_port_probe.py` builds the input pairs
+and `tools/dqs_output_probe.py` the output pairs, and `tools/dqs_map_check.py`
+re-derives every entry below from those pairs and fails if any disagrees.
 
-The decoder was validated against a landmark before it was trusted. On the
+### Reading a mux
+
+A destination's selected source is read by exact mux state: the fuses a
+build programs inside that destination's mux must equal one source's fuse
+set. The weaker test -- every fuse of a source is set -- lets several sources
+of one destination read as selected at once, which is why an absolute decode
+of one bitstream is not evidence and why an earlier count of 84 "programmed
+pips" in the vendor DDR3 build meant nothing. Only a difference between two
+builds names a pin.
+
+Every mux's all-zero state is itself the selection of one source. In tile
+`(81,5)` that is `Q1` for `W810`, `Q5` for `W830` and `N830`, and `Q0` for
+`N800` and `EW10`. A route that leaves the site through a destination in that
+state changes no fuse in the site tile at all, and the first changed hop is
+somewhere downstream. That is what misled the first reading of the outputs.
+
+The decoder was validated against a landmark before it was trusted: on the
 `DDRDLL` port tile `(108,1)` it returns `A6` (STOP), `A5` (UPDNCNTL), `LSR0`
-(RESET), `CLK0` (CLKIN) and the documented `Q7 -> E820` lock escape, which are
-the pins established independently in the DDRDLL work above.
+(RESET), `CLK0` (CLKIN) and the documented `Q7 -> E820` lock escape.
 
-Measured on the GW5AST-138C with Gowin EDA 1.9.11.03:
+### Inputs
 
-    RDIR  -> A0     WDIR   -> B0     RCLKSEL[0] -> C0
-    RLOADN -> A1    WLOADN -> B1     FCLK       -> CLK0
-    RMOVE  -> A2    WMOVE  -> B2
-    READ[0] -> A3   HOLD   -> B3
+Measured on the GW5AST-138C with Gowin EDA 1.9.11.03, all in tile `(81,5)`.
+In every pair exactly one site-input destination changes:
 
-Two things the same runs settled. First, an absolute decode of a bitstream is
-not evidence: the `pips` table's per-source fuse sets are mux select fields,
-so several sources of one destination can read as satisfied at once, and any
-count of "programmed pips" taken that way is inflated. Only a difference
-between two builds names anything. Second, `DQSIN` cannot be probed this way
-at all -- driving it from fabric or from another DQS buffer is refused
-(`PR0014` "DQSIN pin of INS_DQS is not driven by buffer", `CK3001` "one DQS
-buffer cannot drive two"), so its wire has to come from the pad side or be
-modelled as an internal net like `DLLSTEP`.
+    RDIR    -> A0    WDIR   -> B0    RCLKSEL[0] -> C0    WSTEP[0] -> D3
+    RLOADN  -> A1    WLOADN -> B1    RCLKSEL[1] -> C1    WSTEP[1] -> D4
+    RMOVE   -> A2    WMOVE  -> B2    RCLKSEL[2] -> C2    WSTEP[2] -> D5
+    READ[0] -> A3    HOLD   -> B3    PCLK       -> CLK0  WSTEP[3] -> D7
+    READ[1] -> A4                    RESET      -> LSR0  WSTEP[4] -> CLK2
+    READ[2] -> A5                                        WSTEP[5] -> LSR2
+    READ[3] -> A7                                        WSTEP[6] -> CE1
+                                                         WSTEP[7] -> CE2
 
-`PCLK` and `RESET` are unresolved. A constant is not a legal control for
-either: with the pin tied down the vendor tool demotes the block, and the pair
-then differs across the whole tile (93 changed fuses for `PCLK`, 72 for
-`RESET`, against 6 to 10 for every live pair), which names nothing. A second
-pair that kept both members live -- two separate fabric registers -- changed
-only upstream wire choices and left every destination fixed, so it cannot
-distinguish the pin either. `FCLK -> CLK0` is measured; the tile holds exactly
-two clock destinations, which makes `CLK2` the expected home for `PCLK`, but
-that is inference and is not recorded as a measurement.
+`PCLK` and `RESET` come from the `clock` pairs, a fabric register against the
+live board clock. A constant is not a legal source for either: tied down, the
+vendor tool demotes the block and the pair differs across the whole tile (93
+changed fuses for `PCLK`, 72 for `RESET`), and two live fabric registers
+(`swap` mode) changed only upstream wire choices. The board clock does not
+demote the block and selects a different source at the destination, which
+names the pin.
 
-Pairs live in `build/dqs_routed/<PORT>/{routed,const}/`, built by
-`tools/dqs_port_probe.py --mode routed`. At the end of this cycle 23 pairs are
-built and 12 decoded; the read ports, the remaining `RCLKSEL` bits and the
-first six `WSTEP` bits are built but not yet read.
+Three inputs have no wire in this table. `DLLSTEP` has only one legal source,
+a `DDRDLL`'s `STEP` (Gowin refuses anything else, `PR0015`), so it is an
+internal net. `DQSIN` cannot be probed: driving it from fabric or from a second
+DQS buffer is refused (`PR0014` "DQSIN pin of INS_DQS is not driven by
+buffer", `CK3001` "one DQS buffer cannot drive two"). In the proven vendor
+netlist `ELVDS_IOBUF.O` drives `DQS.DQSIN` directly; board pin `Y3` is
+`IOL69A`, whose ordinary input wire is `F6` in tile `(68,0)`, so `DQSIN` is a
+fuse-free connection from the pad side and must be modelled as one.
+
+`FCLK` is unresolved. Its pairs move nothing in `(81,5)` except `PCLK`'s
+global-clock allocation, which is why an earlier `FCLK -> CLK0` reading was
+withdrawn. In tile `(81,0)` the same fabric-register source lands on `CLK1`
+in one template revision of the probe and on `CLK2` in the next, and with
+`FCLK` on the board clock neither is selected while `LSR2 <- E211` appears
+instead. That establishes that `FCLK`'s path enters through `(81,0)` and not
+the site tile, so the `DQS` macro spans more than one tile, but it does not
+name a pin, and the earlier `FCLK -> CLK2` reading is not a measurement.
+
+### Outputs
+
+All thirteen status outputs leave the site in tile `(81,5)`:
+
+    output     wire  first hop        how it was read
+    DQSR90     Q0    N800             zero state; next hop (73,5) N800 <- N808
+    DQSW270    Q1    W810             zero state; next hop (81,1) N210 <- W814
+    RPOINT[1]  Q2    W810             selected
+    WPOINT[1]  Q3    N800             selected
+    RVALID     Q5    W830             zero state; next hop (81,1) N250 <- W834
+    RFLAG      Q6    W830             selected
+    WFLAG      Q7    EW10             selected
+    DQSW0      F1    EW10             selected
+    RPOINT[0]  F2    W810             selected
+    WPOINT[0]  F3    N800             selected
+    RPOINT[2]  F4    EW10             selected
+    WPOINT[2]  F5    N830             selected
+    RBURST     F6    N830             selected
+
+Ten are measured directly: the target member selects the wire at the first
+hop and nothing else in the site tile changes. The other three are route
+inferences. Their pairs change no fuse in `(81,5)`, the first hop's mux is in
+its zero state selecting the listed wire, and the route's next hop is the
+same one that a measured sibling through the same destination takes --
+`WPOINT[0]` and `WPOINT[1]` for `DQSR90`, `RPOINT[0]` and `RPOINT[1]` for
+`DQSW270`, `RFLAG` for `RVALID`. The thirteen wires are distinct and leave
+exactly `Q4`, `F0` and `F7` unused, which is consistent with the inference
+but does not prove it.
+
+This corrects the handoff of the previous cycle, which recorded `DQSR90` at
+`(69,7)` and `DQSW270` and `RVALID` at `(81,1)`. Those are downstream hops:
+`(69,7) W800 <- E202` appears identically in the `RBURST` and `WPOINT` pairs,
+and `(81,1) N210 <- W814` in the `RPOINT[0]` and `RPOINT[1]` pairs. No output
+tap lives outside the site tile.
+
+### Shape of the macro
+
+The control and status side of `DQS` is one tile, `(81,5)`: 24 input wires,
+13 output wires, and the constant-selection bits recorded earlier. What makes
+it a multi-tile macro is the clock and pad side: `FCLK` enters through
+`(81,0)` on a pin not yet named, `DQSIN` arrives fuse-free from the pad tile
+`(68,0)`, and `DLLSTEP` is an internal net from the `DDRDLL`. Those three are
+the remaining work before the bel can be written.

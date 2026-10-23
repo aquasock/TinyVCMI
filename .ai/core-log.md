@@ -617,3 +617,34 @@ First add a deterministic decoder that checks all thirteen output pairs by exact
 - User Test: N/A
 
 ---
+
+## 21 COMMIT Unreleased 2026-10-23T16:35:35-07:00
+
+#### Coming From:
+
+Unreleased 124c25c
+
+#### Purpose:
+
+Check the recorded DQS port map against its matched vendor pairs with a deterministic tool and bring the documentation and reference library into agreement with the checked result.
+
+#### Outcome:
+
+Added `tools/dqs_map_check.py`, which re-derives every DQS site wire from the pairs in `build/dqs_routed`, `build/dqs_clock` and `build/dqs_outputs` by exact mux state and fails on any disagreement; it passed with all 24 probeable input bits and all 13 outputs agreeing, at 1.43 GB peak memory over about six minutes. The check corrected entry 20 in two places. Every mux's all-zero state is itself the selection of one source, so a route leaving the site through an unprogrammed destination changes no fuse in the site tile: `DQSR90`, `DQSW270` and `RVALID` leave tile `(81,5)` on `Q0`, `Q1` and `Q5` through `N800`, `W810` and `W830` in that state, and the `(69,7)` and `(81,1)` taps entry 20 recorded are downstream hops shared with measured siblings, so all thirteen outputs are in `(81,5)` and those three wires are route inferences rather than fuse measurements. `FCLK -> CLK2` at `(81,0)` was also withdrawn, because the same fabric source selects `CLK1` there in the earlier probe template and `CLK2` in the later one, and neither when `FCLK` is on the board clock, so `FCLK` enters through `(81,0)` on a pin that is still unnamed. `PCLK -> CLK0` and `RESET -> LSR0` in `(81,5)` were confirmed. `docs/ddr3-open-flow.md` now carries the checked map and the zero-state caveat, and core-reference gained TOOL-007 with a revision note on TOOL-002. The first run of the checker cached every decoded bitstream at about 0.5 GB each and exhausted memory, taking the PC down; the tool now holds one pair at a time and was re-run under a 5 GB `ulimit -v` cap. At the user's instruction the nextpnr and Apicula `epic/gw5ast138c` branches were fast-forwarded on the `aquasock` remotes only, `8be8657b..15d96a16` and `8918f14..1d43011`, which supersedes entry 14's reading that only TinyVCMI is pushed; the `origin` remotes, which point at `mathieufro`, were not touched. No vendor build ran and no hardware was accessed. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering, and active-log capacity.
+
+#### Next Steps:
+
+Name `FCLK` before writing the bel: rebuild the routed and clock `FCLK` pairs under the current probe template so both come from one design, and decode tile `(81,0)` by exact mux state to settle whether the pin is `CLK1`, `CLK2` or a clock-network tap. Then design the fuse-free cross-tile connection, extending `create_internal_net()` to cover `ELVDS_IOBUF.O -> DQS.DQSIN` from `(68,0)` and the `DDRDLL` `LOCK` escape, and propose the DQS bel on tile `(81,5)` for approval before implementing it. Continue offline and do not touch the Tang unless the user explicitly changes that instruction.
+
+#### Files Modified:
+
+- docs/ddr3-open-flow.md
+- tools/dqs_map_check.py
+
+#### Status:
+
+- Build: N/A
+- Deployment: N/A
+- User Test: N/A
+
+---

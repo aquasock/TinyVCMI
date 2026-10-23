@@ -124,6 +124,7 @@ Topic IDs are the `record_id` prefix. An entry reserves a namespace; it does not
 | Does the open-flow DDRDLL produce a tap code on hardware? | TOOL | TOOL-004 |
 | How does the working vendor controller drive the DDRDLL? | TOOL | TOOL-005 |
 | Are the lane primitives independent sites or one complex? | TOOL | TOOL-006 |
+| Which site wires do the DQS ports use? | TOOL | TOOL-007 |
 | Which sources and licenses constrain reuse? | PROV | PROV-001 |
 
 ---
@@ -148,11 +149,12 @@ PROT-001: "TinyNES/TinyGBC load AE350 ELF-derived images through a checked UART 
 VCMI-001: "MiSTer-VCMI pins VCMI 1.7.5 at commit 6901839ae9760dfcd1d5ff2c4aa4ef6968fee752"
 VCMI-002: "The MiSTer port measured roughly 100-115 MB resident at 800x600, so 64 MiB is not a qualified full-engine target"
 TOOL-001: "The current open flow supports the AE350 and SDR SDRAM design but not the complete Gowin DDR3 PHY/controller netlist"
-TOOL-002: "Yosys declares all required PHY cells; the GW5AST backend supports static IODELAY, CLKDIV and the bottom-left DDRDLL master, and DQS, OSER8_MEM and IDES8_MEM are blocked by unnamed control wires at their IOLOGIC sites"
+TOOL-002: "Yosys declares all required PHY cells; the GW5AST backend supports static IODELAY, CLKDIV and the bottom-left DDRDLL master, and DQS, OSER8_MEM and IDES8_MEM have no bels; the DQS site wires are now measured in TOOL-007"
 TOOL-003: "DDRDLL is a two-cell macro: ports in the column-1 tile, configuration fuses in the corner, LOCK on a dedicated row-99 escape; open flow covers the bottom-left master only"
 TOOL-004: "DDRDLL STEP reads zero at 50 and 400 MHz in both the open-flow and the vendor-built image, under every static STOP/UPDNCNTL combination, so the zero is not this toolchain"
 TOOL-005: "The hardware-proven vendor controller holds STOP at PLL lock, drives UPDNCNTL from its init FSM, uses DDRDLLM_BL with this project's four parameters, and feeds STEP to four DQS blocks with no path back into the DLL"
 TOOL-006: "DQS, OSER8_MEM and IDES8_MEM form one lane complex: every serializer's TCLK comes from its lane's DQS output, so the internal connections must be modelled, not measured as fabric wires"
+TOOL-007: "The DQS control and status side is tile (81,5): 24 inputs and 13 outputs named, three outputs by route inference; FCLK enters through (81,0) on an unnamed pin and DQSIN arrives fuse-free from the pad tile"
 PROV-001: "Reuse source and interface ideas with their original license boundaries and attribution intact"
 ```
 
@@ -378,7 +380,7 @@ PROV-001: "Reuse source and interface ideas with their original license boundari
   topic_id: TOOL
   title: "Primitive-level boundary of the current GW5AST DDR3 open flow"
   status: VERIFIED
-  verified_date: 2026-10-22
+  verified_date: 2026-10-23
   statement: "Yosys 0.52 declares DDRDLL, DQS, OSER8_MEM, IDES8_MEM, IODELAY and CLKDIV for GW5A synthesis. With the aquasock/nextpnr epic/gw5ast138c tree and Apicula commit 8918f14, isolated GW5AST-138C probes place and route static IODELAY, CLKDIV and the bottom-left DDRDLL master, while DQS, OSER8_MEM and IDES8_MEM still fail. Those three are placed at IOLOGIC sites, and the GW5AST-138C chipdb port map for those sites (tile types 229 to 232 and 243, 54 pins) covers 17 of OSER8_MEM's 18 pins (missing TCLK), 13 of IDES8_MEM's 16 (missing ICLK, WADDR, RADDR) and only 3 of DQS's 24 (missing DQSIN and every control and status pin), so the boundary is unnamed wires at the site rather than a missing BEL type. The qualified vendor reference contains one DDRDLL, four DQS, 40 OSER8_MEM, 32 IDES8_MEM, 32 IODELAY and one CLKDIV."
   consequence: "The remaining primitive boundary is DQS and the two memory serializers, whose missing site wires must be measured before any BEL is written for them, since a BEL built on the 54-pin map would invent the control connections. Support follows at one x8 lane before expanding to x32. DDRDLL placement and parameter packing exist for one site only, and the primitive's LOCK output has no modelled fabric path, so no lock-and-step evidence exists yet. Static IODELAY support does not establish dynamic calibration support."
   sources:
@@ -388,7 +390,7 @@ PROV-001: "Reuse source and interface ideas with their original license boundari
     - "TinyVCMI docs/ddr3-open-flow.md: DDRDLL reverse-engineering and open-flow implementation"
     - "Tang-PSX Gowin EDA 1.9.11.03 post-PnR simulation model, ddr3_memory_interface.vo"
     - "TinyVCMI tools/ddr3_openflow_preflight.sh and fpga/ddr3_phy_probe/ddr3_phy_probe.sv"
-  verification: "The deterministic TinyVCMI preflight synthesized all six probes on 2026-10-22, reproduced the four no-BEL failures, and routed IODELAY and CLKDIV. A separate DDR-free open-flow image passed simulation, synthesis, placement, routing and packing, then was SRAM-loaded on the target and answered TinyTang core ID 0x56 at 2 Mbaud. Revised 2026-10-22 after the DDRDLL bel was added: the same preflight now reports DDRDLL PASS/PASS, with DQS, OSER8_MEM and IDES8_MEM unchanged, and the earlier citation of commit 8be8657b is corrected because the binary that produced the evidence self-reports 7d1b131c. DQS and the two memory serializers have not been implemented or tested."
+  verification: "The deterministic TinyVCMI preflight synthesized all six probes on 2026-10-22, reproduced the four no-BEL failures, and routed IODELAY and CLKDIV. A separate DDR-free open-flow image passed simulation, synthesis, placement, routing and packing, then was SRAM-loaded on the target and answered TinyTang core ID 0x56 at 2 Mbaud. Revised 2026-10-22 after the DDRDLL bel was added: the same preflight now reports DDRDLL PASS/PASS, with DQS, OSER8_MEM and IDES8_MEM unchanged, and the earlier citation of commit 8be8657b is corrected because the binary that produced the evidence self-reports 7d1b131c. DQS and the two memory serializers have not been implemented or tested. Revised 2026-10-23: the DQS site is tile (81,5), type 241, which carries no bels at all, and its control and status wires have since been measured by matched vendor pairs and are recorded in TOOL-007; the 54-pin IOLOGIC map statement above remains true of the chipdb."
 
 - record_id: TOOL-003
   topic_id: TOOL
@@ -445,6 +447,20 @@ PROV-001: "Reuse source and interface ideas with their original license boundari
     - "Gowin EDA 1.9.11.03 IDE/simlib/gw5a/prim_sim.v, module OSER8_MEM TCLK_SOURCE parameter"
     - "Gowin EDA 1.9.11.03 error CK2060 observed when TCLK was driven from a pin in TinyVCMI build/meas_oser/oser"
   verification: "Read from the vendored post-place-and-route netlist and confirmed against two vendor build attempts: one that Gowin refused for driving TCLK from a pin, and one it refused for a DQS without a DDRDLL on DLLSTEP. The four-lane split was checked by counting instances per data_lane_gen index."
+
+- record_id: TOOL-007
+  topic_id: TOOL
+  title: "Measured GW5AST-138C DQS site wires"
+  status: VERIFIED
+  verified_date: 2026-10-23
+  statement: "With DQS at the site Gowin EDA 1.9.11.03 assigns beside board pin Y3, the control and status pins are in tile (81,5), type 241, which has no bels. Inputs: RDIR A0, RLOADN A1, RMOVE A2, READ[0:3] A3 A4 A5 A7, WDIR B0, WLOADN B1, WMOVE B2, HOLD B3, RCLKSEL[0:2] C0 C1 C2, WSTEP[0:7] D3 D4 D5 D7 CLK2 LSR2 CE1 CE2, PCLK CLK0 and RESET LSR0. Outputs: DQSR90 Q0, DQSW270 Q1, RPOINT[1] Q2, WPOINT[1] Q3, RVALID Q5, RFLAG Q6, WFLAG Q7, DQSW0 F1, RPOINT[0] F2, WPOINT[0] F3, RPOINT[2] F4, WPOINT[2] F5 and RBURST F6. DLLSTEP accepts only a DDRDLL STEP (PR0015). DQSIN accepts only a DQS pad buffer (PR0014, CK3001); in the proven vendor netlist ELVDS_IOBUF.O drives it directly, and Y3 is IOL69A, whose ordinary input wire is F6 in tile (68,0). FCLK's pairs move no pin in (81,5): in tile (81,0) one fabric-register source selected CLK1 in one probe template and CLK2 in the next, and with FCLK on the board clock neither was selected while LSR2 <- E211 appeared."
+  consequence: "The DQS bel's control and status pins can be written for tile (81,5) from measured wires, and the constant-selection bits recorded in docs/ddr3-open-flow.md cover its configuration. Three connections are not ordinary portmap entries and must be modelled before the bel is complete: DLLSTEP as an internal net from the DDRDLL, DQSIN as a fuse-free path from the pad tile (68,0), and FCLK, whose path enters through (81,0) on a pin that is still unnamed. The macro is multi-tile because of those three, not because of its outputs."
+  sources:
+    - "TinyVCMI tools/dqs_map_check.py, tools/dqs_port_probe.py, tools/dqs_output_probe.py and tools/fs_site_diff.py"
+    - "TinyVCMI docs/ddr3-open-flow.md: DQS site pin measurement"
+    - "Apicula commit 1d43011, apycula/GW5AST-138C.msgpack.xz: tile type 241 pips table"
+    - "Tang-PSX build/ddr3-vendor/ip/ddr3_memory_interface/ddr3_memory_interface.vo, ELVDS_IOBUF to DQS.DQSIN"
+  verification: "tools/dqs_map_check.py re-derived every entry on 2026-10-23 from the matched pairs in build/dqs_routed, build/dqs_clock and build/dqs_outputs by exact mux state and passed: each input pair changes exactly one site-input destination, and each of ten outputs changes exactly one destination in (81,5), selecting the listed wire. DQSR90, DQSW270 and RVALID change no fuse in (81,5); their wires are inferred because the first hop's mux is in its zero state, which itself selects Q0, Q1 and Q5, and their next hops match those of measured siblings through the same destinations. That inference relies on the chipdb's zero-state encoding and is not a direct measurement. The same check corrected an earlier reading that placed those three outputs at (69,7) and (81,1), which are downstream hops, and withdrew FCLK -> CLK2 at (81,0) as a measurement. No hardware was accessed."
 
 - record_id: PROV-001
   topic_id: PROV
