@@ -122,6 +122,7 @@ Topic IDs are the `record_id` prefix. An entry reserves a namespace; it does not
 | Which required DDR3 PHY primitives are currently placeable? | TOOL | TOOL-002 |
 | What has been measured for the GW5AST DDRDLL? | TOOL | TOOL-003 |
 | Does the open-flow DDRDLL produce a tap code on hardware? | TOOL | TOOL-004 |
+| How does the working vendor controller drive the DDRDLL? | TOOL | TOOL-005 |
 | Which sources and licenses constrain reuse? | PROV | PROV-001 |
 
 ---
@@ -148,7 +149,8 @@ VCMI-002: "The MiSTer port measured roughly 100-115 MB resident at 800x600, so 6
 TOOL-001: "The current open flow supports the AE350 and SDR SDRAM design but not the complete Gowin DDR3 PHY/controller netlist"
 TOOL-002: "Yosys declares all required PHY cells; the GW5AST backend supports static IODELAY, CLKDIV and the bottom-left DDRDLL master, and still lacks BELs for DQS, OSER8_MEM and IDES8_MEM"
 TOOL-003: "DDRDLL is a two-cell macro: ports in the column-1 tile, configuration fuses in the corner, LOCK on a dedicated row-99 escape; open flow covers the bottom-left master only"
-TOOL-004: "DDRDLL STEP reads zero at 50 MHz in both the open-flow and the vendor-built image, so the zero is the primitive at this clock period and not this toolchain"
+TOOL-004: "DDRDLL STEP reads zero at 50 and 400 MHz in both the open-flow and the vendor-built image, under every static STOP/UPDNCNTL combination, so the zero is not this toolchain"
+TOOL-005: "The hardware-proven vendor controller holds STOP at PLL lock, drives UPDNCNTL from its init FSM, uses DDRDLLM_BL with this project's four parameters, and feeds STEP to four DQS blocks with no path back into the DLL"
 PROV-001: "Reuse source and interface ideas with their original license boundaries and attribution intact"
 ```
 
@@ -407,13 +409,27 @@ PROV-001: "Reuse source and interface ideas with their original license boundari
   title: "The open-flow DDRDLL produces no tap code on hardware"
   status: VERIFIED
   verified_date: 2026-10-22
-  statement: "An open-flow image carrying one DDRDLL at the measured bottom-left site, a 2 Mbaud TinyTang responder and a free-running counter was loaded into SRAM on 2026-10-22. The core answered core ID 0x56 and a query frame returning STEP with the counter. The counter advanced on every query while STEP read 0x00 in all of: STOP low with UPDNCNTL low, STOP low with UPDNCNTL high, STOP high with either UPDNCNTL level, and STOP low with UPDNCNTL low with the six vendor-default corner bits packed. The same source built by Gowin EDA 1.9.11.03 behaves identically: loaded at 4,330,802 bytes it answers core ID 0x56 and also reports STEP 0x00 with its counter advancing. Clocking the descriptor from an on-die PLL at 350 MHz -- 700 MHz VCO, CLKOUT0 divided by two, timing met at 350.02 MHz and PLL lock read as 1 -- still reports STEP 0x00 while both the 50 MHz and the 350 MHz domain counters advance. Gowin's own model of the primitive, IDE/simlib/gw5a/prim_sim.v, predicts 200 (0xC8) for a 50 MHz CLKIN with SCAL_EN FALSE, and that prediction does not hold on the silicon."
-  consequence: "The tap value is a property of the primitive at this clock period, not of this project's toolchain: placement, port mapping and packed fuses produce the same observable as the vendor's own bitstream. A lock-and-step diagnostic still cannot be scheduled from STEP, and the plausible physical explanation -- that a DDR3-800 delay loop has nothing to report against a 20 ns clock -- is a hypothesis no test has yet checked, because the primitive has never been clocked at the rate it is meant to serve. No DDR3 capacity or timing conclusion follows from this result."
+  statement: "An open-flow image carrying one DDRDLL at the measured bottom-left site, a 2 Mbaud TinyTang responder and a free-running counter was loaded into SRAM on 2026-10-22. The core answered core ID 0x56 and a query frame returning STEP with the counter. The counter advanced on every query while STEP read 0x00 in all of: STOP low with UPDNCNTL low, STOP low with UPDNCNTL high, STOP high with either UPDNCNTL level, and STOP low with UPDNCNTL low with the six vendor-default corner bits packed. The same source built by Gowin EDA 1.9.11.03 behaves identically: loaded at 4,330,802 bytes it answers core ID 0x56 and also reports STEP 0x00 with its counter advancing. Clocking the descriptor from an on-die PLL at 350 MHz -- 700 MHz VCO, CLKOUT0 divided by two, timing met at 350.02 MHz and PLL lock read as 1 -- still reports STEP 0x00 while both the 50 MHz and the 350 MHz domain counters advance. A further build moved STOP and UPDNCNTL both high, matching a working controller, and ran the PLL at the DDR3 memory clock, 50 MHz x16 / 2 = 400 MHz with timing met at 467 MHz reported; three reads again returned STEP 0x00 with lock 1 and both counters advancing. Gowin's own model of the primitive, IDE/simlib/gw5a/prim_sim.v, predicts 200 (0xC8) for a 50 MHz CLKIN with SCAL_EN FALSE, and that prediction does not hold on the silicon."
+  consequence: "The tap value is a property of the primitive at this clock period, not of this project's toolchain: placement, port mapping and packed fuses produce the same observable as the vendor's own bitstream. A lock-and-step diagnostic still cannot be scheduled from STEP, and the plausible physical explanation -- that a DDR3-800 delay loop has nothing to report against a 20 ns clock -- is a hypothesis no test has yet checked, because the primitive has never been clocked at the rate it is meant to serve. The remaining structural difference from a working controller is the PHY around the primitive -- the distributed memory clock, the four DQS blocks and the init FSM -- and since DQS has no path back into the DLL the likely reading is that the primitive is not usable as a standalone island, which would also make LOCK unobservable in isolation. No DDR3 capacity or timing conclusion follows from this result."
   sources:
     - "TinyVCMI fpga/ddrdll_liveness/ddrdll_liveness.sv, tools/build_ddrdll_liveness.sh, tools/tang_console.py"
     - "TinyVCMI docs/ddr3-open-flow.md: hardware observation"
     - "Gowin EDA 1.9.11.03, IDE/simlib/gw5a/prim_sim.v, module DDRDLL"
   verification: "Four builds of one parameterised design were loaded in turn, each answering over the link; the reply carries a free-running counter that advanced between queries, which separates a silent primitive from a silent link. CLKIN was confirmed to be the port tile's CLK0 wire from the vendor const-input build's GB10 to CLK0 pip. No pin was probed and no DDR3 package pin was driven or exposed. Revised 2026-10-22 after the vendor reference: the identical source built by Gowin EDA reports the same zero, which removes this project's packing from the list of causes, and Gowin's .bin was verified to be the .fs data lines packed eight bits to a byte, so both images load raw with no conversion. Revised again after the PLL run: at 350 MHz with lock asserted and the fast counter proven moving, STEP is still zero, so the clock-period explanation is disproved at that rate and only an untested claim about 400 MHz specifically would survive it."
+
+- record_id: TOOL-005
+  topic_id: TOOL
+  title: "How the hardware-proven vendor DDR3 controller drives the DDRDLL"
+  status: VERIFIED
+  verified_date: 2026-10-23
+  statement: "The vendor DDR3 IP netlist kept by Tang-PSX places its DDRDLL at DDRDLLM_BL and instantiates it as CLKIN=memory_clk, STOP=a buffer of pll_lock, RESET=dll_rsti, UPDNCNTL=uddcntln, with STEP driving DLLSTEP on all four DQS blocks and also being registered into the 100 MHz domain, with CODESCAL 111, SCAL_EN FALSE, DIV_SEL 0 and DLL_FORCE FALSE. UPDNCNTL is driven by the init state machine rather than held at a level, and STOP therefore reads 1 during normal operation because pll_lock is active high. The DQS blocks have no output back to the DLL."
+  consequence: "This is the reference behaviour for an open-flow PHY: same master site, same four parameters this project packs, and a control sequence rather than static levels. Because the only coupling from DQS to the DLL is one way, an isolated DDRDLL with no PHY around it is not demonstrated to run by this design, which is consistent with this project's STEP readings and means a standalone lock-and-step diagnostic may not be physically meaningful."
+  sources:
+    - "Tang-PSX build/ddr3-vendor/ip/ddr3_memory_interface/ddr3_memory_interface.vo, DDRDLL instance gw3_top/u_ddr_phy_top/u_dll and the four DQS instances"
+    - "Tang-PSX gateware/ddr3_vendor/tang_psx_ddr3.cst, INS_LOC u_dll DDRDLLM_BL"
+    - "Tang-PSX gateware/gowin_ddr3.py, PLL_INIT feeding pll_lock"
+    - "Tang-PSX third_party/litedram/litedram/phy/gw5ddrphy.py, GW5DDRPHYInit (BSD-2-Clause, upstream, not hardware-proven here)"
+  verification: "Read directly from the vendored post-place-and-route netlist and the constraint file on 2026-10-23, cross-checked against TinyVCMI TOOL-002 for the site and TOOL-003 for the parameters. The LiteDRAM PHY's own DDR3 attempt in Tang-PSX never deployed because every placement variant failed setup timing, so its sequence is a design intent, not a hardware result."
 
 - record_id: PROV-001
   topic_id: PROV

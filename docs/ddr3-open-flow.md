@@ -164,6 +164,39 @@ eight bits to a byte, verified byte for byte here, and those leading `ff` and
 `de` bytes are part of the bitstream that a programmer sends. TinyTang writes
 both images raw, so the vendor image needs no conversion at all.
 
+### What the working vendor controller does
+
+Tang-PSX keeps the vendor DDR3 IP's post-PnR netlist at
+`build/ddr3-vendor/ip/ddr3_memory_interface/ddr3_memory_interface.vo`, and it
+settles how the primitive is meant to be driven:
+
+```verilog
+DDRDLL gw3_top/u_ddr_phy_top/u_dll (
+    .CLKIN(memory_clk), .STOP(n2457_6), .RESET(dll_rsti),
+    .UPDNCNTL(uddcntln), .LOCK(dll_lock), .STEP(dll_step[7:0])
+);
+// CODESCAL="111" SCAL_EN="FALSE" DIV_SEL=1'b0 DLL_FORCE="FALSE"
+```
+
+- The site is `DDRDLLM_BL` (`tang_psx_ddr3.cst`), the master this project
+  models, and the four parameters are the ones this project packs.
+- `STOP` is a buffer of `pll_lock`, the PLL's active-high lock output, so it
+  reads 1 during normal operation.
+- `UPDNCNTL` is FSM-driven (`uddcntln`), never a static level.
+- `STEP` drives `DLLSTEP` on all four `DQS` blocks and is registered into the
+  100 MHz domain, which is the same cross-domain capture this project's readout
+  uses.
+- `DQS` has no output back to the DLL: the coupling is one way.
+
+The vendored LiteDRAM GW5 PHY (BSD-2-Clause, upstream, never deployed here)
+shows the intended order: wait for `LOCK`, freeze, cycle the ECLK domain,
+release, then pulse the update.
+
+Tang-PSX's own open-flow DDR3 attempt is also worth knowing about: the ABI 1.9
+LiteDRAM PHY failed setup timing in every placement variant and was never
+deployed. The only hardware-proven DDR3 in the project family is the vendor IP,
+so this milestone has no precedent to copy.
+
 ### The primitive at 350 MHz
 
 The last hypothesis worth testing offline was the clock period, so the probe
@@ -184,6 +217,35 @@ silent primitive cannot be confused with a dead clock. Three reads:
 350 MHz domain runs, and the primitive still reports no tap code -- so the
 clock-period explanation does not hold at seven times the original clock, in
 the vendor's toolchain or in this one.
+
+### 400 MHz with the vendor's control levels
+
+The 350 MHz run still held `STOP` low. Reading the vendor netlist above showed
+what a working design does, so the probe was rebuilt with `STOP` and `UPDNCNTL`
+both high, and at the true DDR3 memory clock: 50 MHz x16 / 2, 800 MHz VCO,
+`CLKOUT0` / 2 = 400 MHz. With `STOP` high the same design closed at 467 MHz, so
+400 MHz met timing where the earlier build had stopped at 371.
+
+Three reads at 400 MHz, `STOP=1`, `UPDNCNTL=1`:
+
+- `aa 00 04 06 00 01 cd 01 51 0e`
+- `aa 00 04 06 00 01 2d 9b 51 d9`
+- `aa 00 04 06 00 01 83 d3 01 9c`
+
+`step = 0x00`, `lock = 1`, both counters advancing. So `STEP` stays zero at the
+exact clock and control levels of a working design, with the PLL locked, in
+this project's toolchain.
+
+That closes the campaign of cheap explanations. `STEP` has now been read at
+50 MHz and 400 MHz, with `STOP` and `UPDNCNTL` in all four static
+combinations, with the six vendor-default corner bits packed, and under the
+vendor toolchain -- always zero. The one structural difference left between
+this probe and the working controller is the PHY around the primitive: the
+memory clock as the DDR PHY distributes it, the four DQS blocks, and the init
+FSM. `DQS` has no path back into the DLL, so the most likely reading is that
+the primitive is not usable as a standalone island, which would also mean
+`LOCK` cannot be observed in isolation. That is a hypothesis, not a
+measurement, and it has a direct consequence for "Milestones" below.
 
 So Gowin's behavioural model does not describe the silicon at a 20 ns clock
 period. The physical reading is that a DDR3-800 delay loop is built to lock

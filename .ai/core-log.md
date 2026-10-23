@@ -233,3 +233,32 @@ Stop working on `STEP` and build the `LOCK` model, which is what the first hardw
 - User Test: N/A
 
 ---
+## 8 COMMIT Unreleased 2026-10-23T00:15:48-07:00
+
+#### Coming From:
+
+Unreleased 0e3f911
+
+#### Purpose:
+
+Test the DDRDLL at the clock and control levels the hardware-proven vendor controller actually uses, found by reading Tang-PSX's vendor netlist.
+
+#### Outcome:
+
+Read the hardware-proven vendor controller's netlist in Tang-PSX and tested what it implied. Tang-PSX keeps the vendor DDR3 IP's post-place-and-route netlist at `build/ddr3-vendor/ip/ddr3_memory_interface/ddr3_memory_interface.vo`, and its `DDRDLL` instance uses `DDRDLLM_BL` with exactly the parameters this project packs, `CLKIN` on the 400 MHz memory clock, `STOP` a buffer of the PLL's active-high lock output, `RESET` from the init path, `UPDNCNTL` driven by the init state machine rather than held, and `STEP` feeding `DLLSTEP` on all four `DQS` blocks while also being registered into the 100 MHz domain; the `DQS` blocks have no output back to the DLL. The probe was therefore rebuilt with `STOP` and `UPDNCNTL` high and the PLL at the true memory clock, 50 MHz x16 / 2 = 400 MHz, which met timing at 467 MHz where the earlier build had closed at only 371. Three reads returned `aa 00 04 06 00 01 cd 01 51 0e`, `aa 00 04 06 00 01 2d 9b 51 d9` and `aa 00 04 06 00 01 83 d3 01 9c`: `STEP` zero, `lock` one, both counters advancing. `STEP` has now been read at 50 MHz and 400 MHz, with `STOP` and `UPDNCNTL` in all four static combinations, with the six vendor-default corner bits packed, and under the vendor toolchain, and it has never been anything but zero. That closes the cheap explanations and leaves one structural difference from a working design -- the PHY around the primitive -- with the one-way `DQS` coupling suggesting the primitive is not usable as a standalone island, which would also make `LOCK` unobservable in isolation. That is recorded as a hypothesis with a consequence for the milestone list, not as a measurement. Tang-PSX's own open-flow DDR3 attempt was also checked: its LiteDRAM PHY failed setup timing in every placement variant and never deployed, so the only hardware-proven DDR3 in the project family is the vendor IP. No pin was probed, no DDR3 package pin was driven or exposed, and the board was returned to the desktop core. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering and active-log capacity.
+
+#### Next Steps:
+
+Decide the milestone's shape before writing more toolchain: if the primitive needs its PHY around it, an isolated lock-and-step image cannot produce a meaningful result, so milestone 2's hardware step should fold into the first x8 lane and the `LOCK` model should be built as part of that lane rather than on its own. The immediate implementation work is unchanged either way -- `DQS`, `OSER8_MEM` and `IDES8_MEM` placement, plus a way to express the dedicated `LOCK` escape -- and the cheapest next measurement is a vendor-built lane carrying one `DQS` beside the DLL, which is the only configuration that can still separate "the primitive needs DQS present" from "the primitive needs the whole controller". Touching the Tang again needs the user's approval.
+
+#### Files Modified:
+
+- docs/ddr3-open-flow.md
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: N/A
+
+---
