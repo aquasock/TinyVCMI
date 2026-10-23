@@ -495,3 +495,32 @@ Run the remaining six control pairs (`RLOADN`, `RMOVE`, `RDIR`, `WLOADN`, `WMOVE
 - User Test: N/A
 
 ---
+## 17 COMMIT Unreleased 2026-10-23T01:08:37-07:00
+
+#### Coming From:
+
+Unreleased 42cffa2
+
+#### Purpose:
+
+Probe every single-bit DQS control input and read what each one's constant selection changes at the site.
+
+#### Outcome:
+
+Ran the remaining control pairs and read their bit sets. All eight single-bit `DQS` inputs now have a matched `VCC`/`GND` pair: `RESET`, `HOLD`, `RLOADN`, `RMOVE`, `RDIR`, `WLOADN`, `WMOVE` and `WDIR`. Seven move exactly eight bits inside tile `(81,5)`; `RESET` moves 66 there plus a handful in two neighbouring tiles, which fits a reset that also gates nearby logic. The union across ports is 102 bits, and the site's `alonenode` table accounts for them: 24 entries claim those bits and the pattern is a constant-select multiplexer, for example wire `CE2` with sources `LB31, VCC, W212, X06` and bit `(3,73)`, which `WMOVE` and `WDIR` both move. That is the mechanism that was missing: a control input's constant level is chosen by a mux whose select bits are these eight, so the mux's destination wire names the port. A caution was found and recorded rather than smoothed over: `RLOADN` and `RDIR` share four bits and `WLOADN` and `WDIR` share all eight, which could be shared select lines or a common reset path, so the table has to be built mux entry by mux entry instead of by grouping ports. The three buses and the `DQS` status outputs were not probed. No repository code changed, no Tang access occurred, and the probe images remain off the card. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering and active-log capacity.
+
+#### Next Steps:
+
+Turn the bit sets into a table: for each port, intersected against the site's `alonenode` entries, take the entry whose source list contains `VCC` or `GND` and whose bits equal that port's eight, and record its destination wire as the port's wire name. Handle the three shared-bit pairs entry by entry, and note where two ports cannot be separated. Then probe the buses bit by bit and the status outputs by driving them to pins, and the resulting table is what the lane bel set needs. Touching the Tang needs the user's explicit approval.
+
+#### Files Modified:
+
+- docs/ddr3-open-flow.md
+
+#### Status:
+
+- Build: PASS
+- Deployment: N/A
+- User Test: N/A
+
+---

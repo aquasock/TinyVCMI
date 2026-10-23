@@ -369,6 +369,33 @@ Type 241 carries no modelled bels in the chipdb, which is the other half of why
 gives the site and, port by port, the configuration bits that select each
 constant.
 
+### Per-port bit sets at the DQS site
+
+All eight single-bit control inputs were probed. Each pair moves exactly eight
+bits inside tile `(81,5)`, except `RESET`, which moves 66 there plus a few in
+two neighbouring tiles:
+
+- `HOLD`: `(4,0) (4,2) (4,7) (4,74) (4,75) (5,6) (5,80) (5,83)`
+- `RLOADN`: `(6,97) (6,99) (7,95) (7,96) (8,2) (8,5) (8,6) (8,9)`
+- `RMOVE`: `(8,21) (8,24) (8,80) (9,27) (9,29) (9,74) (9,75) (9,76)`
+- `RDIR`: `(6,97) (6,99) (7,95) (7,96) (8,10) (9,2) (9,5) (9,10)`
+- `WLOADN`: `(4,22) (4,31) (5,24) (5,28) (6,106) (6,107) (6,111) (7,108)`
+- `WMOVE`: `(4,74) (4,75) (5,0) (5,2) (5,7) (5,9) (5,80) (5,83)`
+- `WDIR`: `(4,24) (4,28) (4,30) (5,22) (6,106) (6,107) (6,111) (7,108)`
+
+The union is 102 bits, and the site's `alonenode` table explains what they are:
+24 entries claim them, and the pattern is a constant-select mux. For example
+wire `CE2` has the source list `LB31, VCC, W212, X06` with bit `(3,73)`, and
+`WMOVE`/`WDIR` move bits inside exactly that group. That is the mechanism: each
+control input's constant level is chosen by a multiplexer whose select bits are
+these eight, and the destination wire of the mux is the port's wire.
+
+Three of the pairs share bit groups, which is a caution rather than a shortcut:
+`RLOADN` and `RDIR` overlap on `(6,97) (6,99) (7,95) (7,96)`, and `WLOADN` and
+`WDIR` match exactly on all eight. Whether that means shared mux select lines or
+a common reset path through both, only the per-port mux entries can say, so the
+table has to be built entry by entry rather than by grouping.
+
 ## Internal paths
 
 The chip database now has a first-class way to state a link the silicon
