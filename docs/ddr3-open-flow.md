@@ -164,6 +164,27 @@ eight bits to a byte, verified byte for byte here, and those leading `ff` and
 `de` bytes are part of the bitstream that a programmer sends. TinyTang writes
 both images raw, so the vendor image needs no conversion at all.
 
+### The primitive at 350 MHz
+
+The last hypothesis worth testing offline was the clock period, so the probe
+was rebuilt with an on-die PLL: 50 MHz in, 700 MHz VCO, `CLKOUT0` / 2, for a
+350 MHz `CLKIN`. 400 MHz, the DDR3-800 memory clock, was the target, but the
+router closes this design at 371 MHz -- the path from the primitive's own pins
+dominates and does not improve when the fast-domain counter shrinks -- so the
+constraint was set to 350 MHz and met rather than shipping an 8 percent miss.
+
+The reply now also carries PLL lock and a counter in the fast domain, so a
+silent primitive cannot be confused with a dead clock. Three reads:
+
+- `aa 00 04 06 00 01 17 8e 93 e2`
+- `aa 00 04 06 00 01 75 d4 25 cf`
+- `aa 00 04 06 00 01 e3 8c 27 da`
+
+`step = 0x00`, `lock = 1`, and both counters advance. The PLL locks, the
+350 MHz domain runs, and the primitive still reports no tap code -- so the
+clock-period explanation does not hold at seven times the original clock, in
+the vendor's toolchain or in this one.
+
 So Gowin's behavioural model does not describe the silicon at a 20 ns clock
 period. The physical reading is that a DDR3-800 delay loop is built to lock
 against a 2.5 ns clock and has nothing to report at 20 ns, but that is a

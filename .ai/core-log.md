@@ -200,3 +200,36 @@ Clock the primitive at the rate it is built for before drawing anything else fro
 - User Test: N/A
 
 ---
+## 7 COMMIT Unreleased 2026-10-23T00:07:07-07:00
+
+#### Coming From:
+
+Unreleased 4772e9d
+
+#### Purpose:
+
+Test whether the DDRDLL reports a tap code when it is clocked at the rate it is designed for instead of the 50 MHz board input.
+
+#### Outcome:
+
+Clocked the primitive at the rate it is built for, as far as this toolchain can reach. The probe now contains an on-die PLL at 50 MHz in, 700 MHz VCO and `CLKOUT0` divided by two, and its reply carries PLL lock plus a counter in the fast domain so a silent primitive cannot be mistaken for a dead clock. 400 MHz was the target, but the router closes the design at 371 MHz -- the path from the primitive's own pins dominates, and shrinking the fast-domain counter to one 16-bit register did not move it -- so the SDC constraint was set to 350 MHz and met at 350.02 MHz rather than shipping an 8 percent miss. Three reads returned `aa 00 04 06 00 01 17 8e 93 e2`, `aa 00 04 06 00 01 75 d4 25 cf` and `aa 00 04 06 00 01 e3 8c 27 da`: `STEP` zero, `lock` one, and both counters advancing. The PLL locks, the 350 MHz domain is alive, and the primitive still reports no tap code, so the clock-period explanation does not hold at seven times the original rate in either toolchain. What survives is only a claim about 400 MHz specifically, which this flow cannot meet timing for and which is not worth chasing before the `LOCK` model, since `STEP` was never the milestone's signal. The reply format grew to six payload bytes and `tools/tang_console.py` now reads ten bytes per attempt. No pin was probed, no DDR3 package pin was driven or exposed. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering and active-log capacity.
+
+#### Next Steps:
+
+Stop working on `STEP` and build the `LOCK` model, which is what the first hardware diagnostic actually needs: give the chip database a way to express the dedicated tap onto the row-99 track, or model that track as a segment the bel can reach, then expose `LOCK` as a pin and re-run the same host-side readout against it. Measure the TL, TR and BR port tiles and close TR's missing `DLL0` entries while that work is open. The sweep driver still lives outside `tools` and should be committed with the other deterministic scripts. Touching the Tang again needs the user's approval.
+
+#### Files Modified:
+
+- docs/ddr3-open-flow.md
+- fpga/ddrdll_liveness/ddrdll_liveness.cst
+- fpga/ddrdll_liveness/ddrdll_liveness.sdc
+- fpga/ddrdll_liveness/ddrdll_liveness.sv
+- tools/tang_console.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: N/A
+
+---

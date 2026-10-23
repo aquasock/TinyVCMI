@@ -63,8 +63,8 @@ def main() -> int:
     query = sub.add_parser(
         "query", help="send a raw frame through fpgapipe and print the reply")
     query.add_argument("frame", help="request bytes, hex, e.g. aa000301")
-    query.add_argument("--expect", type=int, default=7,
-                       help="reply bytes to read per attempt (default 7)")
+    query.add_argument("--expect", type=int, default=10,
+                       help="reply bytes to read per attempt (default 10)")
     query.add_argument("--tries", type=int, default=6)
 
     args = ap.parse_args()
@@ -110,7 +110,7 @@ def main() -> int:
                     if chunk:
                         buf += chunk
                 print(f"attempt {attempt + 1}: {buf.hex(' ') or '(nothing)'}")
-                if buf[:4] == bytes.fromhex("aa000403"):
+                if buf[:2] == bytes.fromhex("aa00") and len(buf) >= 4:
                     return 0
                 time.sleep(0.2)
             return 1
