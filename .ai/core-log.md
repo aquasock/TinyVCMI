@@ -349,3 +349,32 @@ Measure the missing site wires, cheapest first. `OSER8_MEM` needs only `TCLK`, s
 - User Test: N/A
 
 ---
+## 12 COMMIT Unreleased 2026-10-23T00:27:56-07:00
+
+#### Coming From:
+
+Unreleased a2fd135
+
+#### Purpose:
+
+Measure the missing IOLOGIC site wires for the lane primitives, beginning with OSER8_MEM's TCLK.
+
+#### Outcome:
+
+Started measuring the missing site wires and found that the measurement plan was based on a wrong model. A first vendor oracle pair in `build/meas_oser` -- a control design and one carrying a single `OSER8_MEM` -- was stopped by Gowin with `CK2060`, "the connection between instance 'tclk_ibuf' and instance 'oser' is incorrect", because `OSER8_MEM`'s `TCLK_SOURCE` parameter is `"DQSW"` or `"DQSW270"` and the tool will not accept a pin there. Reading the hardware-proven netlist explains it: every one of the 40 serializers takes `TCLK` from its own lane's `DQS` output, `dqsw0` for nine per lane and `dqsw270` for the tenth, 40 of 40 across four lanes, and each lane carries one `DQS`, ten `OSER8_MEM` and eight `IDES8_MEM`, which is exactly where the inventory's 4, 40 and 32 counts come from. `TCLK`, `DLLSTEP` and the `DQSW` group are therefore not fabric wires to be named but dedicated intra-lane connections, so the unit of implementation is the lane complex rather than three independent BELs, in the same way the `DDRDLL`'s `LOCK` output needs a dedicated path. Nothing was written into the chipdb or the forks, the control build was not needed once the parameter check settled the question, and no Tang access or deployment occurred. The next increment is to model a lane site with its internal connections, which is a design decision rather than another measurement. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering and active-log capacity.
+
+#### Next Steps:
+
+Model one lane site before writing any lane RTL: decide how the chip database expresses internal connections between a `DQS` block and the ten `OSER8_MEM` and eight `IDES8_MEM` beside it -- the same problem as the `DDRDLL` `LOCK` escape, so one mechanism may cover both -- and confirm the lane's tile span against the vendor placement. That decision, plus the still-missing `DQS` pin names that remain genuine fabric wires, is the rest of the placement cycle. Touching the Tang again needs the user's approval, and it must be asked for before any deployment.
+
+#### Files Modified:
+
+- docs/ddr3-open-flow.md
+
+#### Status:
+
+- Build: N/A
+- Deployment: N/A
+- User Test: N/A
+
+---

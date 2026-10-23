@@ -123,6 +123,7 @@ Topic IDs are the `record_id` prefix. An entry reserves a namespace; it does not
 | What has been measured for the GW5AST DDRDLL? | TOOL | TOOL-003 |
 | Does the open-flow DDRDLL produce a tap code on hardware? | TOOL | TOOL-004 |
 | How does the working vendor controller drive the DDRDLL? | TOOL | TOOL-005 |
+| Are the lane primitives independent sites or one complex? | TOOL | TOOL-006 |
 | Which sources and licenses constrain reuse? | PROV | PROV-001 |
 
 ---
@@ -151,6 +152,7 @@ TOOL-002: "Yosys declares all required PHY cells; the GW5AST backend supports st
 TOOL-003: "DDRDLL is a two-cell macro: ports in the column-1 tile, configuration fuses in the corner, LOCK on a dedicated row-99 escape; open flow covers the bottom-left master only"
 TOOL-004: "DDRDLL STEP reads zero at 50 and 400 MHz in both the open-flow and the vendor-built image, under every static STOP/UPDNCNTL combination, so the zero is not this toolchain"
 TOOL-005: "The hardware-proven vendor controller holds STOP at PLL lock, drives UPDNCNTL from its init FSM, uses DDRDLLM_BL with this project's four parameters, and feeds STEP to four DQS blocks with no path back into the DLL"
+TOOL-006: "DQS, OSER8_MEM and IDES8_MEM form one lane complex: every serializer's TCLK comes from its lane's DQS output, so the internal connections must be modelled, not measured as fabric wires"
 PROV-001: "Reuse source and interface ideas with their original license boundaries and attribution intact"
 ```
 
@@ -430,6 +432,19 @@ PROV-001: "Reuse source and interface ideas with their original license boundari
     - "Tang-PSX gateware/gowin_ddr3.py, PLL_INIT feeding pll_lock"
     - "Tang-PSX third_party/litedram/litedram/phy/gw5ddrphy.py, GW5DDRPHYInit (BSD-2-Clause, upstream, not hardware-proven here)"
   verification: "Read directly from the vendored post-place-and-route netlist and the constraint file on 2026-10-23, cross-checked against TinyVCMI TOOL-002 for the site and TOOL-003 for the parameters. The LiteDRAM PHY's own DDR3 attempt in Tang-PSX never deployed because every placement variant failed setup timing, so its sequence is a design intent, not a hardware result."
+
+- record_id: TOOL-006
+  topic_id: TOOL
+  title: "The memory-mode IOLOGIC primitives are one lane complex"
+  status: VERIFIED
+  verified_date: 2026-10-23
+  statement: "In the hardware-proven vendor DDR3 netlist every one of the 40 OSER8_MEM instances takes TCLK from its own lane's DQS output, dqsw0 for nine per lane and dqsw270 for the tenth, and Gowin EDA rejects driving TCLK from an ordinary pin because TCLK_SOURCE is DQSW or DQSW270. Per lane the vendor instantiates one DQS, ten OSER8_MEM and eight IDES8_MEM, which is where the inventory's 4, 40 and 32 counts come from."
+  consequence: "TCLK, DLLSTEP and the DQSW group are not fabric wires to be named; they are dedicated connections inside a lane between the DQS block and the serializers beside it. The unit of implementation is therefore the lane complex, and the chip database has to express those internal connections rather than three independent BELs, exactly as the DDRDLL LOCK output needs a dedicated path. Measuring three separate wire names would be measuring something that does not exist."
+  sources:
+    - "Tang-PSX build/ddr3-vendor/ip/ddr3_memory_interface/ddr3_memory_interface.vo, the 40 OSER8_MEM TCLK connections and per-lane instance counts"
+    - "Gowin EDA 1.9.11.03 IDE/simlib/gw5a/prim_sim.v, module OSER8_MEM TCLK_SOURCE parameter"
+    - "Gowin EDA 1.9.11.03 error CK2060 observed when TCLK was driven from a pin in TinyVCMI build/meas_oser/oser"
+  verification: "Read from the vendored post-place-and-route netlist and confirmed against one vendor build attempt that Gowin refuses a pin on TCLK. The four-lane split was checked by counting instances per data_lane_gen index."
 
 - record_id: PROV-001
   topic_id: PROV

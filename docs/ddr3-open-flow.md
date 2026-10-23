@@ -337,8 +337,28 @@ connections, which is the same defect as guessing at corner bits. The missing
 names have to be measured the way the DDRDLL's were: one primitive constrained
 to one site in a vendor build and diffed against a control bitstream.
 
-`TCLK` is the cheapest to settle; `DQS` is the most valuable, since `DQSIN`
-and `DLLSTEP` are what a lane test needs.
+### These are not three independent primitives
+
+The plan to measure three wire names is wrong, and the vendor netlist says so.
+`Gowin EDA` refuses to drive `OSER8_MEM.TCLK` from a pin -- `TCLK_SOURCE` is
+`"DQSW"` or `"DQSW270"` -- and in the hardware-proven design every one of the
+40 serializers takes its `TCLK` from its own lane's `DQS` output:
+`dqsw0` for nine per lane and `dqsw270` for the tenth, 40 of 40 across the four
+lanes.
+
+So `TCLK`, `DLLSTEP` and the `DQSW*` group are not fabric wires to be named;
+they are dedicated intra-lane connections between the `DQS` block and the
+serializers beside it. Per lane the vendor instantiates one `DQS`, ten
+`OSER8_MEM` and eight `IDES8_MEM`, and the four lanes hold the 40, 32 and 4
+counts in the primitive inventory.
+
+That makes the unit of work the **lane complex**, not three BELs: the site
+model has to carry internal connections between a `DQS` and its serializers,
+the same way the `DDRDLL`'s `LOCK` needs a dedicated path rather than a named
+wire. Adding BELs for the three types separately would place and route and
+would model none of the connections that make them work.
+
+
 
 ## Milestones
 
