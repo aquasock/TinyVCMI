@@ -33,9 +33,12 @@ destination is a measured, non-default selection.  The source wire of a
 default output is therefore an inference from the route, not a measurement
 of a fuse, and the report says so.
 
-`FCLK` is checked as an open question rather than an entry: the tool asserts
-the two observations that keep it unresolved, so a later rebuild that
-changes either one is noticed.
+`FCLK` has no fabric pin.  For each `FCLK` pair the tool requires that the
+HCLK lane the target uses is newly routed through the left HCLK block at
+`(81,0)`, that no `FCLK` candidate moves in `(81,5)`, and that longfuses
+table 58 of the byte group's config tile `(72,0)` holds exactly that lane's
+select fuses.  Those pairs come from `tools/dqs_port_probe.py --mode routed`
+and `--mode clock` built under `build/fclk_rebuild/`.
 
 Usage:
     tools/dqs_map_check.py            # every entry, then a summary
@@ -106,12 +109,23 @@ OUTPUTS = {
     "WPOINT[2]": ("F5", "N830", None),
 }
 
-#: FCLK's open question: (pair, reference, target, tile, input dests that
-#: must change there).  The same fabric source lands on CLK1 in one template
-#: revision and CLK2 in the next; on the board clock it selects neither.
-FCLK_OBSERVATIONS = [
-    ("dqs_routed/FCLK", "const", "routed", (81, 0), {"CLK1"}),
-    ("dqs_clock/FCLK", "fabric", "clock", (81, 0), {"CLK2", "LSR2"}),
+#: FCLK is not a fabric pin.  It is a sink of the left HCLK block at (81,0):
+#: the router enters the block on a free `L2HCLK2<n>` fabric entry (wired to
+#: that tile's `CLK1`, `CLK2` or `LSR2`), lane n runs BETA -> BUF -> ALPHA,
+#: and the DQS takes lane n through longfuses table 58 of its byte group's
+#: config tile, (72,0) here, not through any fuse in (81,5).
+HCLK_BLOCK = (81, 0)
+BYTE_GROUP = (72, 0)
+
+#: lane -> the two table-58 keys whose fuses select it.  Lanes 2 and 3 are
+#: measured; the keys run (37, 38, 39) and (40, 41, 42) as two 2-bit fields,
+#: which predicts lane 1 at keys 37 and 40 and lane 0 as no fuse at all.
+FCLK_LANE_KEYS = {2: ((38,), (41,)), 3: ((39,), (42,))}
+
+#: (pair, reference, target, lane in reference or None, lane in target)
+FCLK_PAIRS = [
+    ("fclk_rebuild/routed/FCLK", "const", "routed", None, 2),
+    ("fclk_rebuild/clock/FCLK", "fabric", "clock", 2, 3),
 ]
 
 
@@ -152,10 +166,15 @@ class Pairs:
         return t, state
 
     @staticmethod
-    def selected(t, dest: str, state: set):
-        """The one source whose fuse set equals this destination's mux state."""
-        mux = set().union(*t.pips[dest].values())
-        hits = [src for src, fuses in t.pips[dest].items() if fuses == state & mux]
+    def selected(t, dest: str, state: set, sources=None):
+        """The one source whose fuse set equals this destination's mux state.
+
+        `sources` overrides the tile's own `pips[dest]`, for the device-level
+        `hclk_pips` table.
+        """
+        sources = t.pips[dest] if sources is None else sources
+        mux = set().union(*sources.values())
+        hits = [src for src, fuses in sources.items() if fuses == state & mux]
         return hits[0] if len(hits) == 1 else None
 
     def moved(self, tile, dests=None):
@@ -240,20 +259,44 @@ def main() -> int:
     report(len(set(sources)) == len(sources),
            f"output source wires distinct: {' '.join(sorted(sources))}")
 
-    print("\nFCLK (unresolved)")
-    for pair, ref, tgt, tile, expect in FCLK_OBSERVATIONS:
+    print(f"\nFCLK through HCLK block {HCLK_BLOCK} and byte group {BYTE_GROUP}")
+    table58 = pairs.dev.longfuses[pairs.dev.grid[BYTE_GROUP[0]][BYTE_GROUP[1]]]["unknown_58"]
+    lane_fuses = {lane: set().union(*(set(table58[k]) for k in keys))
+                  for lane, keys in FCLK_LANE_KEYS.items()}
+    field = set().union(*lane_fuses.values())
+    hclk = pairs.dev.hclk_pips[HCLK_BLOCK]
+    for pair, ref, tgt, ref_lane, tgt_lane in FCLK_PAIRS:
         pairs.load(pair, ref, tgt)
-        moved, _ = pairs.moved(tile, SITE_INPUTS)
-        report(set(moved) == expect,
-               f"{pair:16s} {tile} moved {sorted(moved) or '-'}")
+        _, before = pairs.tile_state(pairs.ref, HCLK_BLOCK)
+        _, after = pairs.tile_state(pairs.tgt, HCLK_BLOCK)
+        n = f"2{tgt_lane}"
+        chain = {f"HCLK_MUX_BETA{n}": f"L2HCLK{n}",
+                 f"HCLK_BUF_BI{n}": f"HCLK_MUX_BETA{n}",
+                 f"HCLK_MUX_ALPHA{n}": f"HCLK_BUF_BO{n}"}
+        ok = all(pairs.selected(None, d, after, hclk[d]) == s
+                 and pairs.selected(None, d, before, hclk[d]) != s
+                 for d, s in chain.items())
+        report(ok, f"{pair:24s} lane {tgt_lane} enters {HCLK_BLOCK}: "
+                   + " ".join(f"{d}<-{s}" for d, s in chain.items()))
+        moved, _ = pairs.moved(SITE, SITE_INPUTS)
+        report(set(moved) <= {"CLK0"},
+               f"{pair:24s} no FCLK pin in {SITE}: moved {sorted(moved) or '-'} "
+               f"(CLK0 is PCLK's global allocation)")
+        _, gb = pairs.tile_state(pairs.ref, BYTE_GROUP)
+        _, ga = pairs.tile_state(pairs.tgt, BYTE_GROUP)
+        want_b = lane_fuses.get(ref_lane, set())
+        want_a = lane_fuses[tgt_lane]
+        report(gb & field == want_b and ga & field == want_a,
+               f"{pair:24s} table 58 at {BYTE_GROUP}: lane {ref_lane} "
+               f"{sorted(gb & field) or '-'} -> lane {tgt_lane} {sorted(ga & field)}")
 
     print()
     if failures:
         print(f"{len(failures)} check(s) failed.")
         return 1
-    print(f"All {len(INPUTS)} inputs and {len(OUTPUTS)} outputs agree with the "
-          f"pairs; {len(hops)} output source wires are route inferences; FCLK "
-          f"is unresolved.  Hardware was not accessed.")
+    print(f"All {len(INPUTS)} inputs, {len(OUTPUTS)} outputs and the FCLK lane "
+          f"path agree with the pairs; {len(hops)} output source wires are route "
+          f"inferences.  Hardware was not accessed.")
     return 0
 
 

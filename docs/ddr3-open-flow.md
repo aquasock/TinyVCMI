@@ -591,14 +591,41 @@ netlist `ELVDS_IOBUF.O` drives `DQS.DQSIN` directly; board pin `Y3` is
 `IOL69A`, whose ordinary input wire is `F6` in tile `(68,0)`, so `DQSIN` is a
 fuse-free connection from the pad side and must be modelled as one.
 
-`FCLK` is unresolved. Its pairs move nothing in `(81,5)` except `PCLK`'s
-global-clock allocation, which is why an earlier `FCLK -> CLK0` reading was
-withdrawn. In tile `(81,0)` the same fabric-register source lands on `CLK1`
-in one template revision of the probe and on `CLK2` in the next, and with
-`FCLK` on the board clock neither is selected while `LSR2 <- E211` appears
-instead. That establishes that `FCLK`'s path enters through `(81,0)` and not
-the site tile, so the `DQS` macro spans more than one tile, but it does not
-name a pin, and the earlier `FCLK -> CLK2` reading is not a measurement.
+`FCLK` has no fabric pin; it is a sink of the high-speed clock network. Its
+pairs move nothing in `(81,5)` except `PCLK`'s global-clock allocation, which
+is why an earlier `FCLK -> CLK0` reading was withdrawn. Tile `(81,0)` is the
+left side's HCLK fabric-entry tile -- the chipdb's `extra_func` gives it
+`hclk_fabric_entry`, `clkdiv`, `clkdiv2` and `dhcen` -- and its `CLK1`, `CLK2`
+and `LSR2` are not bel pins but the fabric entries `L2HCLK21`, `L2HCLK22` and
+`L2HCLK23` of HCLK lanes 1 to 3. The router enters on whichever is free, which
+is why one fabric source landed on `CLK1` under an earlier probe template and
+on `CLK2` under the current one, and why the board clock arrived on `LSR2`
+over local routing. The rebuilt pairs in `build/fclk_rebuild/` are
+fuse-for-fuse identical to the earlier clock pair, so the vendor tool is
+deterministic and that difference came from the template.
+
+Decoded through the device-level `hclk_pips` table, every changed fuse in
+`(81,0)` is one lane's chain: the register source enters lane 2,
+`HCLK_MUX_BETA22 <- L2HCLK22`, `HCLK_BUF_BI22 <- HCLK_MUX_BETA22` and
+`HCLK_MUX_ALPHA22 <- HCLK_BUF_BO22`, and the board clock enters lane 3 through
+the same three muxes. The `DQS` chooses its lane in neither `(81,5)` nor
+`(81,0)` but in longfuses table 58 of tile `(72,0)`, type 64, which the chipdb
+places at 24 cells -- rows 9, 18, 36, 45, 63, 72, 90 and 99 of both long edges
+and eight on the bottom edge -- so it reads as the per-byte-group
+configuration table:
+
+    lane    table 58 keys    fuses in (72,0)
+    none    -                -
+    2       38, 41           (20,108) (20,107)
+    3       39, 42           (20,56) (20,108) (20,53) (20,107)
+
+The keys form two identical two-bit fields, `(37, 38, 39)` over `(20,56)` and
+`(20,108)` and `(40, 41, 42)` over `(20,53)` and `(20,107)`, each holding the
+lane number in binary. That predicts lane 1 at keys 37 and 40 and lane 0 as no
+fuse at all, indistinguishable from an unclocked block; lanes 0 and 1 are not
+measured. This selector is separate from the ordinary IOLOGIC `FCLKSEL`
+attributes, whose GW5AST-138C rows can select lanes 0 and 2 only, and the
+vendor put the `DQS` on lane 3.
 
 ### Outputs
 
@@ -639,7 +666,10 @@ tap lives outside the site tile.
 
 The control and status side of `DQS` is one tile, `(81,5)`: 24 input wires,
 13 output wires, and the constant-selection bits recorded earlier. What makes
-it a multi-tile macro is the clock and pad side: `FCLK` enters through
-`(81,0)` on a pin not yet named, `DQSIN` arrives fuse-free from the pad tile
-`(68,0)`, and `DLLSTEP` is an internal net from the `DDRDLL`. Those three are
-the remaining work before the bel can be written.
+it a multi-tile macro is the clock and pad side, and none of the three is an
+ordinary portmap entry. `FCLK` is an HCLK-lane sink whose select fuses live in
+table 58 of the byte group's config tile `(72,0)`, so it needs pips from the
+HCLK lanes carrying those fuses, as IOLOGIC `FCLK` already has. `DQSIN`
+arrives fuse-free from the pad tile `(68,0)`. `DLLSTEP` is an internal net
+from the `DDRDLL`. Those three are the remaining modelling work before the bel
+can be written.

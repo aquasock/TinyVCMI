@@ -648,3 +648,34 @@ Name `FCLK` before writing the bel: rebuild the routed and clock `FCLK` pairs un
 - User Test: N/A
 
 ---
+
+## 22 COMMIT Unreleased 2026-10-23T16:52:54-07:00
+
+#### Coming From:
+
+Unreleased 35fcfcc
+
+#### Purpose:
+
+Name the DQS `FCLK` connection that entry 21 left unresolved by rebuilding its matched pairs from one probe template and decoding the clock side.
+
+#### Outcome:
+
+Rebuilt the routed and clock `FCLK` pairs with `tools/dqs_port_probe.py` into `build/fclk_rebuild/`; the four Gowin EDA 1.9.11.03 builds passed, and the rebuilt clock pair is fuse-for-fuse identical to the earlier one while two members built from identical source differ only in header bytes, so the vendor tool is deterministic and entry 21's `CLK1` versus `CLK2` disagreement came from the template change. `FCLK` turned out to have no fabric pin. Tile `(81,0)` is the left side's HCLK fabric-entry tile, its `CLK1`, `CLK2` and `LSR2` are the lane entries `L2HCLK21` to `L2HCLK23`, and decoding it through the device-level `hclk_pips` table accounts for every changed fuse as one lane's `BETA`, `BUF` and `ALPHA` chain, lane 2 for a register source and lane 3 for the board clock. No `FCLK` fuse changes in `(81,5)`; the lane is selected in longfuses table 58 of tile `(72,0)`, keys 38 and 41 for lane 2 and 39 and 42 for lane 3, a table the chipdb carries at 24 cells, one per byte group. The keys read as two two-bit fields holding the lane number, which predicts lane 1 and makes lane 0 indistinguishable from an unclocked block; lanes 0 and 1 are unmeasured. This also means the `DQS` lane selector is separate from IOLOGIC `FCLKSEL`, which on this device reaches lanes 0 and 2 only, while the vendor placed the `DQS` on lane 3. `tools/dqs_map_check.py` now asserts the lane chain, the absence of an `FCLK` pin in `(81,5)` and the table-58 fuses for both rebuilt pairs in place of the earlier open-question observations, and passed in full at 1.43 GB peak memory under a 5 GB `ulimit -v` cap. `docs/ddr3-open-flow.md` and TOOL-007 record the result. No hardware was accessed. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering, and active-log capacity.
+
+#### Next Steps:
+
+Bring the Cycle B design to the user for approval before writing toolchain code: the `DQS` bel on tile `(81,5)` from the measured wires and constant-selection bits, `FCLK` as HCLK-lane pips carrying table-58 select fuses at the byte group's config tile in the way IOLOGIC `FCLK` already has HCLK pips, and a fuse-free cross-tile extension of `create_internal_net()` covering `ELVDS_IOBUF.O -> DQS.DQSIN` from `(68,0)`, `DDRDLL.STEP -> DQS.DLLSTEP` and the `DDRDLL` `LOCK` escape. Measuring lanes 0 and 1 of table 58 belongs in that cycle if the design offers them to the router. Continue offline and do not touch the Tang unless the user explicitly changes that instruction.
+
+#### Files Modified:
+
+- docs/ddr3-open-flow.md
+- tools/dqs_map_check.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: N/A
+- User Test: N/A
+
+---
