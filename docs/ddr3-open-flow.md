@@ -145,6 +145,31 @@ only moves with the DDR clock and protocol context the primitive is meant to
 serve, or configuration outside everything the vendor parameter sweeps exposed
 is required. Neither the control levels nor the six default bits explain it.
 
+### Vendor reference: the same zero
+
+The same RTL was then built by Gowin EDA 1.9.11.03 and loaded from
+`build/vendor_liveness` (4,330,802 bytes, sha256 `3a5ac691...`). The core
+answers `core 86`, so the vendor image runs the same responder, and its
+`STEP` also reads `0x00` while its counter advances:
+
+- `00 00 0b`, `00 cc 78`, `00 4e 22` — step zero, counter moving.
+
+That settles what the open-flow image could not: the zero is not a property of
+this project's placement, port mapping or packed fuses. The vendor's own
+bitstream, built from the same source, behaves identically at 50 MHz.
+
+It also corrects a note made while planning this test. Gowin's `.bin` is not a
+preamble plus a payload: it is exactly the `.fs` data lines packed
+eight bits to a byte, verified byte for byte here, and those leading `ff` and
+`de` bytes are part of the bitstream that a programmer sends. TinyTang writes
+both images raw, so the vendor image needs no conversion at all.
+
+So Gowin's behavioural model does not describe the silicon at a 20 ns clock
+period. The physical reading is that a DDR3-800 delay loop is built to lock
+against a 2.5 ns clock and has nothing to report at 20 ns, but that is a
+hypothesis, not a measurement: no test has yet clocked the primitive at the
+rate it is meant to serve.
+
 Two facts were established along the way and are worth keeping. `RESET` is
 active high, from the same model's `reset_sig = RESET | ~GSRO`. And `CLKIN` is
 the `CLK0` wire of the port tile: the vendor const-input build routes
