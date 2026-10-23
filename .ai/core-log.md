@@ -262,3 +262,32 @@ Decide the milestone's shape before writing more toolchain: if the primitive nee
 - User Test: N/A
 
 ---
+## 9 COMMIT Unreleased 2026-10-23T00:19:13-07:00
+
+#### Coming From:
+
+Unreleased d65563e
+
+#### Purpose:
+
+Test whether the DDRDLL produces a tap code when a DQS block is present beside it, the last structural difference from a working controller that could be isolated offline.
+
+#### Outcome:
+
+Ran the one remaining structural test: whether the primitive needs a `DQS` block beside it. The vendor toolchain built the same probe, still at 400 MHz with `STOP` and `UPDNCNTL` high, plus one `DQS` carrying the hardware-proven controller's parameters (`DQS_MODE="X4"`, `HWL="true"`, `FIFO_MODE_SEL=0`) with `DLLSTEP` fed from the DLL and the lane's outputs folded into a seventh reply byte so synthesis could not trim the block. Gowin requires `DQSIN` to come from a pad buffer and every DQS-capable pad on this board belongs to the DDR3 array, so the input was left unconstrained and the tool placed it on `K21`, which was checked against Tang-PSX's DDR3 constraint file and is not a DDR3 pin (`K1` and `M6` are, as positive controls), so no DDR3 package pin was exposed or driven. Three reads returned `aa 00 04 07 00 01 81 6a 82 e9 02`, `aa 00 04 07 00 01 03 f3 10 a5 02` and `aa 00 04 07 00 01 1f 69 d4 df 02`: `STEP` zero, `lock` one, both counters advancing and the lane byte steady at `0x02`, so the DQS block was alive and answering. A DQS beside the DLL changes nothing. That leaves the full controller context as the only remaining difference -- the memory clock as the PHY distributes it and the init state machine driving `UPDNCNTL` dynamically, which has not been tried because every static level has. The conclusion is recorded as a hypothesis with its consequence for the milestone shape rather than as a result: an isolated lock-and-step image may not be physically meaningful, and the DLL work should fold into the first x8 lane. The board was returned to the desktop core. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering and active-log capacity.
+
+#### Next Steps:
+
+One measurement is still outstanding and cheap: drive `UPDNCNTL` as a pulse rather than a level, which is how both the proven controller's init machine and the vendored LiteDRAM PHY use it, and read `STEP` afterwards. If that also returns zero, stop testing `STEP` altogether and re-scope milestone 2 to fold the DLL and `LOCK` work into the first x8 lane, since an isolated island cannot be shown to run. Either way the implementation work is unchanged: `DQS`, `OSER8_MEM` and `IDES8_MEM` placement plus a way to express the dedicated `LOCK` escape. Touching the Tang again needs the user's approval.
+
+#### Files Modified:
+
+- docs/ddr3-open-flow.md
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: N/A
+
+---

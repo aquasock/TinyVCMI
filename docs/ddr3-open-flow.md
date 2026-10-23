@@ -236,6 +236,25 @@ Three reads at 400 MHz, `STOP=1`, `UPDNCNTL=1`:
 exact clock and control levels of a working design, with the PLL locked, in
 this project's toolchain.
 
+### One DQS lane beside the DLL
+
+The last cheap structural test was whether the primitive needs a `DQS` block
+beside it. A vendor build (Gowin EDA 1.9.11.03) carried the same probe, still
+at 400 MHz with `STOP` and `UPDNCNTL` high, plus one `DQS` with the proven
+controller's parameters (`DQS_MODE="X4"`, `HWL="true"`, `FIFO_MODE_SEL=0`) and
+its `DLLSTEP` fed from the DLL. Its outputs are folded into a seventh reply
+byte so synthesis cannot trim the block for being unobserved.
+
+`DQSIN` needs a pad buffer, and every DQS-capable pad on this board belongs to
+the DDR3 array, so the input was left unconstrained: the vendor tool placed it
+on `K21`, which is not in the DDR3 pin list (`K1` and `M6` are, as controls).
+No DDR3 package pin was exposed or driven.
+
+Three reads of `aa 00 04 07 00 01 81 6a 82 e9 02`, `... 03 f3 10 a5 02`,
+`... 1f 69 d4 df 02`: `step = 0x00`, `lock = 1`, both counters advancing, and
+the lane byte steady at `0x02`, so the DQS block answers. A DQS beside the DLL
+changes nothing.
+
 That closes the campaign of cheap explanations. `STEP` has now been read at
 50 MHz and 400 MHz, with `STOP` and `UPDNCNTL` in all four static
 combinations, with the six vendor-default corner bits packed, and under the
