@@ -316,6 +316,29 @@ database no longer applies: the fork's `DLL0` tables are already per-tile-type
 correct for three of the four corners, and the measured evidence above was read
 out of them rather than the old offsets.
 
+## Internal paths
+
+The chip database now has a first-class way to state a link the silicon
+hard-wires. `create_internal_net()` in the nextpnr Gowin generator creates a
+wire with **no pips** and attaches only the bel pins named at creation, so the
+router can neither enter nor leave it: the connection is fixed, and there is
+nothing for the packer to configure because no fuse exists for it. That is the
+model for exactly the links the vendor tool refuses to let a design route --
+`DQS` to `OSER8_MEM.TCLK`, and `DDRDLL` to `DQS.DLLSTEP`.
+
+`himbaechel/uarch/gowin/tests/check_internal_net.py` gates the two invariants
+that make it safe: the wire carries bel pins and no pip may ever touch it, and
+a duplicate definition raises instead of quietly attaching more pins.
+
+There is no consumer yet, deliberately. The lane bel set is what would use it,
+and that needs the `DQS` fabric pins, which the previous sections show cannot
+be recovered by isolating the primitive. The mechanism is therefore
+infrastructure waiting on one measurement, not a partial lane.
+
+The `DDRDLL` `LOCK` escape is a harder case of the same idea: its endpoint is
+nine tiles away, so it needs a path that crosses tiles, not just one inside a
+site. That is not covered by this mechanism and remains open.
+
 ## Placement boundary for the lane primitives
 
 The three primitives a lane needs sit at IOLOGIC sites in the vendor's design.

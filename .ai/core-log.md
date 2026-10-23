@@ -407,3 +407,32 @@ Design the internal-path mechanism, since measuring the primitives in isolation 
 - User Test: N/A
 
 ---
+## 14 COMMIT Unreleased 2026-10-23T00:42:09-07:00
+
+#### Coming From:
+
+Unreleased da60061
+
+#### Purpose:
+
+Implement the chip-database mechanism that expresses hard-wired bel-to-bel links, the prerequisite for modelling a lane complex.
+
+#### Outcome:
+
+Implemented the internal-path mechanism in the nextpnr Gowin generator. `create_internal_net()` creates a tile wire with no pips and attaches only the bel pins named at creation, so the router can neither enter nor leave the connection and the packer has no fuse to emit for it; that models exactly the links the vendor tool refuses to let a design route. `himbaechel/uarch/gowin/tests/check_internal_net.py` gates the two invariants, that the wire carries the bel pins and that no pip may touch it, and that a duplicate definition raises rather than attaching more pins to the first wire; both checks pass. The generator was rebuilt against the fork's Apicula database, the chipdb and `nextpnr-himbaechel` came out clean, and `tools/ddr3_openflow_preflight.sh` still reports the same boundary -- `DDRDLL`, `IODELAY` and `CLKDIV` pass, `DQS`, `OSER8_MEM` and `IDES8_MEM` remain gaps -- so the change is a silent no-op on today's designs, which is what a mechanism with no consumer should be. There is deliberately no consumer yet: the lane bel set that would use it needs the `DQS` fabric pins, and entries 12 and 13 established that the primitive cannot be isolated, so those pins can only come from a full vendor lane build. The mechanism also does not cover the `DDRDLL` `LOCK` escape, whose endpoint is nine tiles away and needs a cross-tile path rather than a single-site one. The generator and test changes are committed in the nextpnr fork on `epic/gw5ast138c` and not pushed, per the standing instruction that only `aquasock/TinyVCMI` is pushed. No Tang access of any kind: the board is being used by another agent and is off limits until the user says otherwise. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering and active-log capacity.
+
+#### Next Steps:
+
+Get the `DQS` fabric pins, which is the one input the lane bel set needs and the only thing this mechanism is waiting on. Isolation cannot produce them, so the route is a complete vendor lane: one `DDRDLL`, one `DQS` and its serializers built together in Gowin EDA exactly as the proven controller does it, then read the pins off the placed netlist and the bitstream. That needs no board access at all -- it is a local build plus the existing netlist-reading method -- which matters while another agent owns the Tang. After that the lane bel set and the cross-tile form of the `LOCK` path are the remaining implementation work.
+
+#### Files Modified:
+
+- docs/ddr3-open-flow.md
+
+#### Status:
+
+- Build: PASS
+- Deployment: N/A
+- User Test: N/A
+
+---
