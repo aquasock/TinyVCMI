@@ -1486,3 +1486,42 @@ Build the controller-facing read-data aligner around a trained read-valid bounda
 - User Test: N/A
 
 ---
+
+## 47 COMMIT Unreleased 2026-10-24T12:55:31-07:00
+
+#### Coming From:
+
+Unreleased 21e3dba
+
+#### Purpose:
+
+Build the controller-facing read-data aligner around a trained read-valid boundary, measure what moves the read word frame, and make the aligned burst hold pattern order under live traffic.
+
+#### Outcome:
+
+`fpga/ddr3_write/rd_align.v` trains each lane's whole-word rotation from the live read stream, derotates and transposes it into one 256-bit burst of eight 32-bit beats with a per-cycle valid, and refuses a pattern whose eight rotations are not distinct; `wr_core.v` arms it on read entry, on every CALIB pulse and on a new command `0x23`, and its status frame grew to 122 payload bytes to carry the aligned snapshot, per-lane locks, err, drift, live phase, phase-move counters and followed slips. Two mechanism defects surfaced on the way: a lock that needed 32 consecutive stream cycles could never complete against the core's gated reads and now counts agreeing observations across gaps, and `open.sdc` had silently stopped constraining `PCLK` after flattening renamed the net to `core.pclk`, so `tools/build_ddr3_write.sh` now fails when a clock constraint matches no net. The in-core phase monitor showed the frame is deterministic rather than drifting: it never moves while the stream is live, moves once per interruption and is first seen at the first live cycle after a gated gap, moves all four lanes by the same amount with their offsets preserved, and its size is fixed by the read delay and not by the gap length, 510, 319 and 40 PCLK apart at read-run/gap 255/255, 255/64 and 32/8 and about 700 PCLK apart at 255/1, with step `-2` at delays 2 to 7 and `+4` at delays 0 and 1 and `RBURST` low throughout. The aligner therefore follows a uniform move held for eight cycles instead of flagging it, withholds valid while the frame is moving, and reserves `drift` for a lane that leaves its lock alone. The unit simulation passes with the gated-stream and slip cases and both the wrong derotation and the wrong transpose trip 29 assertions; the first full build missed `PCLK` at 95.26 MHz, which a wiring transpose plus a three-stage byte rotation and a registered measurement fixed, closing at 128.02 MHz. On the Tang the open image, SHA-256 `40ddf0256d7a03d38678528c07ada37bf8ea02adf9ea312c0211ce66a4f51d79`, passed six of six read sessions with `err` and `drift` clear and every presented burst in pattern order, 26,151 to 26,391 bursts each with roughly 48,800 slips followed, kept 100 percent of 10,309 bursts when trained at 255/255 and dropped to 32/8 without leaving read mode, and passed a 240-case bank/row/pattern sweep twice with no failures; the locked rotations differed between sessions, which is the point of the exercise. The desktop `tinytang.bin` was restored and answered `0x54`. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering and active-log capacity.
+
+#### Next Steps:
+
+Train the aligner once at start-up and hold its locks through ordinary traffic, then build the controller that binds a burst to the READ command that asked for it, most likely LiteDRAM's control layer over this PHY, and qualify sustained random traffic across the full array before beginning the AE350 port; the diagnostic still presents nothing below about twenty reads per group, and the `D108` unused-pin contradiction and the `is_mipi` bug outside the DDR context remain open.
+
+#### Files Modified:
+
+- docs/ddr3-open-flow.md
+- fpga/ddr3_write/open.sdc
+- fpga/ddr3_write/rd_align.v
+- fpga/ddr3_write/tb_align.v
+- fpga/ddr3_write/wr_core.v
+- tools/build_ddr3_write.sh
+- tools/ddr3_write.py
+- tools/ddr3_write_probe.py
+- tools/sim_ddr3_write.sh
+- tools/sim_rd_align.sh
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: N/A
+
+---

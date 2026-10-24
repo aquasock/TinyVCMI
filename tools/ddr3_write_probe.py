@@ -21,6 +21,16 @@ chosen over the link.  This tool opens TinyTang's `fpgapipe` once and:
               signed read-delay range per lane, centre the observed passing
               window, and verify lane alignment across repeated read sessions
   memtest     write/read several patterns across selected banks and rows
+  align       write a pattern, read it back and verify the read-data
+              aligner's burst: each lane's trained rotation, the aligned
+              snapshot against the pattern and against a host-side
+              derotation of the raw snapshot, and the per-window counts
+  alignsweep  align across several banks, rows and patterns
+
+The aligner trains per read session, so every align case re-enters read mode
+and the tool reports the raw rotation it observes beside the locked one.  A
+pattern must have eight distinct rotations to be trainable; 0x00, 0xff, 0xaa
+and 0x55 are refused up front.
 
 Every mode is left back in idle.  It touches nothing but the link; the board
 must already be running the image.
@@ -40,6 +50,8 @@ import time
 import serial
 
 MODES = ["idle", "level", "write", "read"]
+PAYLOAD = 122
+TOTAL = 4 + PAYLOAD
 
 
 class Core:
@@ -69,7 +81,7 @@ class Core:
         raise RuntimeError(f"no reply to command {cmd:#04x}: {buf.hex(' ')}")
 
     def status(self) -> dict:
-        b = self.request(0x03, expect=72)[4:]
+        b = self.request(0x03, expect=TOTAL)[4:]
         s = {"ready": b[0] >> 7 & 1, "pll": b[0] >> 6 & 1, "lock": b[0] >> 5 & 1,
              "cke": b[0] >> 3 & 1, "reset_n": b[0] >> 2 & 1, "step": b[1],
              "mode": MODES[b[2] >> 6], "state": b[2] & 15, "pattern": b[3],
@@ -84,6 +96,23 @@ class Core:
                                "wstep": b[o + 4],
                                "moves": int.from_bytes(b[o + 5:o + 6], "little", signed=True),
                                "words": b[36 + 8 * n:44 + 8 * n]})
+        s["pat_ok"] = b[68] >> 6 & 1
+        s["trained"] = b[68] & 15
+        s["aligned_good"] = int.from_bytes(b[69:71], "little")
+        locked = b[71] | (b[72] << 8)
+        s["rot"] = [(locked >> (3 * n)) & 7 for n in range(4)]
+        s["drift"] = b[73] & 15
+        s["err"] = b[74] & 15
+        s["aligned_seen"] = int.from_bytes(b[75:77], "little")
+        s["aligned_words"] = b[78:110]
+        s["chg_total"] = int.from_bytes(b[110:112], "little")
+        s["chg_gap"] = int.from_bytes(b[112:114], "little")
+        s["delta_last"] = int.from_bytes(b[114:116], "little")
+        s["phase_step"] = [b[116] & 7, b[116] >> 3 & 7, b[117] & 7, b[117] >> 3 & 7]
+        s["skew_changed"] = b[116] >> 7 & 1
+        s["phase"] = [(b[118] | (b[119] << 8)) >> (3 * n) & 7 for n in range(4)]
+        s["phase_ok"] = b[119] >> 4 & 15
+        s["relocks"] = int.from_bytes(b[120:122], "little")
         return s
 
     def mode(self, m: int):
@@ -153,6 +182,100 @@ def write_address(core: Core, bank: int, row: int, pattern: int, write_s: float)
     core.mode(2)
     time.sleep(write_s)
     core.mode(0)
+
+
+def rotations(pattern: int) -> list[int]:
+    return [((pattern << r) | (pattern >> (8 - r))) & 0xFF for r in range(8)]
+
+
+def trainable(pattern: int) -> bool:
+    return len(set(rotations(pattern))) == 8
+
+
+def burst_bytes(pattern: int) -> bytes:
+    """The 32 bytes an aligned read burst must carry, beat 0 first."""
+    return bytes(0x55 if (pattern >> bit) & 1 else 0xAA
+                 for bit in range(8) for _ in range(4))
+
+
+def aligned_from_raw(s: dict) -> bytes:
+    """Derotate the raw snapshot with the reported locks and transpose it."""
+    out = bytearray(32)
+    for beat in range(8):
+        for lane in range(4):
+            # the pins as captured: even pins carry the pattern, odd pins its
+            # inverse, so each word is derotated on its own
+            word = [((w >> s["rot"][lane]) | (w << (8 - s["rot"][lane]))) & 0xFF
+                    for w in s["lanes"][lane]["words"]]
+            value = 0
+            for pin in range(8):
+                value |= ((word[pin] >> beat) & 1) << pin
+            out[4 * beat + lane] = value
+    return bytes(out)
+
+
+def check_aligned(s: dict, pattern: int, ratio: float = 0.75) -> list[str]:
+    """Every independent check of one aligned read window."""
+    bad = []
+    if not trainable(pattern):
+        return [f"pattern {pattern:#04x} has fewer than eight distinct rotations"]
+    if not s["pat_ok"]:
+        bad.append("the core does not consider the pattern identifiable")
+    if s["trained"] != 0b1111:
+        bad.append(f"trained mask {s['trained']:04b}, not 1111")
+    if s["err"]:
+        bad.append(f"a lane's aligned byte did not match: err {s['err']:04b}")
+    if s["drift"]:
+        bad.append(f"a lane's rotation left its lock: drift {s['drift']:04b}")
+    if s["aligned_seen"] == 0:
+        bad.append("no aligned burst was presented")
+    elif s["aligned_good"] < int(s["aligned_seen"] * ratio):
+        bad.append(f"{s['aligned_good']} of {s['aligned_seen']} aligned bursts matched")
+    want = burst_bytes(pattern)
+    if s["aligned_words"] != want:
+        for i, (got, exp) in enumerate(zip(s["aligned_words"], want)):
+            if got != exp:
+                bad.append(f"beat {i // 4} lane {i % 4} is {got:#04x}, expected {exp:#04x}")
+                break
+    recomputed = aligned_from_raw(s)
+    if recomputed != s["aligned_words"]:
+        for i, (got, exp) in enumerate(zip(s["aligned_words"], recomputed)):
+            if got != exp:
+                bad.append(f"beat {i // 4} lane {i % 4}: snapshot {got:#04x} but the "
+                           f"raw words derotated by the reported locks give {exp:#04x}")
+                break
+    return bad
+
+
+def settled_status(core: "Core", pattern: int, tries: int = 40) -> dict:
+    """A status whose snapshot was taken in a settled window.
+
+    The raw snapshot and the aligned snapshot are single-cycle samples, so
+    one taken while the frame is moving shows the new phase against the old
+    lock.  That is the slack between a slip and the relock, not bad data --
+    the per-window counters judge the presented bursts.  Re-read until the
+    sample agrees with the locks before using it for a byte comparison.
+    """
+    s = core.settle()
+    for _ in range(tries):
+        raw = [rotation(s["lanes"][n]["words"], pattern) for n in range(4)]
+        # a sample taken while a slip is being followed pairs an old word with
+        # the previous lock; require the reported burst to agree with an
+        # independent derotation of the same sample before believing it
+        if raw == [str(r) for r in s["rot"]] and \
+                aligned_from_raw(s) == s["aligned_words"]:
+            return s
+        time.sleep(0.001)
+        s = core.snapshot()
+    return s
+
+
+def aligned_line(s: dict, pattern: int) -> str:
+    raw = [rotation(s["lanes"][n]["words"], pattern) for n in range(4)]
+    return (f"trained {s['trained']:04b} rot {s['rot']} snapshot-rot {raw} "
+            f"aligned {s['aligned_good']}/{s['aligned_seen']} err {s['err']:04b} "
+            f"relocks {s['relocks']} "
+            f"drift {s['drift']:04b}")
 
 
 def normalized_words(lane: dict) -> list[int]:
@@ -312,6 +435,38 @@ def main() -> int:
     ca.add_argument("--write-ms", type=float, default=20)
     ca.add_argument("--sessions", type=int, default=5)
     ca.add_argument("--pass-ratio", type=float, default=0.75)
+    al = sub.add_parser("align")
+    al.add_argument("--pattern", type=lambda x: int(x, 0), default=0x1D)
+    al.add_argument("--wstep", type=int, nargs="+", default=[0])
+    al.add_argument("--bank", type=int, default=0)
+    al.add_argument("--row", type=lambda x: int(x, 0), default=0)
+    al.add_argument("--write-ms", type=float, default=20)
+    al.add_argument("--read-run", type=int, default=32)
+    al.add_argument("--read-gap", type=int, default=8)
+    al.add_argument("--read-delay", type=int, default=3)
+    al.add_argument("--sessions", type=int, default=5)
+    al.add_argument("--pass-ratio", type=float, default=0.75)
+    asw = sub.add_parser("alignsweep")
+    asw.add_argument("--banks", type=lambda x: int(x, 0), nargs="+", default=list(range(8)))
+    asw.add_argument("--rows", type=lambda x: int(x, 0), nargs="+",
+                     default=[0, 1, 2, 0x155, 0x2AAA, 0x7FFF])
+    asw.add_argument("--patterns", type=lambda x: int(x, 0), nargs="+",
+                     default=[0x1D, 0x6B, 0xC5, 0x96, 0x3C])
+    asw.add_argument("--wstep", type=int, nargs="+", default=[0])
+    asw.add_argument("--write-ms", type=float, default=5)
+    asw.add_argument("--read-run", type=int, default=32)
+    asw.add_argument("--read-gap", type=int, default=8)
+    asw.add_argument("--read-delay", type=int, default=3)
+    asw.add_argument("--pass-ratio", type=float, default=0.75)
+    ph = sub.add_parser("phase")
+    ph.add_argument("--pattern", type=lambda x: int(x, 0), default=0x1D)
+    ph.add_argument("--wstep", type=int, nargs="+", default=[0])
+    ph.add_argument("--read-run", type=int, default=255)
+    ph.add_argument("--read-gap", type=int, default=255)
+    ph.add_argument("--read-delay", type=int, default=3)
+    ph.add_argument("--write-ms", type=float, default=20)
+    ph.add_argument("--samples", type=int, default=8)
+    ph.add_argument("--interval-ms", type=float, default=20.0)
     mt = sub.add_parser("memtest")
     mt.add_argument("--banks", type=lambda x: int(x, 0), nargs="+", default=list(range(8)))
     mt.add_argument("--rows", type=lambda x: int(x, 0), nargs="+",
@@ -386,6 +541,67 @@ def main() -> int:
             if args.sessions:
                 write_address(core, 0, 0, args.pattern, args.write_ms / 1000)
                 verify_sessions(core, args.pattern, args.sessions, args.pass_ratio)
+        elif args.cmd == "phase":
+            if not trainable(args.pattern):
+                raise ValueError("a pattern needs eight distinct rotations")
+            values = args.wstep * 4 if len(args.wstep) == 1 else args.wstep
+            set_wstep(core, values)
+            core.request(0x0E, args.pattern)
+            write_address(core, 0, 0, args.pattern, args.write_ms / 1000)
+            core.mode(3)
+            core.request(0x23)                      # clear the monitor
+            core.settle()
+            print(f"pattern {args.pattern:#04x} read-run {args.read_run} gap {args.read_gap}")
+            print("   moves  at-gap  delta  step[0..3]  skew  phase[0..3]  ok")
+            for i in range(args.samples):
+                s = core.status()
+                print(f"{s['chg_total']:8d} {s['chg_gap']:7d} {s['delta_last']:6d} "
+                      f"{s['phase_step']}  {s['skew_changed']:4d}  {s['phase']}  {s['phase_ok']:04b}")
+                time.sleep(args.interval_ms / 1000)
+            core.mode(0)
+        elif args.cmd in ("align", "alignsweep"):
+            if not trainable(args.pattern if args.cmd == "align" else args.patterns[0]):
+                raise ValueError("a pattern needs eight distinct rotations to train")
+            values = args.wstep * 4 if len(args.wstep) == 1 else args.wstep
+            if len(values) != 4:
+                raise ValueError("--wstep needs one value or four lane values")
+            set_wstep(core, values)
+            failures = 0
+            if args.cmd == "align":
+                core.request(0x0E, args.pattern)
+                row = args.row
+                write_address(core, args.bank, row, args.pattern, args.write_ms / 1000)
+                for session in range(args.sessions):
+                    core.mode(3)                # entering read mode retrains
+                    s = settled_status(core, args.pattern)
+                    core.mode(0)
+                    bad = check_aligned(s, args.pattern, args.pass_ratio)
+                    failures += bool(bad)
+                    print(f"session {session + 1}: {aligned_line(s, args.pattern)}: " +
+                          ("PASS" if not bad else "FAIL"))
+                    for line in bad:
+                        print("    " + line)
+                if failures:
+                    raise RuntimeError(f"{failures} align session(s) failed")
+            else:
+                for bank in args.banks:
+                    for row in args.rows:
+                        for pattern in args.patterns:
+                            if not trainable(pattern):
+                                raise ValueError(f"pattern {pattern:#04x} cannot train")
+                            write_address(core, bank, row, pattern, args.write_ms / 1000)
+                            core.mode(3)
+                            s = settled_status(core, pattern)
+                            core.mode(0)
+                            bad = check_aligned(s, pattern, args.pass_ratio)
+                            failures += bool(bad)
+                            print(f"bank {bank} row {row:#06x} pattern {pattern:#04x}: " +
+                                  ("PASS " if not bad else "FAIL ") +
+                                  aligned_line(s, pattern))
+                            for line in bad:
+                                print("    " + line)
+                if failures:
+                    raise RuntimeError(f"{failures} aligned memory cases failed")
         else:
             values = args.wstep * 4 if len(args.wstep) == 1 else args.wstep
             if len(values) != 4:

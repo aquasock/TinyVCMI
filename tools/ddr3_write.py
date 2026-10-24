@@ -203,10 +203,18 @@ def render() -> str:
     return "\n".join(out) + "\n"
 
 
-TCL = bringup.TCL.replace("bringup_core.v", "wr_core.v")
+TCL = bringup.TCL.replace("bringup_core.v",
+                          "wr_core.v\nadd_file -type verilog rd_align.v")
+
+# nextpnr flattens `top` and `core`, and the memory clock's net comes out as
+# `core.pclk`, so the open flow must name it that way; Gowin keeps the source
+# name in vendor.sdc.  build_ddr3_write.sh fails the build when a clock
+# constraint matches no net, so a future rename cannot pass unnoticed.
+SDC_OPEN = "# core.pclk is the flattened name of the memory clock net\n" + \
+    bringup.SDC_OPEN.replace("[get_nets {pclk}]", "[get_nets {core.pclk}]")
 
 GENERATED = {"top.v": render, "top.cst": bringup.cst,
-             "open.sdc": lambda: bringup.SDC_OPEN, "vendor.sdc": lambda: bringup.SDC_VENDOR}
+             "open.sdc": lambda: SDC_OPEN, "vendor.sdc": lambda: bringup.SDC_VENDOR}
 
 
 def vendor_build() -> int:
@@ -216,7 +224,7 @@ def vendor_build() -> int:
     if os.path.isdir(VENDOR):
         shutil.rmtree(VENDOR)
     os.makedirs(VENDOR)
-    for fn in ("top.v", "wr_core.v", "top.cst"):
+    for fn in ("top.v", "wr_core.v", "rd_align.v", "top.cst"):
         shutil.copy(os.path.join(SRC, fn), VENDOR)
     shutil.copy(os.path.join(SRC, "vendor.sdc"), os.path.join(VENDOR, "top.sdc"))
     with open(os.path.join(VENDOR, "run.tcl"), "w") as f:

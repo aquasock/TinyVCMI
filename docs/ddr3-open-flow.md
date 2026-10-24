@@ -1908,3 +1908,94 @@ Finally, `memtest` passed all 336 combinations of eight banks, rows `0`, `1`,
 `1d`, `6b` and `c5`. Each case saw about 25,100 eligible live read cycles and
 matched on all four lanes. The desktop `tinytang.bin` was restored afterwards
 and answered core ID `0x54`.
+
+## Read-data alignment
+
+`fpga/ddr3_write/rd_align.v` is the trained read-valid boundary the previous
+cycle called for. It trains each lane's whole-word rotation from the live
+read stream, derotates every captured word, transposes the lane's eight DQ
+pins into eight beat bytes, and presents one 256-bit burst -- eight beats of
+32 bits, lane 0 in the low byte, so lane *l*'s byte *b* is bit 0 of DQ `8l` --
+with a per-cycle valid. The burst stays inside the core until a controller
+takes it; the link only exposes counters, snapshots and a re-arm command
+(`0x23`), and the status frame grew to 122 payload bytes to carry them.
+
+Training counts only cycles the core marks as a live stream, which it grants
+once the read path has run sixteen unbroken cycles. A lane locks after 32
+such cycles agree on exactly one rotation *and* all eight of its pins hold
+it -- even pins the word itself, odd pins its inverse, as the write
+serializers drive them -- so a mis-framed pin blocks the lock instead of
+being averaged away. A pattern is trainable only if its eight rotations are
+distinct; `00`, `ff`, `aa` and `55` are refused, and the host tool rejects
+them up front. The count is of agreeing observations, not consecutive
+clocks: the core gates its reads into groups, and a gap confirms nothing.
+
+### The rotation is deterministic, not static
+
+The previous cycle recorded that whole-word rotation "changes between
+snapshots and read epochs" without explaining it. In-core counters now do,
+and the frame moves for a reason:
+
+| Setting | Moves between | Step, all four lanes |
+|---|---|---|
+| read-run 255, gap 255 | 510 cycles, every group | `-2` (delay 3) |
+| read-run 255, gap 64 | 319 cycles, every group | `-2` |
+| read-run 32, gap 8 | 40 cycles, every group | `-2` |
+| read-run 255, gap 1 | ~700 cycles, every refresh | `-2` |
+| read-run 32, gap 8, delay 0 or 1 | 40 cycles, every group | `+4` |
+| read-run 32, gap 8, delay 2..7 | 40 cycles, every group | `-2` |
+
+The phase never moved while the stream was live -- every move was first seen
+at the first live cycle after a gated gap -- it always moved all four lanes
+by the same amount with their offsets preserved, and its size is a fixed
+function of the read delay, unchanged by the gap length. A one-cycle gap is
+too short to re-frame, and there the moves fall back to the refresh period.
+Ten consecutive samples at delay 3 reported the same `-2` step ten times.
+`RBURST` never asserts on any lane, so the PHY offers no burst marker to
+re-frame against; that is why the frame is free-running at all.
+
+### Following the slip
+
+Because the move is uniform and repeatable, a static lock is the wrong
+mechanism and a per-burst marker is unnecessary. A lock is now a starting
+point: a move all four lanes make together, held for eight cycles, is
+*followed* -- the locks move with it and the burst stays in pattern order. A
+burst is not offered while the frame is known to be moving, so the valid
+handshake never presents a shifted word. A lane that leaves its lock while
+the others do not, or a move that never settles, is not followed; thirty-two
+live cycles off the lock set that lane's `drift`, which is the fault case,
+not a slip.
+
+On the Tang, `align` at 255/255 passed six read sessions of six, each with
+`trained 1111`, `err 0000`, `drift 0000` and every presented burst matching,
+26,151 to 26,391 of the same count, with roughly 48,800 slips followed per
+session. The locked rotations differed between sessions -- `[0,2,6,6]`,
+`[4,6,2,2]`, `[2,4,0,0]` -- which is the point: the frame comes up where it
+comes up, and the data is in burst order either way. Training once with a
+255-cycle group and then dropping to 32/8 without leaving read mode stayed at
+100% (10,309 of 10,309). `alignsweep` over eight banks, six rows and five
+trainable patterns, 240 cases, passed twice with no failures at about 26,200
+aligned bursts per case.
+
+The deployed open-flow image was SHA-256
+`40ddf0256d7a03d38678528c07ada37bf8ea02adf9ea312c0211ce66a4f51d79`, built by
+`tools/build_ddr3_write.sh` with `PCLK` closing at 128.02 MHz, equal on all
+306 DDR3 tables to its Gowin build
+(`a7d02c01a55b861b48ceca3f9dfa4bc1b7de600cd7bb90e9cb20cebda417302c`), using
+5394 LUT4 and 5365 DFF. The desktop `tinytang.bin` was restored afterwards
+and answered `0x54`.
+
+### What this does not close
+
+The aligner fixes byte order within a burst. It does not associate a burst
+with the READ command that asked for it, and it does not establish read
+latency; those belong to the controller. Training needs a window of at least
+32 live cycles, and the core only calls a stream live after sixteen unbroken
+reads, so a cadence of fewer than about twenty reads per group presents
+nothing at all -- a limit of this diagnostic's stream qualification, not of
+the primitive. A single snapshot can land inside a relock window, so the host
+tool re-samples until the reported burst agrees with an independent
+derotation of the same sample instead of trusting one read. Write leveling
+still counts zero because `READ` is held low outside read mode. The `D108`
+unused-pin contradiction and the `is_mipi` bug outside the DDR context remain
+open.

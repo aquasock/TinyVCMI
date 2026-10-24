@@ -20,7 +20,7 @@ awk '/^module DQS\(/ { skip = 1 } !skip { print } skip && /^endmodule/ { skip = 
 
 iverilog -g2012 -s tb -o "$out/tb.vvp" \
     "$src/tb_wr.v" "$root/fpga/ddr3_phy_bringup/tb_dqs_standin.v" \
-    "$src/top.v" "$src/wr_core.v" "$lib" >"$out/iverilog.log" 2>&1 || {
+    "$src/top.v" "$src/wr_core.v" "$src/rd_align.v" "$lib" >"$out/iverilog.log" 2>&1 || {
         tail -30 "$out/iverilog.log" >&2
         exit 1
     }

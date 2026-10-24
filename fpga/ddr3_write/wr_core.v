@@ -61,8 +61,15 @@
 //   20 v      active row[7:0]
 //   21 v      active row[14:8] = v[6:0]
 //   22 n      delay DQS READ gating n[2:0] PCLK after each READ command
+//   23        re-arm rd_align: discard every lane's locked rotation
 //
-// Status bytes, 68 of them:
+// The read data path ends in rd_align, the trained read-valid boundary: it
+// locks each lane's whole-word rotation from the live stream, derotates it,
+// transposes the lane's eight pins into eight beat bytes and presents a
+// 256-bit burst (eight beats of 32 bits) with a valid.  Training arms itself
+// whenever read mode is entered, on every CALIB pulse and on command 0x23.
+//
+// Status bytes, 110 of them:
 //    0  {ready, pll_lock, dll_lock, lock_seen, cke, reset_n, 2'b0}
 //    1  DDRDLL STEP
 //    2  {mode[1:0], 2'b0, state[3:0]}  (state 8 idle, 9 level, 10 write, 11 read)
@@ -78,6 +85,21 @@
 //   16+6n  lane n WSTEP
 //   17+6n  lane n net RMOVE steps, signed
 //   36+8n .. 43+8n  lane n snapshot, DQ 8n .. 8n+7
+//   68     {1'b0, pat_ok, 2'b00, trained[3:0]}  -- rd_align's locks
+//   69-70  aligned bursts whose 32 bytes all matched in the last window
+//   71-72  lane n's locked rotation at [3n +: 3], 71 low
+//   73     {4'b0, drift[3:0]}   a lane's live rotation left its lock
+//   74     {4'b0, err[3:0]}     a lane's aligned byte did not match
+//   75-76  aligned bursts presented in the last window
+//   78+32b+8l .. +7  aligned snapshot: beat b, lane l, byte b of lane l
+//          at bit 0, i.e. lane 0 is DQ[7:0] of the 32-bit beat
+//   110-111  phase moves seen while streaming since the last arm
+//   112-113  those seen at the first live cycle after a gated gap
+//   114-115  PCLK cycles between the last two moves
+//   116      {skew_changed, 1'b0, lane 1 step, lane 0 step}, 3 bits each
+//   117      {2'b0, lane 3 step, lane 2 step}
+//   118-119  the live rotation: 118 low, 119 {phase_ok[3:0], phase[11:8]}
+//   120-121  uniform slips rd_align followed since the last arm
 module wr_core (
     input  wire         sys_clk,
     input  wire         uart_rx,
@@ -568,6 +590,7 @@ module wr_core (
     reg [15:0] elig = 16'd0, elig_last = 16'd0;
     reg [255:0] snap = 256'd0;
     reg [255:0] dq_r = 256'd0;
+    reg [255:0] dq_r2 = 256'd0;         // dq_r one cycle later, to pair with ra_data
     reg eligible = 1'b0;
     reg [63:0] pat_rot = 64'd0;         // the eight rotations of P, rotation r at [8r +: 8]
     reg [3:0] hit = 4'b0000;            // a lane's match, one cycle after its words
@@ -580,11 +603,12 @@ module wr_core (
     always @(posedge pclk) begin
         pclk_cnt <= pclk_cnt + 16'd1;
         dq_r <= dq_q;
+        dq_r2 <= dq_r;
         eligible <= (mode == M_READ) && (&rd_hist);
         for (r = 0; r < 8; r = r + 1)
             pat_rot[8 * r +: 8] <= (dq_pat << r) | (dq_pat >> (8 - r));
         if (snap_pulse || eligible)
-            snap <= dq_r;
+            snap <= dq_r2;
         for (l = 0; l < 4; l = l + 1) begin
             w0 = dq_r[64 * l +: 8];
             if (mode == M_LEVEL) begin
@@ -617,6 +641,96 @@ module wr_core (
     end
 
     // ------------------------------------------------------------------
+    // The trained read-valid boundary, PCLK
+    // ------------------------------------------------------------------
+    wire [255:0] ra_data;
+    wire [11:0]  ra_rot, ra_phase;
+    wire [3:0]   ra_trained, ra_err, ra_drift, ra_phase_ok;
+    wire [15:0]  ra_relocks;
+    wire         ra_valid, ra_ok, ra_pat_ok;
+    reg          arm_tog = 1'b0, ra_arm = 1'b0, mode_read_d = 1'b0;
+    reg  [2:0]   arm_p = 3'b000;
+
+    // arm on entering read mode, on every CALIB pulse (framing may have
+    // moved) and on command 0x23; never on a silent hint
+    always @(posedge pclk) begin
+        arm_p <= {arm_p[1:0], arm_tog};
+        mode_read_d <= (mode == M_READ);
+        ra_arm <= !ready_pc || ((mode == M_READ) && !mode_read_d) ||
+                  (arm_p[2] ^ arm_p[1]) || calib_pulse;
+    end
+
+    rd_align align (
+        .pclk(pclk), .rst(!ready_pc), .stream(eligible),
+        .dq_q(dq_q), .rvalid(rvalid), .pat(dq_pat), .arm(ra_arm),
+        .trained(ra_trained), .rot(ra_rot), .data(ra_data), .valid(ra_valid),
+        .ok(ra_ok), .err(ra_err), .drift(ra_drift), .pat_ok(ra_pat_ok),
+        .phase(ra_phase), .phase_ok(ra_phase_ok), .relocks(ra_relocks));
+
+    // ------------------------------------------------------------------
+    // Phase dynamics, PCLK: how the read stream's word rotation moves
+    // ------------------------------------------------------------------
+    // rd_align normalises a rotation it has locked, but the rotation itself
+    // is only observable cycle by cycle, and a host poll of the status frame
+    // is hundreds of microseconds apart -- far coarser than the events.  This
+    // counts the moves here instead, and separates a move seen mid-stream
+    // from one seen at the first live cycle after a gated gap.
+    reg [11:0] ph_prev = 12'd0;
+    reg [15:0] chg_total = 16'd0, chg_gap = 16'd0, delta_last = 16'd0;
+    reg [15:0] last_change = 16'd0;
+    reg [2:0]  step0 = 3'd0, step1 = 3'd0, step2 = 3'd0, step3 = 3'd0;
+    reg        skew_changed = 1'b0, stream_d = 1'b0;
+    always @(posedge pclk) begin
+        stream_d <= eligible;
+        if (ra_arm) begin
+            chg_total <= 16'd0;
+            chg_gap <= 16'd0;
+            delta_last <= 16'd0;
+            step0 <= 3'd0; step1 <= 3'd0; step2 <= 3'd0; step3 <= 3'd0;
+            skew_changed <= 1'b0;
+            ph_prev <= 12'd0;
+        end else if (eligible && (&ra_phase_ok) && (ra_phase != ph_prev)) begin
+            chg_total <= chg_total + 16'd1;
+            if (!stream_d)
+                chg_gap <= chg_gap + 16'd1;
+            delta_last <= pclk_cnt - last_change;
+            last_change <= pclk_cnt;
+            step0 <= ra_phase[2:0]  - ph_prev[2:0];
+            step1 <= ra_phase[5:3]  - ph_prev[5:3];
+            step2 <= ra_phase[8:6]  - ph_prev[8:6];
+            step3 <= ra_phase[11:9] - ph_prev[11:9];
+            if ((ra_phase[2:0]  - ph_prev[2:0])  != (ra_phase[5:3] - ph_prev[5:3]) ||
+                (ra_phase[2:0]  - ph_prev[2:0])  != (ra_phase[8:6] - ph_prev[8:6]) ||
+                (ra_phase[2:0]  - ph_prev[2:0])  != (ra_phase[11:9] - ph_prev[11:9]))
+                skew_changed <= 1'b1;
+            ph_prev <= ra_phase;
+        end else if (eligible && (&ra_phase_ok)) begin
+            ph_prev <= ra_phase;
+        end
+    end
+
+    reg [255:0] al_snap = 256'd0;
+    reg [15:0]  al_good = 16'd0, al_good_last = 16'd0;
+    reg [15:0]  al_seen = 16'd0, al_seen_last = 16'd0;
+
+    // the aligned snapshot and the raw snapshot must describe one word, so
+    // both latch on the same condition: ra_data is aligned(dq_q) registered
+    // once, i.e. the word dq_r holds now
+    always @(posedge pclk) begin
+        if (snap_pulse || eligible)
+            al_snap <= ra_data;
+        if (pclk_cnt == 16'hffff) begin
+            al_good_last <= al_good;
+            al_good <= 16'd0;
+            al_seen_last <= al_seen;
+            al_seen <= 16'd0;
+        end else begin
+            al_good <= al_good + {15'd0, ra_ok};
+            al_seen <= al_seen + {15'd0, ra_valid};
+        end
+    end
+
+    // ------------------------------------------------------------------
     // Into the 50 MHz domain; values read as levels or "is it moving"
     // ------------------------------------------------------------------
     reg [7:0] step_s1 = 8'h00, step_s2 = 8'h00;
@@ -626,6 +740,23 @@ module wr_core (
     reg [63:0] good_s1 = 64'd0, good_s2 = 64'd0;
     reg [255:0] snap_s1 = 256'd0, snap_s2 = 256'd0;
     reg [7:0] st_s1 = 8'd0, st_s2 = 8'd0;
+    reg [255:0] al_snap_s1 = 256'd0, al_snap_s2 = 256'd0;
+    reg [15:0] al_good_s1 = 16'd0, al_good_s2 = 16'd0;
+    reg [15:0] al_seen_s1 = 16'd0, al_seen_s2 = 16'd0;
+    reg [11:0] ra_rot_s1 = 12'd0, ra_rot_s2 = 12'd0;
+    reg [3:0] ra_trained_s1 = 4'd0, ra_trained_s2 = 4'd0;
+    reg [3:0] ra_err_s1 = 4'd0, ra_err_s2 = 4'd0;
+    reg [3:0] ra_drift_s1 = 4'd0, ra_drift_s2 = 4'd0;
+    reg ra_pat_ok_s1 = 1'b0, ra_pat_ok_s2 = 1'b0;
+    reg [11:0] ra_phase_s1 = 12'd0, ra_phase_s2 = 12'd0;
+    reg [3:0] ra_phase_ok_s1 = 4'd0, ra_phase_ok_s2 = 4'd0;
+    reg [15:0] chg_total_s1 = 16'd0, chg_total_s2 = 16'd0;
+    reg [15:0] chg_gap_s1 = 16'd0, chg_gap_s2 = 16'd0;
+    reg [15:0] delta_last_s1 = 16'd0, delta_last_s2 = 16'd0;
+    reg [2:0] step0_s1 = 3'd0, step0_s2 = 3'd0, step1_s1 = 3'd0, step1_s2 = 3'd0;
+    reg [2:0] step2_s1 = 3'd0, step2_s2 = 3'd0, step3_s1 = 3'd0, step3_s2 = 3'd0;
+    reg skew_s1 = 1'b0, skew_s2 = 1'b0;
+    reg [15:0] relocks_s1 = 16'd0, relocks_s2 = 16'd0;
     wire [39:0] lane_now = {rvalid, rburst, rflag, wflag, rpoint, wpoint};
     always @(posedge sys_clk) begin
         step_s1 <= step;                step_s2 <= step_s1;
@@ -636,6 +767,25 @@ module wr_core (
         snap_s1 <= snap;                snap_s2 <= snap_s1;
         st_s1 <= {cke, ddr_reset_n, mode, istate};
         st_s2 <= st_s1;
+        al_snap_s1 <= al_snap;          al_snap_s2 <= al_snap_s1;
+        al_good_s1 <= al_good_last;     al_good_s2 <= al_good_s1;
+        al_seen_s1 <= al_seen_last;     al_seen_s2 <= al_seen_s1;
+        ra_rot_s1 <= ra_rot;            ra_rot_s2 <= ra_rot_s1;
+        ra_trained_s1 <= ra_trained;    ra_trained_s2 <= ra_trained_s1;
+        ra_err_s1 <= ra_err;            ra_err_s2 <= ra_err_s1;
+        ra_drift_s1 <= ra_drift;        ra_drift_s2 <= ra_drift_s1;
+        ra_pat_ok_s1 <= ra_pat_ok;      ra_pat_ok_s2 <= ra_pat_ok_s1;
+        ra_phase_s1 <= ra_phase;        ra_phase_s2 <= ra_phase_s1;
+        ra_phase_ok_s1 <= ra_phase_ok;  ra_phase_ok_s2 <= ra_phase_ok_s1;
+        chg_total_s1 <= chg_total;      chg_total_s2 <= chg_total_s1;
+        chg_gap_s1 <= chg_gap;          chg_gap_s2 <= chg_gap_s1;
+        delta_last_s1 <= delta_last;    delta_last_s2 <= delta_last_s1;
+        step0_s1 <= step0;              step0_s2 <= step0_s1;
+        step1_s1 <= step1;              step1_s2 <= step1_s1;
+        step2_s1 <= step2;              step2_s2 <= step2_s1;
+        step3_s1 <= step3;              step3_s2 <= step3_s1;
+        skew_s1 <= skew_changed;        skew_s2 <= skew_s1;
+        relocks_s1 <= ra_relocks;       relocks_s2 <= relocks_s1;
     end
 
     reg [15:0] free_cnt = 16'd0;
@@ -656,7 +806,24 @@ module wr_core (
         end
     endfunction
 
-    wire [543:0] status = {
+    wire [975:0] status = {
+        relocks_s2,                                             // 120..121
+        {4'b0000, ra_phase_ok_s2, ra_phase_s2[11:8]},           // 119
+        ra_phase_s2[7:0],                                       // 118
+        {2'b00, step3_s2, step2_s2},                            // 117
+        {skew_s2, 1'b0, step1_s2, step0_s2},                    // 116
+        delta_last_s2,                                          // 114..115
+        chg_gap_s2,                                             // 112..113
+        chg_total_s2,                                           // 110..111
+        al_snap_s2,                                             // 78..109
+        8'h00,                                                  // 77
+        al_seen_s2,                                             // 75..76
+        {4'b0000, ra_err_s2},                                   // 74
+        {4'b0000, ra_drift_s2},                                 // 73
+        {4'b0000, ra_rot_s2[11:8]},                             // 72
+        ra_rot_s2[7:0],                                         // 71
+        al_good_s2,                                             // 69..70
+        {1'b0, ra_pat_ok_s2, 2'b00, ra_trained_s2},             // 68
         snap_s2,
         lane_bytes(lane_s2, good_s2, wstep_req, moves, 3),
         lane_bytes(lane_s2, good_s2, wstep_req, moves, 2),
@@ -688,7 +855,7 @@ module wr_core (
     reg response_active = 1'b0;
     reg response_is_status = 1'b0;
     reg [6:0] response_index = 7'd0;
-    reg [543:0] frame = 544'd0;
+    reg [975:0] frame = 976'd0;
 
     function known;
         input [7:0] c;
@@ -698,7 +865,7 @@ module wr_core (
                     (c == 8'h0a) ||
                     (c == 8'h0b) || (c == 8'h0c) || (c == 8'h0d) || (c == 8'h0e) ||
                     (c == 8'h0f) || (c[7:2] == 6'b000100) || (c == 8'h20) ||
-                    (c == 8'h21) || (c == 8'h22);
+                    (c == 8'h21) || (c == 8'h22) || (c == 8'h23);
         end
     endfunction
 
@@ -761,6 +928,7 @@ module wr_core (
                             8'h20: row_req[7:0] <= rx_data;
                             8'h21: row_req[14:8] <= rx_data[6:0];
                             8'h22: read_delay_req <= rx_data[2:0];
+                            8'h23: arm_tog <= ~arm_tog;
                             default: if (cmd_byte[7:2] == 6'b000100) begin
                                 wstep_req[8 * cmd_byte[1:0] +: 8] <= rx_data;
                                 wload_tog <= ~wload_tog;
@@ -777,7 +945,7 @@ module wr_core (
                     7'd0: tx_data <= 8'haa;
                     7'd1: tx_data <= 8'h00;
                     7'd2: tx_data <= 8'h04;
-                    7'd3: tx_data <= 8'h44;
+                    7'd3: tx_data <= 8'h7a;    // 122 payload bytes
                     default: begin
                         tx_data <= frame[7:0];
                         frame <= frame >> 8;
@@ -793,7 +961,7 @@ module wr_core (
                 endcase
             end
             tx_send <= 1'b1;
-            if (response_index == (response_is_status ? 7'd71 : 7'd4))
+            if (response_index == (response_is_status ? 7'd125 : 7'd4))
                 response_active <= 1'b0;
             else
                 response_index <= response_index + 7'd1;

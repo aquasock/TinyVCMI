@@ -140,6 +140,7 @@ Topic IDs are the `record_id` prefix. An entry reserves a namespace; it does not
 | Does the open-flow DDR3 read path return the device's data? | TOOL | TOOL-020 |
 | Do open-flow DDR3 writes land? | TOOL | TOOL-021 |
 | How are live DDR3 reads calibrated and what alignment remains? | TOOL | TOOL-022 |
+| Does the read word frame stay put, and what moves it? | TOOL | TOOL-023 |
 | Which sources and licenses constrain reuse? | PROV | PROV-001 |
 
 ---
@@ -185,6 +186,7 @@ TOOL-019: "The vendor PHY waits 16384 clocks after DLL LOCK, updates the DLL und
 TOOL-020: "The open-flow DDR3 PHY initializes the device and reads its MPR pattern on all 32 DQ, every cycle, at every RCLKSEL, with live read-delay edges; its lower edges sit 4 to 10 steps from the vendor build's"
 TOOL-021: "The open-flow DDR3 PHY writes a pattern to the device and reads it back on all 32 DQ at almost every WSTEP without write leveling; per-bit word framing can come up misaligned at first start-up"
 TOOL-022: "Per-bit CALIB, grouped READ gating and signed read-delay sweeps qualify all lanes across 8 banks, 6 rows and 7 patterns; raw whole-byte rotation still needs controller normalization"
+TOOL-023: "The read word frame is constant while the stream is live and moves once per interruption, uniformly in all four lanes, by a size fixed by the read delay (-2 at delays 2..7, +4 at 0..1); RBURST never asserts"
 PROV-001: "Reuse source and interface ideas with their original license boundaries and attribution intact"
 ```
 
@@ -706,6 +708,19 @@ PROV-001: "Reuse source and interface ideas with their original license boundari
     - "TinyVCMI docs/ddr3-open-flow.md: Read calibration"
     - "Gowin EDA 1.9.11.03 IDE/simlib/gw5a/prim_sim.v, module IDES8_MEM CALIB behavior"
   verification: "The final simulation passed with 4876 writes, 3922 reads, 29 refreshes and a maximum refresh interval of 7.6 us. Vendor and open builds met timing and all 306 DDR3 configuration tables compare equal; the open .fs SHA-256 is e203be212469830d4bd3316a797a912be73ad1f7dd576793bed6b55b5d5b9535, its .bin is 89f917f6ec0d684331563e51246665473bd3a96fa930066a1f016a2d882dac6f, and the vendor .bin is d594feb2f923d65f4b53049f88eb07ff79e504e1cd708d0b86e3f1296b29fda2. The board run exercised CALIB, two complete open-image eye sweeps, a coarse write-level sweep, five aligned read sessions, 336 bank/row/pattern cases and ten restarts. tools/ddr3_image_check.py decoded the four differing HCLK mux selections at block (27,0). The desktop tinytang.bin was restored and answered 0x54. No fork changed in this cycle."
+
+- record_id: TOOL-023
+  topic_id: TOOL
+  title: "Read word framing moves at every read interruption"
+  status: VERIFIED
+  verified_date: 2026-10-24
+  statement: "The open-flow DDR3 read capture does not hold one word frame. In fpga/ddr3_write with the DQS READ gating in use, the whole-word rotation is constant while the read stream is continuously live and moves exactly once per interruption, first being observed at the first live cycle after a gated gap. The move is the same in all four lanes and preserves their relative offsets. Its size is a fixed function of the IDES8_MEM read delay and does not depend on the gap length: -2 at delays 2 to 7 and +4 at delays 0 and 1 for the measured image, with ten consecutive samples at delay 3 reporting -2 every time. Moves were measured 510, 319 and 40 PCLK apart at read-run/gap 255/255, 255/64 and 32/8, each equal to the group period, and about 700 PCLK apart (the refresh period) at 255/1, where a one-cycle gap is too short to re-frame. RBURST is low on every lane throughout, so the PHY exposes no burst marker. A pattern whose eight rotations are not distinct cannot identify a frame and never trains."
+  consequence: "A fixed rotation lock is invalid across interruptions, and a per-burst marker is unnecessary: a move all four lanes make together, held for eight live cycles, can be followed by moving the locks with it. A lane that leaves its lock while the others do not is a fault, not a slip. Byte order within a burst is recoverable this way; the association of a burst with the READ command that requested it, and the read latency, are still the controller's to establish. Any change to the read delay changes the slip size, so a controller must retrain after changing it. Interruptions shorter than a few cycles do not re-frame, which is why only refreshes matter when the gating gap is one cycle."
+  sources:
+    - "TinyVCMI fpga/ddr3_write/rd_align.v, wr_core.v and tools/ddr3_write_probe.py (phase, align and alignsweep)"
+    - "TinyVCMI docs/ddr3-open-flow.md: Read-data alignment"
+    - "Direct observation on the Tang Console 138K, GW5AST-LV138PG484AC1/I0 revision C, 2026-10-24"
+  verification: "The phase monitor counted moves in the core over 15 to 20 ms host samples: at read-run/gap 255/255 the PCLK delta between the last two moves was 510 with step [6,6,6,6]; at 255/64 it was 319 and at 32/8 it was 40, with the same step; at 255/1 it was about 757 while the move count advanced about once per 700 PCLK; at 32/8 with read delay 0 and 1 the step was [4,4,4,4] and with delays 2 to 7 it was [6,6,6,6]. The at-gap counter equalled the total move count in every configuration, so no move was first seen mid-stream. A sticky skew flag reads one because the first move is compared against a zeroed previous phase; the recorded steps are equal, so this is instrumentation, not a lane difference. rd_align following these moves gave six of six read sessions with err and drift clear and every presented burst in pattern order (26151 to 26391 bursts each, about 48800 moves followed), a 240-case bank/row/pattern sweep passed twice with no failures, and training at 255/255 followed by 32/8 without leaving read mode stayed at 100 percent (10309 of 10309). The open .bin deployed was 40ddf0256d7a03d38678528c07ada37bf8ea02adf9ea312c0211ce66a4f51d79 and the image equalled its Gowin build on all 306 DDR3 tables. The desktop tinytang.bin was restored and answered 0x54."
 
 - record_id: PROV-001
   topic_id: PROV
