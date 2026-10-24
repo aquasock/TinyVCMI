@@ -935,3 +935,34 @@ Continue offline with lanes 1 to 3: measure each lane's `DQS` site, byte-group c
 - User Test: N/A
 
 ---
+
+## 31 COMMIT Unreleased 2026-10-23T18:48:58-07:00
+
+#### Coming From:
+
+Unreleased 8ca0efa
+
+#### Purpose:
+
+Locate the `DQS` site and byte-group cell of DDR3 lanes 1 to 3 cheaply, before any per-port measurement of them.
+
+#### Outcome:
+
+Mapped the proven pin map onto the die: all four lanes are on the left edge, on IO rows 55 to 106. Added `tools/dq_lane_locate.py`, which builds the B1 `base` lane and its no-DQS control with the strobe pad moved to each of lanes 1 to 3, and attributes the difference. All six Gowin EDA 1.9.11.03 builds succeeded and every difference attributed with no unattributed fuse. In each lane the only configuration the `DQS` adds is table 58 of one cell inside that lane's rows, which identifies the byte groups as `(99,0)`, `(90,0)` and `(63,0)` for lanes 1, 2 and 3. Each is of a different type from lane 0's. The sites differ more than expected. Lane 3's is `(81,6)`, the twin of lane 0's type-241 `(81,5)`, but lanes 1 and 2 have their sites in their own byte-group cells on the IO column, `(90,0)` being the bank-6 cell. In every lane the `DQS` moves exactly lane 0's 24 input destinations at its site, and every site tile has all 24 as pip destinations. That supports one port map but is not a per-port measurement, and the outputs, the table-58 coordinates in the three new cell types and the lanes' IOLOGIC are unmeasured. The results are in `docs/ddr3-open-flow.md` and the new TOOL-011. No hardware was accessed. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering, and active-log capacity.
+
+#### Next Steps:
+
+Propose the lane 1 to 3 measurement and model plan for approval. Per lane it covers the input port map by matched pairs and the outputs by the zero-state route method, using `tools/dq_lane_probe.py`-style designs. It also covers the table-58 encoding in each byte group's cell type by the B1 parameter and lane sweep, and the IOLOGIC positions of each lane's pads. Only after those pass checks of the lane-0 kind should the nextpnr and Apicula models be extended from one lane to four. Do not touch the Tang unless the user explicitly changes that instruction.
+
+#### Files Modified:
+
+- docs/ddr3-open-flow.md
+- tools/dq_lane_locate.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: N/A
+- User Test: N/A
+
+---

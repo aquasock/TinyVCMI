@@ -978,3 +978,29 @@ or 3 cannot be joined by an IOLOGIC `FCLK`, which the database offers lanes 0
 and 2 only. The router then still splits the net, and it warns that it has.
 Every other net is routed exactly as before, and the preflight still passes
 all six primitives.
+
+## Lanes 1 to 3: where they are
+
+All four lanes of the proven controller are on the left edge (Tang-PSX
+`tang_psx_ddr3.cst`):
+
+    lane  IO rows   DQS pad         byte group (table 58)   DQS site
+    0     68..79    Y3  IOL69A      (72,0) type 64          (81,5) type 241
+    1     95..106   V9  IOL96A      (99,0) type 257         (99,0)
+    2     82..93    W6  IOL94A      (90,0) type 259         (90,0), the bank-6 cell
+    3     55..66    R3  IOL65A      (63,0) type 270         (81,6) type 241
+
+`tools/dq_lane_locate.py` builds the B1 `base` lane and its no-DQS control
+with the strobe pad moved to each lane, and attributes the difference. Every
+difference has no unattributed fuse, and in every lane the only configuration
+the `DQS` adds is table 58 of one cell inside the lane's rows, which is the
+byte group. The site was located from the routing: the tile where the
+`DQS`'s inputs land. Lanes 0 and 3, the two nearest HCLK block 2's row, have
+their sites in the two type-241 tiles of row 81. Lanes 1 and 2 have theirs in
+their own byte-group cell on the IO column. In all four lanes the `DQS` moves
+exactly lane 0's 24 input destinations at its site tile -- `A0` to `A5`, `A7`,
+`B0` to `B3`, `C0` to `C2`, `D3` to `D5`, `D7`, `CLK0`, `CLK2`, `LSR0`,
+`LSR2`, `CE1`, `CE2` -- and each site tile has all 24 as pip destinations.
+That supports one port map for every lane, but it is not a per-port
+measurement. The output wires, the table-58 coordinates in the three other
+cell types, and the lanes' IOLOGIC have not been measured.

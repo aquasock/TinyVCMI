@@ -128,6 +128,7 @@ Topic IDs are the `record_id` prefix. An entry reserves a namespace; it does not
 | Which fuses configure a DQS? | TOOL | TOOL-008 |
 | How are the DQ serializers wired and configured? | TOOL | TOOL-009 |
 | What do lane 0's complete pads add? | TOOL | TOOL-010 |
+| Where are DDR3 lanes 1 to 3? | TOOL | TOOL-011 |
 | Which sources and licenses constrain reuse? | PROV | PROV-001 |
 
 ---
@@ -161,6 +162,7 @@ TOOL-007: "The DQS control and status side is tile (81,5): 24 inputs and 13 outp
 TOOL-008: "Every DQS configuration fuse, parameters and FCLK lane, is in longfuses table 58 of the byte group's config tile, (72,0) for this lane"
 TOOL-009: "Lane 0's OSER8_MEM and IDES8_MEM sit on IOLOGIC A/B of cells (68..79,0); their memory-mode pins are hard-wired and their configuration is named IOLOGIC attributes"
 TOOL-010: "A complete DQ pad's IOLOGIC is the union of its serializers plus three IODELAY fuses; IO standard touches only IOB and the BANK table"
+TOOL-011: "Lanes 1 to 3 have byte groups (99,0), (90,0) and (63,0) and DQS sites (99,0), (90,0) and (81,6); every site moves lane 0's 24 input wires"
 PROV-001: "Reuse source and interface ideas with their original license boundaries and attribution intact"
 ```
 
@@ -511,6 +513,19 @@ PROV-001: "Reuse source and interface ideas with their original license boundari
     - "Tang-PSX build/ddr3-vendor/ip/ddr3_memory_interface/ddr3_memory_interface.vo, dq_iobuf_gen, dq_iodelay, dqs_iobuf_gen and dm_obuf_gen instances"
     - "Tang-PSX gateware/ddr3_vendor/tang_psx_ddr3.cst, SSTL15 and SSTL15D IO_PORT lines"
   verification: "Six vendor builds on 2026-10-23 in build/dq_pad; tools/dq_pad_probe.py --check asserts every pad's IOLOGIC attributes, the fuse-level union, that SSTL configures only the pad cells and (90,0), and no unattributed fuse against the B1 base, and passed. The open flow places and routes all six, and tools/dq_pack_check.py finds the open packer's IOLOGIC fuses equal to the vendor's outside the lane field for each. Only side A was built with an IODELAY, and the IOB and BANK fuses have not been compared against the open packer. No hardware was accessed."
+
+- record_id: TOOL-011
+  topic_id: TOOL
+  title: "Located GW5AST-138C DDR3 lanes 1 to 3"
+  status: VERIFIED
+  verified_date: 2026-10-23
+  statement: "The proven controller's four lanes are all on the left edge: lane 0 on IO rows 68 to 79, lane 1 on 95 to 106, lane 2 on 82 to 93 and lane 3 on 55 to 66, with DQS pads Y3, V9, W6 and R3. With the strobe pad moved to each lane, Gowin EDA 1.9.11.03 adds configuration only in table 58 of one cell inside the lane's rows -- (72,0) type 64, (99,0) type 257, (90,0) type 259 and (63,0) type 270 -- and the DQS's inputs land at sites (81,5) and (81,6), both type 241, for lanes 0 and 3, and in the byte-group cells (99,0) and (90,0) themselves for lanes 1 and 2. In every lane the DQS moves exactly lane 0's 24 input destinations at its site tile, and each site tile has all 24 as pip destinations."
+  consequence: "Lane 3 can plausibly reuse lane 0's site model in the twin tile (81,6), and lanes 1 and 2 need a DQS bel in an IO-column cell of their own type. That all four sites expose the same 24 input names supports one port map, but each lane's port map, its outputs, the table-58 coordinates in types 257, 259 and 270, and its IOLOGIC positions must still be measured before the model is extended."
+  sources:
+    - "TinyVCMI tools/dq_lane_locate.py and tools/fs_attribute.py"
+    - "TinyVCMI docs/ddr3-open-flow.md: Lanes 1 to 3: where they are"
+    - "Tang-PSX gateware/ddr3_vendor/tang_psx_ddr3.cst, ddr_dqs, ddr_dq and ddr_dm pins"
+  verification: "Six vendor builds on 2026-10-23 in build/dq_lanes, a base and a no-DQS control per lane, attributed with no unattributed fuse; the site and byte group of each lane were read from that attribution and the site tiles' input destinations compared with lane 0's. No per-port pairs were built for lanes 1 to 3. No hardware was accessed."
 
 - record_id: PROV-001
   topic_id: PROV
