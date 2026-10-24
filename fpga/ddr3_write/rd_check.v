@@ -1,0 +1,311 @@
+`default_nettype none
+
+// Single-burst read checker: read latency and frame stability per READ.
+//
+// rd_align follows a continuous read stream; it cannot say which READ a
+// burst answers.  This module can, because every READ it is told about
+// names a location whose content the host wrote beforehand: one of sixteen
+// (bank, row) pairs, each holding its own pattern across the whole row,
+// even DQ the pattern and odd DQ its inverse as the write side drives them.
+// The sixteen patterns are distinct aperiodic 8-bit necklaces stored as
+// their least rotation, so any captured word identifies its pattern
+// whatever its rotation, and its rotation as well.
+//
+// Every captured cycle is reduced per lane to (pins consistent, least
+// rotation, rotation index).  Two things are measured from it:
+//
+//   hist[j]  for each READ whose pattern differs from the previous READ's,
+//            the cycles j after the READ at which all four lanes hold that
+//            READ's pattern.  A burst that arrives D cycles after the READ
+//            reaches dq_q then and is held until the next one arrives, so
+//            hist is full from j = D + PIPE for as long as the READs are
+//            apart, and empty for as long again before it, where the words
+//            are the previous READ's -- the read latency, measured.
+//   check    at the configured offset `lat`, each READ's capture is judged:
+//            class_ok when all four lanes hold its pattern, good when they
+//            also hold it at the expected rotation.  The first good capture
+//            after `arm` locks each lane's rotation; every later READ
+//            expects the previous expectation advanced by `step` (0 for a
+//            frame that holds, otherwise the move per READ).  The first
+//            failure after `arm` is kept with its raw words and address.
+//
+// PIPE is this module's own depth: the burst on dq_q in cycle c + D, for a
+// READ marked by `issue` in cycle c, is compared with that READ in hist[D + 3].
+// Offsets below 1 are checked at 1.  The check runs three stages behind the
+// capture, which READs at least eight cycles apart leave room for.
+module rd_check #(
+    parameter integer PIPE = 3      // documented above; not a knob
+) (
+    input  wire         pclk,
+    input  wire         rst,
+    input  wire         arm,        // clear counters, lock, hist and failure
+    input  wire [255:0] dq_q,       // lane l, pin p, beat b at 64l + 8p + b
+    input  wire         issue,      // a READ leaves the core this cycle
+    input  wire [3:0]   issue_idx,  // its location: {row bit, bank}
+    input  wire [6:0]   issue_col,  // its burst within the row
+    input  wire [4:0]   lat,        // check offset, in hist's units
+    input  wire [2:0]   step,       // expected rotation advance per READ
+
+    output reg          locked = 1'b0,
+    output reg  [11:0]  expect_rot = 12'd0,   // per lane, for the next READ
+    output reg  [11:0]  last_rot = 12'd0,
+    output reg  [3:0]   last_cls = 4'd0,
+    output reg  [31:0]  total = 32'd0,
+    output reg  [31:0]  good = 32'd0,
+    output reg  [31:0]  class_ok = 32'd0,
+    output reg  [31:0]  rot_moves = 32'd0,
+    output reg  [15:0]  hist_n = 16'd0,
+    output wire [511:0] hist,                 // hist[j] at [16j +: 16]
+    output reg          fail_seen = 1'b0,
+    output reg  [3:0]   fail_lanes = 4'd0,
+    output reg  [7:0]   fail_pat = 8'd0,
+    output reg  [10:0]  fail_addr = 11'd0,    // {row bit, bank, burst}
+    output reg  [11:0]  fail_rot = 12'd0,
+    output reg  [255:0] fail_words = 256'd0
+);
+    // The sixteen patterns, least rotations of distinct aperiodic necklaces
+    // of weight 3 to 5; tools/ddr3_write_probe.py carries the same table.
+    function [7:0] rom(input [3:0] i);
+        case (i)
+            4'd0:  rom = 8'h0b;  4'd1:  rom = 8'h0d;  4'd2:  rom = 8'h13;  4'd3:  rom = 8'h15;
+            4'd4:  rom = 8'h17;  4'd5:  rom = 8'h19;  4'd6:  rom = 8'h1b;  4'd7:  rom = 8'h1d;
+            4'd8:  rom = 8'h25;  4'd9:  rom = 8'h27;  4'd10: rom = 8'h2b;  4'd11: rom = 8'h2d;
+            4'd12: rom = 8'h35;  4'd13: rom = 8'h37;  4'd14: rom = 8'h3b;  default: rom = 8'h57;
+        endcase
+    endfunction
+
+    // derotate: the word w = (P << r) | (P >> (8 - r)) gives back P
+    function [7:0] derot(input [7:0] w, input integer r);
+        derot = (w >> r) | (w << (8 - r));
+    endfunction
+
+    // one registered clear for everything below: rst and arm both come from
+    // flops elsewhere, and their OR would otherwise fan out unregistered
+    reg clr = 1'b1;
+    always @(posedge pclk)
+        clr <= rst || arm;
+
+    // ------------------------------------------------------------------
+    // Capture reduction: per lane, pins consistent, least rotation, index
+    // ------------------------------------------------------------------
+    // The core registers the same word for its own checks; merged, the one
+    // register would drive both from wherever it lands, so this copy stays.
+    (* syn_preserve = 1, keep = 1 *) reg [255:0] dq_r = 256'd0;
+    reg [255:0] dq_b1 = 256'd0, dq_b2 = 256'd0, dq_b3 = 256'd0;
+    reg [3:0]   pins_b1 = 4'd0, pins_b2 = 4'd0, pins_b3 = 4'd0;
+    reg [127:0] pmin_b1 = 128'd0;   // lane l, pair i: least of the pair at 32l + 8i
+    reg [47:0]  pidx_b1 = 48'd0;    // and its rotation index at 12l + 3i
+    reg [87:0]  qmin_b2 = 88'd0;    // lane l, half h: {idx, least} at 22l + 11h
+    reg [31:0]  canon_b3 = 32'd0;   // per lane, 8 bits
+    reg [11:0]  crot_b3 = 12'd0;    // per lane, 3 bits
+
+    integer l, i, p;
+    reg [7:0] w0, wp, ca, cb;
+    reg       ok;
+    reg [10:0] e0, e1, e2, e3, q0, q1;
+
+    always @(posedge pclk) begin
+        dq_r <= dq_q;
+        dq_b1 <= dq_r;
+        dq_b2 <= dq_b1;
+        dq_b3 <= dq_b2;
+        for (l = 0; l < 4; l = l + 1) begin
+            w0 = dq_r[64*l +: 8];
+            ok = 1'b1;
+            for (p = 1; p < 8; p = p + 1) begin
+                wp = dq_r[64*l + 8*p +: 8];
+                if (wp != ((p % 2) ? ~w0 : w0))
+                    ok = 1'b0;
+            end
+            pins_b1[l] <= ok;
+            // first half of the least-rotation search: four pairs
+            for (i = 0; i < 4; i = i + 1) begin
+                ca = derot(w0, 2*i);
+                cb = derot(w0, 2*i + 1);
+                pmin_b1[32*l + 8*i +: 8] <= (cb < ca) ? cb : ca;
+                pidx_b1[12*l + 3*i +: 3] <= (cb < ca) ? 2*i + 1 : 2*i;
+            end
+        end
+        pins_b2 <= pins_b1;
+        pins_b3 <= pins_b2;
+        for (l = 0; l < 4; l = l + 1) begin
+            // second stage: two halves
+            e0 = {pidx_b1[12*l + 0 +: 3], pmin_b1[32*l + 0 +: 8]};
+            e1 = {pidx_b1[12*l + 3 +: 3], pmin_b1[32*l + 8 +: 8]};
+            e2 = {pidx_b1[12*l + 6 +: 3], pmin_b1[32*l + 16 +: 8]};
+            e3 = {pidx_b1[12*l + 9 +: 3], pmin_b1[32*l + 24 +: 8]};
+            qmin_b2[22*l +: 11] <= (e1[7:0] < e0[7:0]) ? e1 : e0;
+            qmin_b2[22*l + 11 +: 11] <= (e3[7:0] < e2[7:0]) ? e3 : e2;
+            // third stage: the least
+            q0 = qmin_b2[22*l +: 11];
+            q1 = qmin_b2[22*l + 11 +: 11];
+            canon_b3[8*l +: 8] <= (q1[7:0] < q0[7:0]) ? q1[7:0] : q0[7:0];
+            crot_b3[3*l +: 3] <= (q1[7:0] < q0[7:0]) ? q1[10:8] : q0[10:8];
+        end
+    end
+
+    // ------------------------------------------------------------------
+    // READs in flight: exp[j] is the READ marked j + 1 cycles ago
+    // ------------------------------------------------------------------
+    reg [31:0]  ex_v = 32'd0;       // a READ
+    reg [31:0]  ex_h = 32'd0;       // counted in hist
+    reg [255:0] ex_pat = 256'd0;    // its pattern, 8 bits each
+    reg [351:0] ex_addr = 352'd0;   // its address, 11 bits each
+    reg [7:0]   prev_pat = 8'd0;
+    reg         have_prev = 1'b0;
+    wire [7:0]  issue_pat = rom(issue_idx);
+    wire        fresh = issue && (!have_prev || issue_pat != prev_pat) && hist_n != 16'hffff;
+
+    always @(posedge pclk) begin
+        // pattern and address only mean something where ex_v is set
+        ex_pat <= {ex_pat[247:0], issue_pat};
+        ex_addr <= {ex_addr[340:0], issue_idx, issue_col};
+        if (clr) begin
+            ex_v <= 32'd0;
+            ex_h <= 32'd0;
+            have_prev <= 1'b0;
+            hist_n <= 16'd0;
+        end else begin
+            ex_v <= {ex_v[30:0], issue};
+            ex_h <= {ex_h[30:0], fresh};
+            if (issue) begin
+                prev_pat <= issue_pat;
+                have_prev <= 1'b1;
+            end
+            if (fresh)
+                hist_n <= hist_n + 16'd1;
+        end
+    end
+
+    // ------------------------------------------------------------------
+    // hist: every offset compares every cycle
+    // ------------------------------------------------------------------
+    reg [31:0]  hit = 32'd0;
+    reg [511:0] hcnt = 512'd0;
+    integer j, hl;
+    reg all;
+    always @(posedge pclk) begin
+        for (j = 0; j < 32; j = j + 1) begin
+            all = ex_h[j];
+            for (hl = 0; hl < 4; hl = hl + 1)
+                if (!pins_b3[hl] || canon_b3[8*hl +: 8] != ex_pat[8*j +: 8])
+                    all = 1'b0;
+            hit[j] <= all && !clr;
+        end
+        if (clr)
+            hcnt <= 512'd0;
+        else
+            for (j = 0; j < 32; j = j + 1)
+                hcnt[16*j +: 16] <= hcnt[16*j +: 16] + {15'd0, hit[j]};
+    end
+    assign hist = hcnt;
+
+    // ------------------------------------------------------------------
+    // The check at `lat`
+    // ------------------------------------------------------------------
+    // The READ at offset `lat` is selected a cycle ahead, from `lat - 1`:
+    // what is at lat - 1 now is at lat next cycle.
+    reg  [4:0]   lat_m1 = 5'd0;
+    reg          sel_v = 1'b0;
+    reg  [7:0]   sel_pat = 8'd0;
+    reg  [10:0]  sel_addr = 11'd0;
+    always @(posedge pclk) begin
+        lat_m1 <= (lat == 5'd0) ? 5'd0 : lat - 5'd1;
+        sel_v <= !clr && ex_v[lat_m1];
+        sel_pat <= ex_pat[8*lat_m1 +: 8];
+        sel_addr <= ex_addr[11*lat_m1 +: 11];
+    end
+
+    // first: does each lane hold the READ's pattern
+    reg         ck_v = 1'b0;
+    reg [3:0]   ck_cls = 4'd0;
+    reg [11:0]  ck_rot = 12'd0;
+    reg [7:0]   ck_pat = 8'd0;
+    reg [10:0]  ck_addr = 11'd0;
+    reg [255:0] ck_words = 256'd0;
+    integer cl;
+    always @(posedge pclk) begin
+        ck_v <= !clr && sel_v;
+        ck_pat <= sel_pat;
+        ck_addr <= sel_addr;
+        for (cl = 0; cl < 4; cl = cl + 1)
+            ck_cls[cl] <= pins_b3[cl] && canon_b3[8*cl +: 8] == sel_pat;
+        ck_rot <= crot_b3;
+        ck_words <= dq_b3;
+    end
+
+    // second: is it at the expected rotation; expect_rot only changes in
+    // the third stage, one READ before, so it is settled here
+    reg         ev_v = 1'b0, ev_all = 1'b0;
+    reg [3:0]   ev_cls = 4'd0, ev_bad = 4'd0;
+    reg [11:0]  ev_rot = 12'd0;
+    reg [7:0]   ev_pat = 8'd0;
+    reg [10:0]  ev_addr = 11'd0;
+    reg [255:0] ev_words = 256'd0;
+    integer el;
+    always @(posedge pclk) begin
+        ev_v <= !clr && ck_v;
+        ev_all <= &ck_cls;
+        ev_cls <= ck_cls;
+        for (el = 0; el < 4; el = el + 1)
+            ev_bad[el] <= !ck_cls[el] || ck_rot[3*el +: 3] != expect_rot[3*el +: 3];
+        ev_rot <= ck_rot;
+        ev_pat <= ck_pat;
+        ev_addr <= ck_addr;
+        ev_words <= ck_words;
+    end
+
+    // one 3-bit field per lane, so no borrow or carry crosses lanes
+    function [11:0] add_rot(input [11:0] r, input [2:0] s);
+        add_rot = {r[11:9] + s, r[8:6] + s, r[5:3] + s, r[2:0] + s};
+    endfunction
+
+    // third: count, lock, keep the first failure
+    always @(posedge pclk) begin
+        if (clr) begin
+            locked <= 1'b0;
+            expect_rot <= 12'd0;
+            last_rot <= 12'd0;
+            last_cls <= 4'd0;
+            total <= 32'd0;
+            good <= 32'd0;
+            class_ok <= 32'd0;
+            rot_moves <= 32'd0;
+            fail_seen <= 1'b0;
+            fail_lanes <= 4'd0;
+            fail_pat <= 8'd0;
+            fail_addr <= 11'd0;
+            fail_rot <= 12'd0;
+            fail_words <= 256'd0;
+        end else if (ev_v) begin
+            total <= total + 32'd1;
+            last_rot <= ev_rot;
+            last_cls <= ev_cls;
+            if (ev_all)
+                class_ok <= class_ok + 32'd1;
+            if (ev_all && (&last_cls) && ev_rot != last_rot && total != 32'd0)
+                rot_moves <= rot_moves + 32'd1;
+            if (!locked) begin
+                if (ev_all) begin
+                    locked <= 1'b1;
+                    good <= good + 32'd1;
+                    expect_rot <= add_rot(ev_rot, step);
+                end
+            end else begin
+                expect_rot <= add_rot(expect_rot, step);
+                if (ev_bad == 4'b0000)
+                    good <= good + 32'd1;
+                else if (!fail_seen) begin
+                    fail_seen <= 1'b1;
+                    fail_lanes <= ev_bad;
+                    fail_pat <= ev_pat;
+                    fail_addr <= ev_addr;
+                    fail_rot <= ev_rot;
+                    fail_words <= ev_words;
+                end
+            end
+        end
+    end
+endmodule
+
+`default_nettype wire

@@ -8,10 +8,12 @@
 # first with `tools/ddr3_write.py --vendor`.  Steps:
 #
 #   1. the manifest and the generated sources are current;
-#   2. the aligner's unit simulation passes, and the image's simulation
+#   2. the aligner's and the checker's unit simulations pass, and the image's simulation
 #      passes against Gowin's own primitive models;
 #   3. Yosys, nextpnr, and `gowin_pack --ddr3-context`;
-#   4. tools/ddr3_image_check.py --exact-lanes against the vendor build;
+#   4. tools/ddr3_image_check.py --exact-lanes against the vendor build, and
+#      the vendor build's own timing report clean: a control that misses
+#      timing is no control;
 #   5. both .bin files, the open-flow image and the vendor control.
 #
 # Nothing here touches the board.  Loading is a separate, approved step.
@@ -41,13 +43,14 @@ if [[ ${TINYVCMI_SKIP_SIM:-0} == 1 ]]; then
     echo "skipped by TINYVCMI_SKIP_SIM=1 (use only after a separate passing run)"
 else
     "$root/tools/sim_rd_align.sh"
+    "$root/tools/sim_rd_check.sh"
     "$root/tools/sim_ddr3_write.sh"
 fi
 
 echo "[3/6] Yosys synthesis"
 yosys -Q -T -q -l "$out/synth.log" -p "
     read_verilog -lib $cells
-    read_verilog $src/top.v $src/wr_core.v $src/rd_align.v
+    read_verilog $src/top.v $src/wr_core.v $src/rd_align.v $src/rd_check.v
     synth_gowin -family gw5a -top top
     write_json $out/wr.json
 "
@@ -87,7 +90,19 @@ rm -f "$out/wr.fs" "$out/wr.bin"
         exit 1
     }
 
-echo "[6/6] image against the vendor build, lanes exact"
+echo "[6/6] image against the vendor build, lanes exact; vendor timing"
+python3 - "$vendor/impl/pnr/probe_tr_content.html" <<'PY'
+import html, re, sys
+text = re.sub(r"\s+", " ", html.unescape(re.sub(r"<[^>]+>", " ", open(sys.argv[1]).read())))
+fmax = text[text.find("Max Frequency Summary"):text.find("Total Negative Slack Summary")]
+tns = text[text.find("Total Negative Slack Summary"):text.find("Timing Details")]
+rows = re.findall(r"(\S+) (Setup|Hold) (-?\d+\.\d+) (\d+)", tns)
+print("vendor " + fmax.strip())
+bad = [r for r in rows if float(r[2]) != 0.0]
+if not rows or bad:
+    print("the vendor control misses timing: " + "; ".join(" ".join(r) for r in bad), file=sys.stderr)
+    sys.exit(1)
+PY
 (cd "$root/tools" && python3 ddr3_image_check.py "$out/wr.fs" \
     --vendor "$vendor/impl/pnr/probe.fs" --exact-lanes)
 

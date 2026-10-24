@@ -71,7 +71,10 @@ STROBES = {"ddr_cs", "ddr_ras", "ddr_cas", "ddr_we"}
 PLL = "    wire pll_en;\n" + bringup.PLL.replace(".ENCLK0(1'b1)", ".ENCLK0(pll_en)")
 
 CORE = """\
-    wire pclk, dll_rst, updncntl, hold, phy_rst, dll_lock, rloadn, rdir, wloadn;
+    // kept, so the open flow's SDC can name the memory-side clock whatever
+    // Yosys does with the submodules' aliases of it
+    (* keep *) wire pclk;
+    wire dll_rst, updncntl, hold, phy_rst, dll_lock, rloadn, rdir, wloadn;
     wire [3:0] rmove;
     wire [31:0] wstep;
     wire [7:0] dq_pat;
@@ -220,14 +223,15 @@ def render() -> str:
 
 
 TCL = bringup.TCL.replace("bringup_core.v",
-                          "wr_core.v\nadd_file -type verilog rd_align.v")
+                          "wr_core.v\nadd_file -type verilog rd_align.v"
+                          "\nadd_file -type verilog rd_check.v")
 
-# nextpnr flattens `top` and `core`, and the memory clock's net comes out as
-# `core.pclk`, so the open flow must name it that way; Gowin keeps the source
-# name in vendor.sdc.  build_ddr3_write.sh fails the build when a clock
+# Flattening leaves the memory clock's net with whichever submodule alias
+# Yosys keeps -- `core.pclk` once, `core.align.pclk` after rd_check was added
+# -- so top.v keeps its own `pclk` wire and the open flow names that, as the
+# bring-up's SDC does.  build_ddr3_write.sh fails the build when a clock
 # constraint matches no net, so a future rename cannot pass unnoticed.
-SDC_OPEN = "# core.pclk is the flattened name of the memory clock net\n" + \
-    bringup.SDC_OPEN.replace("[get_nets {pclk}]", "[get_nets {core.pclk}]")
+SDC_OPEN = bringup.SDC_OPEN
 
 GENERATED = {"top.v": render, "top.cst": bringup.cst,
              "open.sdc": lambda: SDC_OPEN, "vendor.sdc": lambda: bringup.SDC_VENDOR}
@@ -240,7 +244,7 @@ def vendor_build() -> int:
     if os.path.isdir(VENDOR):
         shutil.rmtree(VENDOR)
     os.makedirs(VENDOR)
-    for fn in ("top.v", "wr_core.v", "rd_align.v", "top.cst"):
+    for fn in ("top.v", "wr_core.v", "rd_align.v", "rd_check.v", "top.cst"):
         shutil.copy(os.path.join(SRC, fn), VENDOR)
     shutil.copy(os.path.join(SRC, "vendor.sdc"), os.path.join(VENDOR, "top.sdc"))
     with open(os.path.join(VENDOR, "run.tcl"), "w") as f:

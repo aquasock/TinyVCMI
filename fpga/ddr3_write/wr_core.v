@@ -27,6 +27,15 @@
 //              counts, per lane, the cycles in which the lane's eight DQ
 //              words are one rotation of P on even DQ and its inverse on odd
 //              DQ, among the cycles the read stream has run unbroken for 16
+//   4 random   closed-page single READs: every max(gap,8) PCLK an ACTIVATE of
+//              a pseudo-random one of sixteen locations -- bank 0..7, row
+//              {row[14:1], 0 or 1} -- and three PCLK later a READ with
+//              auto-precharge of a pseudo-random burst in it; a REFRESH in
+//              place of an access every 700 PCLK.  The host writes each of
+//              the sixteen rows beforehand with its rd_check.v pattern, so
+//              rd_check knows what every READ must return and measures the
+//              read latency and whether the word frame holds from one
+//              isolated READ to the next.  Nothing is driven; ODT stays low.
 //
 // Leaving a mode always goes back through idle: write leveling is left with
 // MR1 restored, writes and reads with every bank precharged and the bus in
@@ -40,8 +49,9 @@
 // WMOVE and WDIR low).
 //
 // Requests, AA 00 <cmd> <arg>, 2 Mbaud on the TinyTang link.  The status
-// request answers AA 00 04 40 <64 bytes>; every other request answers the
-// core ID frame AA 00 02 01 56.
+// request answers AA 00 04 7F <127 bytes>, the checker's status request
+// AA 00 05 7F <127 bytes>; every other request answers the core ID frame
+// AA 00 02 01 56.
 //
 //   01        core ID
 //   03        status
@@ -53,7 +63,7 @@
 //   09 n      gap of max(n,1) PCLK between gated READ groups
 //   0A        RLOADN pulse: every lane's read delay back to its default
 //   0B p      READ = p[3:0] while reading
-//   0C m      mode m[1:0]
+//   0C m      mode m[2:0]; 5..7 are idle
 //   0D n      max(n,1) consecutive READ commands per gated group
 //   0E p      pattern P = p
 //   0F b      active bank b[2:0]
@@ -62,18 +72,28 @@
 //   21 v      active row[14:8] = v[6:0]
 //   22 n      delay DQS READ gating n[2:0] PCLK after each READ command
 //   23        re-arm rd_align: discard every lane's locked rotation
-//   24        clear the RBURST counters
+//   24 n      clear the RBURST counters; n = 0 lets them run and wrap, n
+//             = 1..23 counts for 2^n PCLK, saturating at 255, then holds
+//   25 k      open each READ's DQS gate k[1:0] memory clocks later: READ[i]
+//             follows the delayed READ of this PCLK for i >= k and of the
+//             previous PCLK for i < k (bit 0 is the earliest clock)
+//   26 n      rd_check's check offset n[4:0]
+//   27        the checker's status
+//   28 s      rd_check's expected rotation advance per READ, s[2:0]
 //
 // The read data path ends in rd_align, the trained read-valid boundary: it
 // locks each lane's whole-word rotation from the live stream, derotates it,
 // transposes the lane's eight pins into eight beat bytes and presents a
 // 256-bit burst (eight beats of 32 bits) with a valid.  Training arms itself
 // whenever read mode is entered, on every CALIB pulse and on command 0x23.
+// rd_check, the single-burst checker, arms on entering random mode and on
+// command 0x23.
 //
 // Status bytes, 110 of them:
 //    0  {ready, pll_lock, dll_lock, lock_seen, cke, reset_n, 2'b0}
 //    1  DDRDLL STEP
-//    2  {mode[1:0], 2'b0, state[3:0]}  (state 8 idle, 9 level, 10 write, 11 read)
+//    2  {mode[1:0], mode[2], 1'b0, state[3:0]}
+//          (state 8 idle, 9 level, 10 write, 11 read, 12 random)
 //    3  pattern P
 //    4  50 MHz counter, low        5  high
 //    6  PCLK counter, low          7  high
@@ -101,8 +121,31 @@
 //   117      {2'b0, lane 3 step, lane 2 step}
 //   118-119  the live rotation: 118 low, 119 {phase_ok[3:0], phase[11:8]}
 //   120-121  uniform slips rd_align followed since the last arm
-//   122      {4'b0, burst_seen[3:0]}  an RBURST edge was counted on that lane
-//   123-126  per-lane RBURST edge count, free-running since command 0x24
+//   122      {window open, 3'b0, burst_seen[3:0]}  an RBURST edge was
+//            counted on that lane
+//   123-126  per-lane RBURST edge count since command 0x24
+//
+// Checker status bytes (command 0x27), 127 of them, counters since the arm:
+//    0  {locked, random mode, gate k[1:0], 1'b0, step[2:0]}
+//    1  {3'b0, check offset[4:0]}
+//    2-5   READs checked        6-9   good: all lanes at the expected rotation
+//   10-13  class_ok: all lanes hold the READ's pattern
+//   14-17  READs whose rotation differed from the previous READ's
+//   18-19  READs counted in hist (a pattern unlike the previous READ's)
+//   20-21  expected rotation of the next READ, lane n at [3n +: 3]
+//   22-23  last READ's rotation     24  {fail, 3'b0, failing lanes[3:0]}
+//   25     first failure's pattern  26-27  its {row bit, bank, burst}
+//   28     {4'b0, last READ's lanes holding its pattern}
+//   29+2j  hist[j], j = 0..31, 16 bits: all lanes held the READ's pattern
+//          j cycles after it; the burst reached dq_q j - 3 cycles after the
+//          cycle the READ left the core
+//   93+8n+p  first failure's raw word, lane n DQ p
+//   125-126  first failure's rotation
+//
+// GowinSynthesis otherwise packs the two-flop setting synchronizers into
+// counter-addressed LUT-RAM shift registers, whose read sits on PCLK's
+// critical paths; Yosys ignores the attribute.
+(* syn_srlstyle = "registers" *)
 module wr_core (
     input  wire         sys_clk,
     input  wire         uart_rx,
@@ -262,7 +305,11 @@ module wr_core (
     // ------------------------------------------------------------------
     // Settings from the link into the PCLK domain
     // ------------------------------------------------------------------
-    reg [1:0] mode_req = 2'd0;
+    reg [2:0] mode_req = 3'd0;
+    reg [1:0] gate_req = 2'd0;
+    reg [4:0] lat_req = 5'd12;
+    reg [2:0] rstep_req = 3'd0;
+    reg [4:0] bwin_req = 5'd0;
     reg [3:0] read_pat = 4'b1111;
     reg [7:0] pat_req = 8'h1d;
     reg [2:0] rclksel_req = 3'd0;
@@ -281,7 +328,11 @@ module wr_core (
     reg [1:0] ready_p = 2'b00;
     reg [2:0] rmove_p = 3'b000, rload_p = 3'b000, snap_p = 3'b000,
               wload_p = 3'b000, calib_p = 3'b000, bclr_p = 3'b000;
-    reg [1:0] mode_p1 = 2'd0, mode_p = 2'd0;
+    reg [2:0] mode_p1 = 3'd0, mode_p = 3'd0;
+    reg [1:0] gate_p1 = 2'd0, gate_p2 = 2'd0;
+    reg [4:0] lat_p1 = 5'd12, lat_p2 = 5'd12;
+    reg [2:0] rstep_p1 = 3'd0, rstep_p2 = 3'd0;
+    reg [4:0] bwin_p1 = 5'd0, bwin_p2 = 5'd0;
     reg [3:0] pat_p1 = 4'b1111, pat_p2 = 4'b1111;
     reg [7:0] dpat_p1 = 8'h1d;
     reg [2:0] sel_p1 = 3'd0;
@@ -303,6 +354,10 @@ module wr_core (
         calib_p <= {calib_p[1:0], calib_tog};
         bclr_p <= {bclr_p[1:0], bclr_tog};
         mode_p1 <= mode_req;            mode_p <= mode_p1;
+        gate_p1 <= gate_req;            gate_p2 <= gate_p1;
+        lat_p1 <= lat_req;              lat_p2 <= lat_p1;
+        rstep_p1 <= rstep_req;          rstep_p2 <= rstep_p1;
+        bwin_p1 <= bwin_req;            bwin_p2 <= bwin_p1;
         pat_p1 <= read_pat;             pat_p2 <= pat_p1;
         dpat_p1 <= pat_req;             dq_pat <= dpat_p1;
         sel_p1 <= rclksel_req;          rclksel <= sel_p1;
@@ -334,15 +389,17 @@ module wr_core (
     // ------------------------------------------------------------------
     localparam [3:0] I_IDLE = 4'd0, I_RESET = 4'd1, I_CKE = 4'd2, I_XPR = 4'd3,
                      I_MR = 4'd4, I_ZQ = 4'd5, I_WAIT = 4'd6,
-                     R_IDLE = 4'd8, R_LEVEL = 4'd9, R_WRITE = 4'd10, R_READ = 4'd11;
-    localparam [1:0] M_IDLE = 2'd0, M_LEVEL = 2'd1, M_WRITE = 2'd2, M_READ = 2'd3;
+                     R_IDLE = 4'd8, R_LEVEL = 4'd9, R_WRITE = 4'd10, R_READ = 4'd11,
+                     R_RAND = 4'd12;
+    localparam [2:0] M_IDLE = 3'd0, M_LEVEL = 3'd1, M_WRITE = 3'd2, M_READ = 3'd3,
+                     M_RAND = 3'd4;
 
     reg [3:0] istate = I_IDLE;
     reg [3:0] wnext = I_IDLE;
     reg [16:0] itimer = 17'd0;
     reg [16:0] wcount = 17'd0;
     reg [1:0] mr_idx = 2'd0;
-    reg [1:0] mode = M_IDLE;
+    reg [2:0] mode = M_IDLE;
     reg [3:0] rload_cnt = 4'd0;
     reg [3:0] wload_cnt = 4'd0;
     reg [9:0] refi = 10'd0;
@@ -350,9 +407,41 @@ module wr_core (
     reg [3:0] step_no = 4'd0;           // position in an entry/exit/refresh script
     reg [15:0] rd_hist = 16'd0;         // the read stream, one bit per PCLK
     reg [7:0] read_count = 8'd0;
-    reg [7:0] read_pipe = 8'd0;
+    reg [8:0] read_pipe = 9'd0;         // READs issued, one bit per PCLK
     reg read_active = 1'b1;
     reg [1:0] calib_cnt = 2'd0;
+    // random mode: the access in flight and the address source
+    reg [31:0] xs = 32'd1;
+    reg [2:0] acc_bank = 3'd0;
+    reg acc_rowbit = 1'b0;
+    reg [6:0] acc_col = 7'd0;
+    reg rc_issue = 1'b0;                // a READ leaves the core this cycle
+    // the pause after a random READ: the access period, at least 8, less
+    // the ACTIVATE-to-READ cycles and the pause's own two; set from the
+    // link, so registered off the counter's path
+    reg [16:0] rand_wait = 17'd3;
+    always @(posedge pclk)
+        rand_wait <= (read_gap_p2 < 8'd8) ? 17'd3 : {9'd0, read_gap_p2} - 17'd5;
+    localparam [31:0] XS_SEED = 32'h2545f491;
+
+    function [31:0] xorshift(input [31:0] x);
+        reg [31:0] y;
+        begin
+            y = x ^ (x << 13);
+            y = y ^ (y >> 17);
+            xorshift = y ^ (y << 5);
+        end
+    endfunction
+
+    // The DQS gate of each READ: four memory clocks, k of them late.
+    // READ[i] for i >= k follows this PCLK's delayed READ and for i < k the
+    // previous PCLK's, so the window starts at clock k of the delayed PCLK.
+    wire g_now = read_pipe[read_delay_p2];
+    wire g_prev = read_pipe[read_delay_p2 + 4'd1];
+    wire [3:0] gate_win = {gate_p2 > 2'd3 ? g_prev : g_now,
+                           gate_p2 > 2'd2 ? g_prev : g_now,
+                           gate_p2 > 2'd1 ? g_prev : g_now,
+                           gate_p2 > 2'd0 ? g_prev : g_now};
 
     localparam [9:0] TREFI = 10'd700;   // 7 us, under the 7.8 us tREFI
 
@@ -397,8 +486,9 @@ module wr_core (
         deselect;
         itimer <= itimer + 17'd1;
         rmove <= rmove_pulse ? mask_p2 : 4'b0000;
-        read_pipe <= {read_pipe[6:0], 1'b0};
-        read_en <= (mode == M_READ && read_pipe[read_delay_p2]) ? pat_p2 : 4'b0000;
+        rc_issue <= 1'b0;
+        read_pipe <= {read_pipe[7:0], 1'b0};
+        read_en <= (mode == M_READ || mode == M_RAND) ? (pat_p2 & gate_win) : 4'b0000;
         if (read_count == 8'd0) begin
             read_active <= 1'b1;
             read_count <= read_run_p2;
@@ -413,7 +503,7 @@ module wr_core (
         else if (calib_cnt != 2'd0)
             calib_cnt <= calib_cnt - 2'd1;
         calib <= (calib_cnt != 2'd0) ? calib_p2 : 32'd0;
-        rd_hist <= {rd_hist[14:0], mode == M_READ && read_pipe[read_delay_p2]};
+        rd_hist <= {rd_hist[14:0], mode == M_READ && g_now};
 
         if (rload_pulse || (istate == I_IDLE && ready_pc && itimer == 17'd4))
             rload_cnt <= 4'd8;
@@ -427,7 +517,9 @@ module wr_core (
             wload_cnt <= wload_cnt - 4'd1;
         wloadn <= (wload_cnt == 4'd0);
 
-        if (istate >= R_IDLE && refi != 10'h3ff)
+        // the interval runs through the pauses a running state takes, or a
+        // mode that spends most of its time in them would outrun tREFI
+        if ((istate >= R_IDLE || (istate == I_WAIT && wnext >= R_IDLE)) && refi != 10'h3ff)
             refi <= refi + 10'd1;
 
         if (!ready_pc) begin
@@ -439,7 +531,7 @@ module wr_core (
             dq_drive <= 1'b0;
             dqs_drive <= 1'b0;
             mode <= M_IDLE;
-            read_pipe <= 8'd0;
+            read_pipe <= 9'd0;
             read_count <= 8'd0;
             read_active <= 1'b1;
         end else begin
@@ -486,8 +578,10 @@ module wr_core (
                         pause(17'd30, R_IDLE);                  // tRFC 260 ns
                     end else if (mode_p != M_IDLE) begin
                         mode <= mode_p;
+                        xs <= XS_SEED;
                         istate <= mode_p == M_LEVEL ? R_LEVEL :
-                                  mode_p == M_WRITE ? R_WRITE : R_READ;
+                                  mode_p == M_WRITE ? R_WRITE :
+                                  mode_p == M_READ ? R_READ : R_RAND;
                     end
                 end
 
@@ -587,6 +681,38 @@ module wr_core (
                         end
                     endcase
                 end
+
+                // closed-page single READs: ACTIVATE, READ with
+                // auto-precharge three PCLK later (tRCD), the next access
+                // `spacing` PCLK after the ACTIVATE -- past tRAS, tRTP, tRP
+                // and tRC, and one ACTIVATE in 8 PCLK keeps tRRD and tFAW
+                R_RAND: begin
+                    if (step_no == 4'd0) begin
+                        if (mode_p != mode) begin
+                            mode <= M_IDLE;
+                            istate <= R_IDLE;
+                        end else if (refi >= TREFI) begin
+                            issue(C_REF, 3'd0, 16'h0000);
+                            refi <= 10'd0;
+                            pause(17'd30, R_RAND);              // tRFC
+                        end else begin
+                            acc_bank <= xs[2:0];
+                            acc_rowbit <= xs[3];
+                            acc_col <= xs[10:4];
+                            issue(C_ACT, xs[2:0], {1'b0, row_p2[14:1], xs[3]});
+                            step_no <= 4'd1;
+                            pause(17'd1, R_RAND);               // READ 3 PCLK on
+                        end
+                    end else begin
+                        // A10 high: auto-precharge
+                        issue(C_RD, acc_bank, {5'd0, 1'b1, acc_col, 3'b000});
+                        read_pipe[0] <= 1'b1;
+                        rc_issue <= 1'b1;
+                        xs <= xorshift(xs);
+                        step_no <= 4'd0;
+                        pause(rand_wait, R_RAND);
+                    end
+                end
                 default: istate <= I_IDLE;
             endcase
         end
@@ -601,7 +727,13 @@ module wr_core (
     reg [15:0] elig = 16'd0, elig_last = 16'd0;
     reg [255:0] snap = 256'd0;
     reg [255:0] dq_r = 256'd0;
-    reg [255:0] dq_r2 = 256'd0;         // dq_r one cycle later, to pair with ra_data
+    reg [255:0] dq_r2 = 256'd0;
+    reg [255:0] dq_r3 = 256'd0;
+    reg [255:0] dq_r4 = 256'd0;         // the word ra_data was aligned from
+    reg [3:0]   rvalid_r = 4'd0;        // rvalid beside dq_r, for rd_align
+    // rd_align's own copy of dq_r: merged with the core's, one register
+    // would feed both from wherever it lands
+    (* syn_preserve = 1, keep = 1 *) reg [255:0] dq_ra = 256'd0;
     reg eligible = 1'b0;
     reg [63:0] pat_rot = 64'd0;         // the eight rotations of P, rotation r at [8r +: 8]
     reg [3:0] hit = 4'b0000;            // a lane's match, one cycle after its words
@@ -615,11 +747,15 @@ module wr_core (
         pclk_cnt <= pclk_cnt + 16'd1;
         dq_r <= dq_q;
         dq_r2 <= dq_r;
+        dq_r3 <= dq_r2;
+        dq_r4 <= dq_r3;
+        rvalid_r <= rvalid;
+        dq_ra <= dq_q;
         eligible <= (mode == M_READ) && (&rd_hist);
         for (r = 0; r < 8; r = r + 1)
             pat_rot[8 * r +: 8] <= (dq_pat << r) | (dq_pat >> (8 - r));
         if (snap_pulse || eligible)
-            snap <= dq_r2;
+            snap <= dq_r4;
         for (l = 0; l < 4; l = l + 1) begin
             w0 = dq_r[64 * l +: 8];
             if (mode == M_LEVEL) begin
@@ -673,10 +809,38 @@ module wr_core (
 
     rd_align align (
         .pclk(pclk), .rst(!ready_pc), .stream(eligible),
-        .dq_q(dq_q), .rvalid(rvalid), .pat(dq_pat), .arm(ra_arm),
+        .dq_q(dq_ra), .rvalid(rvalid_r), .pat(dq_pat), .arm(ra_arm),
         .trained(ra_trained), .rot(ra_rot), .data(ra_data), .valid(ra_valid),
         .ok(ra_ok), .err(ra_err), .drift(ra_drift), .pat_ok(ra_pat_ok),
         .phase(ra_phase), .phase_ok(ra_phase_ok), .relocks(ra_relocks));
+
+    // ------------------------------------------------------------------
+    // The single-burst checker, PCLK
+    // ------------------------------------------------------------------
+    wire         rc_locked, rc_fail;
+    wire [11:0]  rc_expect, rc_last_rot, rc_fail_rot;
+    wire [3:0]   rc_last_cls, rc_fail_lanes;
+    wire [31:0]  rc_total, rc_good, rc_class, rc_moves;
+    wire [15:0]  rc_hist_n;
+    wire [511:0] rc_hist;
+    wire [7:0]   rc_fail_pat;
+    wire [10:0]  rc_fail_addr;
+    wire [255:0] rc_fail_words;
+    reg          rc_arm = 1'b0, mode_rand_d = 1'b0;
+    always @(posedge pclk) begin
+        mode_rand_d <= (mode == M_RAND);
+        rc_arm <= !ready_pc || ((mode == M_RAND) && !mode_rand_d) || (arm_p[2] ^ arm_p[1]);
+    end
+
+    rd_check check (
+        .pclk(pclk), .rst(!ready_pc), .arm(rc_arm), .dq_q(dq_q),
+        .issue(rc_issue), .issue_idx({acc_rowbit, acc_bank}), .issue_col(acc_col),
+        .lat(lat_p2), .step(rstep_p2),
+        .locked(rc_locked), .expect_rot(rc_expect), .last_rot(rc_last_rot),
+        .last_cls(rc_last_cls), .total(rc_total), .good(rc_good), .class_ok(rc_class),
+        .rot_moves(rc_moves), .hist_n(rc_hist_n), .hist(rc_hist),
+        .fail_seen(rc_fail), .fail_lanes(rc_fail_lanes), .fail_pat(rc_fail_pat),
+        .fail_addr(rc_fail_addr), .fail_rot(rc_fail_rot), .fail_words(rc_fail_words));
 
     // ------------------------------------------------------------------
     // Phase dynamics, PCLK: how the read stream's word rotation moves
@@ -690,9 +854,13 @@ module wr_core (
     reg [15:0] chg_total = 16'd0, chg_gap = 16'd0, delta_last = 16'd0;
     reg [15:0] last_change = 16'd0;
     reg [2:0]  step0 = 3'd0, step1 = 3'd0, step2 = 3'd0, step3 = 3'd0;
-    reg        skew_changed = 1'b0, stream_d = 1'b0;
+    reg        skew_changed = 1'b0, stream_d = 1'b0, moved_d = 1'b0;
     always @(posedge pclk) begin
         stream_d <= eligible;
+        // the lanes' steps are compared the cycle after they are recorded
+        moved_d <= !ra_arm && eligible && (&ra_phase_ok) && (ra_phase != ph_prev);
+        if (moved_d && (step0 != step1 || step0 != step2 || step0 != step3))
+            skew_changed <= 1'b1;
         if (ra_arm) begin
             chg_total <= 16'd0;
             chg_gap <= 16'd0;
@@ -710,10 +878,6 @@ module wr_core (
             step1 <= ra_phase[5:3]  - ph_prev[5:3];
             step2 <= ra_phase[8:6]  - ph_prev[8:6];
             step3 <= ra_phase[11:9] - ph_prev[11:9];
-            if ((ra_phase[2:0]  - ph_prev[2:0])  != (ra_phase[5:3] - ph_prev[5:3]) ||
-                (ra_phase[2:0]  - ph_prev[2:0])  != (ra_phase[8:6] - ph_prev[8:6]) ||
-                (ra_phase[2:0]  - ph_prev[2:0])  != (ra_phase[11:9] - ph_prev[11:9]))
-                skew_changed <= 1'b1;
             ph_prev <= ra_phase;
         end else if (eligible && (&ra_phase_ok)) begin
             ph_prev <= ra_phase;
@@ -725,8 +889,10 @@ module wr_core (
     reg [15:0]  al_seen = 16'd0, al_seen_last = 16'd0;
 
     // the aligned snapshot and the raw snapshot must describe one word, so
-    // both latch on the same condition: ra_data is aligned(dq_q) registered
-    // once, i.e. the word dq_r holds now
+    // both latch on the same condition: rd_align takes dq_ra, a copy of
+    // dq_r, which arrives
+    // off the IDES8_MEM outputs a cycle earlier, and presents
+    // ra_data = aligned(dq_r4)
     always @(posedge pclk) begin
         if (snap_pulse || eligible)
             al_snap <= ra_data;
@@ -750,7 +916,7 @@ module wr_core (
     reg [39:0] lane_s1 = 40'd0, lane_s2 = 40'd0;
     reg [63:0] good_s1 = 64'd0, good_s2 = 64'd0;
     reg [255:0] snap_s1 = 256'd0, snap_s2 = 256'd0;
-    reg [7:0] st_s1 = 8'd0, st_s2 = 8'd0;
+    reg [8:0] st_s1 = 9'd0, st_s2 = 9'd0;
     reg [255:0] al_snap_s1 = 256'd0, al_snap_s2 = 256'd0;
     reg [15:0] al_good_s1 = 16'd0, al_good_s2 = 16'd0;
     reg [15:0] al_seen_s1 = 16'd0, al_seen_s2 = 16'd0;
@@ -801,26 +967,44 @@ module wr_core (
 
     // The memory clock toggles one bit per RBURST edge; counting happens
     // here, where a wide incrementer costs a fifth of the clock rate.
+    // An 8-bit count over a host-timed interval cannot tell a rare edge
+    // from one per burst, which wraps it every 256 PCLK; command 0x24 n
+    // therefore counts for exactly 2^n PCLK, saturating, and holds.
     reg [3:0]  btog_1 = 4'd0, btog_2 = 4'd0;
-    reg [31:0] bcnt = 32'd0;            // per lane, 8 bits, free-running
+    reg [31:0] bcnt = 32'd0;            // per lane, 8 bits
+    reg [23:0] bwin_cnt = 24'd0, bwin_last = 24'd0;
+    reg        bwin_on = 1'b0, bwin_sat = 1'b0;
     integer    bl;
     always @(posedge pclk) begin
+        bwin_last <= (24'd1 << bwin_p2) - 24'd1;
         btog_1 <= burst_tog;
         btog_2 <= btog_1;
-        if (bclr_pulse)
+        if (bclr_pulse) begin
             bcnt <= 32'd0;
-        else
+            bwin_cnt <= 24'd0;
+            bwin_sat <= (bwin_p2 != 5'd0);
+            bwin_on <= (bwin_p2 != 5'd0);
+        end else begin
+            if (bwin_on) begin
+                bwin_cnt <= bwin_cnt + 24'd1;
+                if (bwin_cnt == bwin_last)
+                    bwin_on <= 1'b0;
+            end
             for (bl = 0; bl < 4; bl = bl + 1)
-                if (btog_2[bl] != btog_1[bl])
+                if (btog_2[bl] != btog_1[bl] && (bwin_on || !bwin_sat) &&
+                    !(bwin_sat && bcnt[8*bl +: 8] == 8'hff))
                     bcnt[8*bl +: 8] <= bcnt[8*bl +: 8] + 8'd1;
+        end
     end
 
     reg [3:0]  bseen_s1 = 4'd0, bseen_s2 = 4'd0;
+    reg        bwin_s1 = 1'b0, bwin_s2 = 1'b0;
     reg [31:0] bcnt_s1 = 32'd0, bcnt_s2 = 32'd0;
     always @(posedge sys_clk) begin
         bseen_s1 <= {bcnt[7:0] != 8'd0, bcnt[15:8] != 8'd0,
                      bcnt[23:16] != 8'd0, bcnt[31:24] != 8'd0};
         bseen_s2 <= bseen_s1;
+        bwin_s1 <= bwin_on;     bwin_s2 <= bwin_s1;
         bcnt_s1 <= bcnt;   bcnt_s2 <= bcnt_s1;
     end
 
@@ -847,9 +1031,9 @@ module wr_core (
         bcnt_s2[23:16],                                         // 125
         bcnt_s2[15:8],                                          // 124
         bcnt_s2[7:0],                                           // 123
-        {4'b0000, bseen_s2},                                    // 122
+        {bwin_s2, 3'b000, bseen_s2},                            // 122
         relocks_s2,                                             // 120..121
-        {4'b0000, ra_phase_ok_s2, ra_phase_s2[11:8]},           // 119
+        {ra_phase_ok_s2, ra_phase_s2[11:8]},                    // 119
         ra_phase_s2[7:0],                                       // 118
         {2'b00, step3_s2, step2_s2},                            // 117
         {skew_s2, 1'b0, step1_s2, step0_s2},                    // 116
@@ -873,9 +1057,51 @@ module wr_core (
         read_run_req, 5'd0, rclksel_req,
         elig_s2, pclk_s2, free_cnt,
         pat_req,
-        st_s2[5:4], 2'b00, st_s2[3:0],
+        st_s2[5:4], st_s2[6], 1'b0, st_s2[3:0],
         step_s2,
-        ready, pll_ok, lock_ok, lock_seen, st_s2[7], st_s2[6], 2'b00
+        ready, pll_ok, lock_ok, lock_seen, st_s2[8], st_s2[7], 2'b00
+    };
+
+    // the checker's counters are static once random mode is left, which is
+    // when the host reads them; one flop here and the frame make two
+    reg          rc_locked_s = 1'b0, rc_fail_s = 1'b0, rand_s = 1'b0;
+    reg [11:0]   rc_expect_s = 12'd0, rc_last_rot_s = 12'd0, rc_fail_rot_s = 12'd0;
+    reg [3:0]    rc_last_cls_s = 4'd0, rc_fail_lanes_s = 4'd0;
+    reg [31:0]   rc_total_s = 32'd0, rc_good_s = 32'd0, rc_class_s = 32'd0, rc_moves_s = 32'd0;
+    reg [15:0]   rc_hist_n_s = 16'd0;
+    reg [511:0]  rc_hist_s = 512'd0;
+    reg [7:0]    rc_fail_pat_s = 8'd0;
+    reg [10:0]   rc_fail_addr_s = 11'd0;
+    reg [255:0]  rc_fail_words_s = 256'd0;
+    always @(posedge sys_clk) begin
+        rc_locked_s <= rc_locked;           rc_fail_s <= rc_fail;
+        rand_s <= (mode == M_RAND);
+        rc_expect_s <= rc_expect;           rc_last_rot_s <= rc_last_rot;
+        rc_fail_rot_s <= rc_fail_rot;       rc_last_cls_s <= rc_last_cls;
+        rc_fail_lanes_s <= rc_fail_lanes;   rc_total_s <= rc_total;
+        rc_good_s <= rc_good;               rc_class_s <= rc_class;
+        rc_moves_s <= rc_moves;             rc_hist_n_s <= rc_hist_n;
+        rc_hist_s <= rc_hist;               rc_fail_pat_s <= rc_fail_pat;
+        rc_fail_addr_s <= rc_fail_addr;     rc_fail_words_s <= rc_fail_words;
+    end
+
+    wire [1015:0] status2 = {
+        {4'b0000, rc_fail_rot_s},                               // 125..126
+        rc_fail_words_s,                                        // 93..124
+        rc_hist_s,                                              // 29..92
+        {4'b0000, rc_last_cls_s},                               // 28
+        {5'b00000, rc_fail_addr_s},                             // 26..27
+        rc_fail_pat_s,                                          // 25
+        {rc_fail_s, 3'b000, rc_fail_lanes_s},                   // 24
+        {4'b0000, rc_last_rot_s},                               // 22..23
+        {4'b0000, rc_expect_s},                                 // 20..21
+        rc_hist_n_s,                                            // 18..19
+        rc_moves_s,                                             // 14..17
+        rc_class_s,                                             // 10..13
+        rc_good_s,                                              // 6..9
+        rc_total_s,                                             // 2..5
+        {3'b000, lat_req},                                      // 1
+        {rc_locked_s, rand_s, gate_req, 1'b0, rstep_req}        // 0
     };
 
     // ------------------------------------------------------------------
@@ -895,6 +1121,7 @@ module wr_core (
     reg [7:0] cmd_byte = 8'h00;
     reg response_active = 1'b0;
     reg response_is_status = 1'b0;
+    reg response_is_check = 1'b0;
     reg [7:0] response_index = 8'd0;
     reg [1015:0] frame = 1016'd0;
 
@@ -906,7 +1133,8 @@ module wr_core (
                     (c == 8'h0a) ||
                     (c == 8'h0b) || (c == 8'h0c) || (c == 8'h0d) || (c == 8'h0e) ||
                     (c == 8'h0f) || (c[7:2] == 6'b000100) || (c == 8'h20) ||
-                    (c == 8'h21) || (c == 8'h22) || (c == 8'h23) || (c == 8'h24);
+                    (c == 8'h21) || (c == 8'h22) || (c == 8'h23) || (c == 8'h24) ||
+                    (c == 8'h25) || (c == 8'h26) || (c == 8'h27) || (c == 8'h28);
         end
     endfunction
 
@@ -932,14 +1160,15 @@ module wr_core (
                     request_state <= 2'd0;
                     if (!response_active) begin
                         response_active <= 1'b1;
-                        response_is_status <= (cmd_byte == 8'h03);
+                        response_is_status <= (cmd_byte == 8'h03) || (cmd_byte == 8'h27);
+                        response_is_check <= (cmd_byte == 8'h27);
                         response_index <= 8'd0;
-                        frame <= status;
+                        frame <= (cmd_byte == 8'h27) ? status2 : status;
                         case (cmd_byte)
                             8'h04: snap_tog <= ~snap_tog;
                             8'h05: begin
                                 restart <= 1'b1;
-                                mode_req <= 2'd0;
+                                mode_req <= 3'd0;
                                 moves <= 32'd0;
                             end
                             8'h06: rclksel_req <= rx_data[2:0];
@@ -962,7 +1191,7 @@ module wr_core (
                                 moves <= 32'd0;
                             end
                             8'h0b: read_pat <= rx_data[3:0];
-                            8'h0c: mode_req <= rx_data[1:0];
+                            8'h0c: mode_req <= rx_data[2:0] > 3'd4 ? 3'd0 : rx_data[2:0];
                             8'h0d: read_run_req <= rx_data == 8'd0 ? 8'd1 : rx_data;
                             8'h0e: pat_req <= rx_data;
                             8'h0f: bank_req <= rx_data[2:0];
@@ -970,7 +1199,13 @@ module wr_core (
                             8'h21: row_req[14:8] <= rx_data[6:0];
                             8'h22: read_delay_req <= rx_data[2:0];
                             8'h23: arm_tog <= ~arm_tog;
-                            8'h24: bclr_tog <= ~bclr_tog;
+                            8'h24: begin
+                                bwin_req <= rx_data > 8'd23 ? 5'd23 : rx_data[4:0];
+                                bclr_tog <= ~bclr_tog;
+                            end
+                            8'h25: gate_req <= rx_data[1:0];
+                            8'h26: lat_req <= rx_data[4:0];
+                            8'h28: rstep_req <= rx_data[2:0];
                             default: if (cmd_byte[7:2] == 6'b000100) begin
                                 wstep_req[8 * cmd_byte[1:0] +: 8] <= rx_data;
                                 wload_tog <= ~wload_tog;
@@ -986,7 +1221,7 @@ module wr_core (
                 case (response_index)
                     8'd0: tx_data <= 8'haa;
                     8'd1: tx_data <= 8'h00;
-                    8'd2: tx_data <= 8'h04;
+                    8'd2: tx_data <= response_is_check ? 8'h05 : 8'h04;
                     8'd3: tx_data <= 8'h7f;    // 127 payload bytes
                     default: begin
                         tx_data <= frame[7:0];

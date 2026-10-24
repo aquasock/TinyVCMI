@@ -1560,3 +1560,45 @@ Build the controller that binds a burst to the READ command that asked for it an
 - User Test: N/A
 
 ---
+
+## 49 COMMIT Unreleased 2026-10-24T15:02:25-07:00
+
+#### Coming From:
+
+Unreleased de5d085
+
+#### Purpose:
+
+Make single DDR3 READs measurable through the open-flow PHY, measure their read latency and whether the word frame holds from one READ to the next, and test whether the DQS read gate's alignment explains the frame moves of TOOL-023.
+
+#### Outcome:
+
+`fpga/ddr3_write` gained a READ gate offset of k memory clocks within the delayed PCLK (command `0x25`), a closed-page random mode issuing ACTIVATE then READ with auto-precharge to one of sixteen rows every 8 PCLK (mode 4), `rd_check.v`, a single-burst checker with a 32-offset latency histogram, a rotation lock and first-failure capture behind a second status frame (`0x27`), and an RBURST count over exactly 2^n PCLK (`0x24 n`); `tools/ddr3_write_probe.py` gained `gate`, `prewrite` and `random` and a windowed `burst`. Three faults in the committed image were found and fixed. Its status concatenation was 1020 bits in a 1016-bit wire, confirmed by Verilator and iverilog, so every byte above 119 read four bits off: entry 47's relock count is known only modulo 4096 and entry 48's RBURST rates, whose 8-bit counters also wrapped, are withdrawn, which reopens TOOL-024. The refresh interval stopped during pauses, harmless in the streaming modes but an overrun of tREFI in random mode; the simulation's worst interval is now 7.17 us. And the Gowin control of the committed source misses PCLK at 89.9 MHz, unchecked by the build, because GowinSynthesis packs the setting synchronizers into LUT-RAM shift registers, among other paths in `rd_align` (TOOL-028); with `syn_srlstyle`, kept DQ register copies and three shorter `rd_align` cycles whose unit test still passes, the Gowin control closes PCLK at 100.51 MHz with no negative slack, `tools/build_ddr3_write.sh` now fails on any Gowin negative slack, and `top.v` keeps its `pclk` wire after flattening renamed the net and the existing SDC guard caught it. The checker, aligner and image simulations pass, the last with per-bank tRCD, tRAS, tRP, tRC, tRRD and tFAW checks over 631 random READs. The open image, SHA-256 `466979d693fba0c147af379ca17ccb010ae4b4d6d167d1b080c4fc5eda18a0cd`, closes PCLK at 126.29 MHz and equals its Gowin build, `f2cc60e1240396450fb04e4bd3ef6f91806957aeda91b6ac4faa497c2416aaca`, on all 306 DDR3 tables; only the open image was loaded and it answered `0x56`. On the Tang a stream read back on all lanes, and the gate sweep showed the frame move per read gap set by k alone, 6, 4, 2 and nearly 0 beats for k 0 to 3 at delays 2 to 7, and no move at delay 1 with k 2 or 3 (TOOL-026), so TOOL-023's move was a misaligned gate. Single random READs passed at none of the 32 gate positions: at delay 1, k 2 the right burst was whole on all lanes 7 PCLK after the READ in 12.5 percent of READs, and the failing words carried other patterns (TOOL-027), most likely because a lone burst straddles two captured words, which a stream of one pattern hides; that is a hypothesis. The user approved recording this result and starting the burst reassembly as a new cycle. The desktop `tinytang.bin` was restored and answered `0x54`. TOOL-023 and TOOL-024 were revised and TOOL-026 to TOOL-028 added. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering and active-log capacity.
+
+#### Next Steps:
+
+Add a raw capture of all four lanes' words for about 24 PCLK after one isolated READ to see where a single burst lands, then make `rd_check` reassemble each burst from two consecutive words with a per-lane beat slip trained on isolated READs and check latency, slip and data per READ at the stream-stable gate positions; in the same board session run the windowed RBURST count to settle TOOL-024. Framing writes to their WRITE command, then the controller and the AE350 port follow; the `D108` unused-pin contradiction and the `is_mipi` bug outside the DDR context remain open.
+
+#### Files Modified:
+
+- docs/ddr3-open-flow.md
+- fpga/ddr3_write/open.sdc
+- fpga/ddr3_write/rd_align.v
+- fpga/ddr3_write/rd_check.v
+- fpga/ddr3_write/tb_check.v
+- fpga/ddr3_write/tb_wr.v
+- fpga/ddr3_write/top.v
+- fpga/ddr3_write/wr_core.v
+- tools/build_ddr3_write.sh
+- tools/ddr3_write.py
+- tools/ddr3_write_probe.py
+- tools/sim_ddr3_write.sh
+- tools/sim_rd_check.sh
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: N/A
+
+---

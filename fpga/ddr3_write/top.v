@@ -58,7 +58,10 @@ module top (
         .SSCPOL(1'b0), .SSCON(1'b0), .SSCMDSEL(7'b0), .SSCMDSEL_FRAC(3'b0),
         .LOCK(pll_lock), .CLKOUT0(mclk));
 
-    wire pclk, dll_rst, updncntl, hold, phy_rst, dll_lock, rloadn, rdir, wloadn;
+    // kept, so the open flow's SDC can name the memory-side clock whatever
+    // Yosys does with the submodules' aliases of it
+    (* keep *) wire pclk;
+    wire dll_rst, updncntl, hold, phy_rst, dll_lock, rloadn, rdir, wloadn;
     wire [3:0] rmove;
     wire [31:0] wstep;
     wire [7:0] dq_pat;

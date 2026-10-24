@@ -26,6 +26,15 @@ chosen over the link.  This tool opens TinyTang's `fpgapipe` once and:
               snapshot against the pattern and against a host-side
               derotation of the raw snapshot, and the per-window counts
   alignsweep  align across several banks, rows and patterns
+  phase       the in-core phase monitor while a pattern streams back
+  burst       RBURST edges per lane in fixed 2^n-PCLK windows, saturating at
+              255, at every RCLKSEL, re-entering read mode for each
+  gate        the stream's word-frame move per read interruption at every
+              read delay and DQS gate offset (command 0x25)
+  prewrite    write the sixteen rd_check rows: bank 0..7, row {row & ~1, 0/1}
+  random      closed-page single READs to those rows (mode 4): rd_check's
+              latency histogram and per-READ check; --sweep-gate repeats it
+              at every read delay and gate offset
 
 The aligner trains per read session, so every align case re-enters read mode
 and the tool reports the raw rotation it observes beside the locked one.  A
@@ -49,7 +58,14 @@ import time
 
 import serial
 
-MODES = ["idle", "level", "write", "read"]
+MODES = ["idle", "level", "write", "read", "random"]
+
+#: rd_check.v's sixteen patterns, by {row bit, bank}
+RC_PATTERNS = [0x0B, 0x0D, 0x13, 0x15, 0x17, 0x19, 0x1B, 0x1D,
+               0x25, 0x27, 0x2B, 0x2D, 0x35, 0x37, 0x3B, 0x57]
+#: rd_check's own pipeline: hist[j] means the burst reached dq_q j - 3
+#: PCLK after the cycle its READ left the core
+RC_PIPE = 3
 PAYLOAD = 127
 TOTAL = 4 + PAYLOAD
 
@@ -84,7 +100,7 @@ class Core:
         b = self.request(0x03, expect=TOTAL)[4:]
         s = {"ready": b[0] >> 7 & 1, "pll": b[0] >> 6 & 1, "lock": b[0] >> 5 & 1,
              "cke": b[0] >> 3 & 1, "reset_n": b[0] >> 2 & 1, "step": b[1],
-             "mode": MODES[b[2] >> 6], "state": b[2] & 15, "pattern": b[3],
+             "mode": MODES[(b[2] >> 6) | (b[2] >> 3 & 4)], "state": b[2] & 15, "pattern": b[3],
              "sys": int.from_bytes(b[4:6], "little"), "pclk": int.from_bytes(b[6:8], "little"),
              "eligible": int.from_bytes(b[8:10], "little"), "rclksel": b[10] & 7,
              "read_run": b[11], "lanes": []}
@@ -114,8 +130,30 @@ class Core:
         s["phase_ok"] = b[119] >> 4 & 15
         s["relocks"] = int.from_bytes(b[120:122], "little")
         s["burst_seen"] = b[122] & 15
+        s["burst_window_open"] = b[122] >> 7
         s["burst_count"] = [b[123 + n] for n in range(4)]
         return s
+
+    def check(self) -> dict:
+        """rd_check's frame, command 0x27."""
+        r = self.request(0x27, expect=TOTAL)
+        if r[2] != 0x05:
+            raise RuntimeError(f"checker status came back as frame type {r[2]:#04x}")
+        b = r[4:]
+        u32 = lambda o: int.from_bytes(b[o:o + 4], "little")
+        u16 = lambda o: int.from_bytes(b[o:o + 2], "little")
+        rots = lambda v: [(v >> (3 * n)) & 7 for n in range(4)]
+        fa = u16(26)
+        return {"locked": b[0] >> 7, "random": b[0] >> 6 & 1, "gate": b[0] >> 4 & 3,
+                "step": b[0] & 7, "lat": b[1] & 31,
+                "total": u32(2), "good": u32(6), "class_ok": u32(10), "moves": u32(14),
+                "hist_n": u16(18), "expect": rots(u16(20)), "last_rot": rots(u16(22)),
+                "fail": b[24] >> 7, "fail_lanes": b[24] & 15, "fail_pat": b[25],
+                "fail_bank": fa >> 7 & 7, "fail_rowbit": fa >> 10 & 1, "fail_burst": fa & 127,
+                "last_cls": b[28] & 15,
+                "hist": [u16(29 + 2 * j) for j in range(32)],
+                "fail_words": [b[93 + 8 * n:101 + 8 * n] for n in range(4)],
+                "fail_rot": rots(u16(125))}
 
     def mode(self, m: int):
         self.request(0x0C, m)
@@ -160,6 +198,50 @@ def header(s: dict) -> str:
             f"reset_n {s['reset_n']} mode {s['mode']} state {s['state']} STEP {s['step']:#04x} "
             f"pattern {s['pattern']:#04x} RCLKSEL {s['rclksel']} "
             f"READ-group {s['read_run']}")
+
+
+def hist_window(c: dict) -> tuple[int, int]:
+    """The first offset and length of hist's full run, or (-1, 0)."""
+    n = c["hist_n"]
+    if n == 0:
+        return -1, 0
+    full = [h >= n * 0.98 for h in c["hist"]]
+    return longest_run(full)
+
+
+def check_line(c: dict) -> str:
+    start, width = hist_window(c)
+    lat = f"latency {start - RC_PIPE} PCLK (hist {start}..{start + width - 1})" \
+        if width else "no full hist offset"
+    return (f"{lat}; checked at {c['lat']}: {c['good']}/{c['total']} good, "
+            f"{c['class_ok']} right burst, {c['moves']} rotation moves, "
+            f"locked {c['locked']} rot {c['last_rot']}")
+
+
+def fail_lines(c: dict) -> list[str]:
+    if not c["fail"]:
+        return []
+    out = [f"first failure: lanes {c['fail_lanes']:04b}, expected {c['fail_pat']:#04x} "
+           f"at bank {c['fail_bank']} row bit {c['fail_rowbit']} burst {c['fail_burst']}, "
+           f"rotation {c['fail_rot']} against expected {c['expect']}"]
+    for n in range(4):
+        out.append(f"    lane {n}: " + c["fail_words"][n].hex(" "))
+    return out
+
+
+def prewrite(core: Core, row: int, write_s: float):
+    """Write each of the sixteen rd_check rows with its pattern."""
+    for idx, pattern in enumerate(RC_PATTERNS):
+        write_address(core, idx & 7, (row & ~1) | (idx >> 3), pattern, write_s)
+    core.address(0, row & ~1)
+
+
+def random_session(core: Core, seconds: float) -> dict:
+    core.mode(0)
+    core.mode(4)                        # entering random mode arms rd_check
+    time.sleep(seconds)
+    core.mode(0)
+    return core.check()
 
 
 def set_wstep(core: Core, values):
@@ -474,8 +556,35 @@ def main() -> int:
     bu.add_argument("--read-run", type=int, default=255)
     bu.add_argument("--read-gap", type=int, default=255)
     bu.add_argument("--read-delay", type=int, default=3)
-    bu.add_argument("--samples", type=int, default=5)
-    bu.add_argument("--interval-ms", type=float, default=20.0)
+    bu.add_argument("--windows", type=int, nargs="+", default=[6, 8, 12, 16],
+                    help="window exponents n: 2^n PCLK each")
+    ga = sub.add_parser("gate")
+    ga.add_argument("--pattern", type=lambda x: int(x, 0), default=0x1D)
+    ga.add_argument("--read-run", type=int, default=32)
+    ga.add_argument("--read-gap", type=int, default=8)
+    ga.add_argument("--read-delay", type=int, default=3)
+    ga.add_argument("--delays", type=int, nargs="+", default=list(range(8)))
+    ga.add_argument("--offsets", type=int, nargs="+", default=[0, 1, 2, 3])
+    ga.add_argument("--write-ms", type=float, default=20)
+    ga.add_argument("--settle-ms", type=float, default=20)
+    pw = sub.add_parser("prewrite")
+    pw.add_argument("--row", type=lambda x: int(x, 0), default=0)
+    pw.add_argument("--write-ms", type=float, default=5)
+    rn = sub.add_parser("random")
+    rn.add_argument("--row", type=lambda x: int(x, 0), default=0)
+    rn.add_argument("--prewrite", action="store_true",
+                    help="write the sixteen rows first")
+    rn.add_argument("--write-ms", type=float, default=5)
+    rn.add_argument("--read-run", type=int, default=32)
+    rn.add_argument("--read-gap", type=int, default=8, help="PCLK between READs, at least 8")
+    rn.add_argument("--read-delay", type=int, default=3)
+    rn.add_argument("--gate", type=int, default=0, help="DQS gate offset, memory clocks")
+    rn.add_argument("--lat", type=int, default=-1,
+                    help="check offset; -1 takes the hist window start + 1")
+    rn.add_argument("--step", type=int, default=0, help="expected rotation move per READ")
+    rn.add_argument("--seconds", type=float, default=0.5)
+    rn.add_argument("--sessions", type=int, default=1)
+    rn.add_argument("--sweep-gate", action="store_true")
     mt = sub.add_parser("memtest")
     mt.add_argument("--banks", type=lambda x: int(x, 0), nargs="+", default=list(range(8)))
     mt.add_argument("--rows", type=lambda x: int(x, 0), nargs="+",
@@ -553,26 +662,30 @@ def main() -> int:
         elif args.cmd == "burst":
             if not trainable(args.pattern):
                 raise ValueError("a pattern needs eight distinct rotations")
+            if not all(1 <= n <= 23 for n in args.windows):
+                raise ValueError("--windows takes exponents 1..23")
             core.request(0x0E, args.pattern)
             write_address(core, 0, 0, args.pattern, 0.02)
-            core.mode(3)
-            time.sleep(0.05)                            # let the read stream start
-            print("RCLKSEL  rvalid          RBURST seen   counts 0..3     edges/s")
+            print("RCLKSEL  rvalid        " + "  ".join(f"2^{n:<2d} counts 0..3     " for n in args.windows))
             for sel in range(8):
                 core.request(0x06, sel)
+                core.mode(0)
+                core.mode(3)                            # re-enter at this RCLKSEL
                 time.sleep(0.02)
-                core.request(0x24)                      # clear the counters
-                time.sleep(0.02)
-                a = core.status()
-                time.sleep(0.25)                        # measure over 250 ms
-                b = core.status()
-                spans = [(b["burst_count"][n] - a["burst_count"][n]) & 0xFF
-                         for n in range(4)]
-                rate = [int(v / 0.25) for v in spans]
-                print(f"{sel:7d}  {[l['rv'] for l in b['lanes']]}  "
-                      f"{b['burst_seen']:04b}          {b['burst_count']}  {rate}")
-                time.sleep(args.interval_ms / 1000)
+                cols = []
+                for n in args.windows:
+                    core.request(0x24, n)               # count for 2^n PCLK, then hold
+                    deadline = time.time() + 2
+                    b = core.status()
+                    while b["burst_window_open"] and time.time() < deadline:
+                        time.sleep(0.002)
+                        b = core.status()
+                    if b["burst_window_open"]:
+                        raise RuntimeError("the RBURST window did not close")
+                    cols.append(f"{str(b['burst_count']):22s}")
+                print(f"{sel:7d}  {[l['rv'] for l in b['lanes']]}  " + "  ".join(cols))
             core.request(0x06, 0)
+            core.request(0x24, 0)
             core.mode(0)
         elif args.cmd == "phase":
             if not trainable(args.pattern):
@@ -592,6 +705,76 @@ def main() -> int:
                       f"{s['phase_step']}  {s['skew_changed']:4d}  {s['phase']}  {s['phase_ok']:04b}")
                 time.sleep(args.interval_ms / 1000)
             core.mode(0)
+        elif args.cmd == "gate":
+            if not trainable(args.pattern):
+                raise ValueError("a pattern needs eight distinct rotations")
+            core.request(0x0E, args.pattern)
+            write_address(core, 0, 0, args.pattern, args.write_ms / 1000)
+            print(f"read-run {args.read_run} gap {args.read_gap}: the frame move per "
+                  "interruption, all four lanes")
+            print("delay gate  eligible  match 0..3                      moves  at-gap  step[0..3]")
+            for d in args.delays:
+                for k in args.offsets:
+                    core.request(0x22, d)
+                    core.request(0x25, k)
+                    core.mode(0)
+                    core.mode(3)
+                    core.request(0x23)                  # clear the monitor
+                    time.sleep(args.settle_ms / 1000)
+                    s = core.snapshot()
+                    print(f"{d:5d} {k:4d}  {s['eligible']:8d}  " +
+                          " ".join(f"{s['lanes'][n]['count']:6d}" for n in range(4)) +
+                          f"  {s['chg_total']:13d}  {s['chg_gap']:6d}  {s['phase_step']}")
+            core.request(0x25, 0)
+            core.request(0x22, args.read_delay)
+            core.mode(0)
+        elif args.cmd == "prewrite":
+            prewrite(core, args.row, args.write_ms / 1000)
+            print(f"wrote the sixteen rd_check rows at row {args.row & ~1:#06x}/{args.row | 1:#06x}")
+        elif args.cmd == "random":
+            if args.read_gap < 8:
+                raise ValueError("random mode spaces READs at least 8 PCLK apart")
+            if args.prewrite:
+                prewrite(core, args.row, args.write_ms / 1000)
+                # rd_check needs every DQ bit in frame: align them on bank
+                # 0's row, which holds the first pattern, in a read stream
+                core.request(0x0E, RC_PATTERNS[0])
+                core.mode(3)
+                core.settle()
+                align_framing(core, RC_PATTERNS[0])
+                core.mode(0)
+            core.address(0, args.row & ~1)
+            core.request(0x28, args.step)
+            cases = [(d, k) for d in range(8) for k in range(4)] if args.sweep_gate \
+                else [(args.read_delay, args.gate)]
+            failures = 0
+            for d, k in cases:
+                core.request(0x22, d)
+                core.request(0x25, k)
+                lat = args.lat
+                if lat < 0:
+                    # a short run at any offset fills hist; take its window
+                    core.request(0x26, 31)
+                    c = random_session(core, 0.05)
+                    start, width = hist_window(c)
+                    lat = start + 1 if width >= 2 else 31
+                core.request(0x26, lat)
+                for session in range(args.sessions):
+                    c = random_session(core, args.seconds)
+                    ok = c["total"] > 0 and c["good"] == c["total"]
+                    failures += not ok
+                    print(f"delay {d} gate {k} session {session + 1}: "
+                          f"{'PASS' if ok else 'FAIL'} {check_line(c)}")
+                    if not args.sweep_gate:
+                        print("    hist " + " ".join(
+                            f"{j}:{h}" for j, h in enumerate(c["hist"]) if h) +
+                            f"  of {c['hist_n']}")
+                    for line in fail_lines(c):
+                        print("    " + line)
+            core.request(0x25, 0)
+            core.request(0x22, args.read_delay)
+            if failures and not args.sweep_gate:
+                raise RuntimeError(f"{failures} random session(s) failed")
         elif args.cmd in ("align", "alignsweep"):
             if not trainable(args.pattern if args.cmd == "align" else args.patterns[0]):
                 raise ValueError("a pattern needs eight distinct rotations to train")

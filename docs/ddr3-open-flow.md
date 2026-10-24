@@ -2057,3 +2057,129 @@ here.
 So the PHY is not the obstacle; the constraint and clock-routing interchange
 is. Until that changes, `fpga/ddr3_write` remains the only hardware-proven
 DDR3 path on this board.
+
+## Single READs and the DQS gate
+
+The previous cycles streamed reads: the core held the `DQS` `READ` gate open
+for a whole run of READs and every burst carried the same pattern. A
+controller issues single READs to arbitrary addresses, so this cycle added
+what is needed to test exactly that, and measured what the read gate does to
+the word frame.
+
+### What the image gained
+
+* **A gate offset below one PCLK.** `READ[3:0]` carries one bit per memory
+  clock, bit 0 the earliest, as upstream LiteDRAM's GW5 PHY uses it. Command
+  `0x25 k` opens each READ's gate `k` memory clocks into the delayed PCLK:
+  `READ[i]` follows the delayed READ of this PCLK for `i >= k` and of the
+  previous PCLK for `i < k`. With `k = 0` the gate is what it was.
+* **Random mode (mode 4).** Closed-page single READs: every
+  `max(gap, 8)` PCLK an ACTIVATE of one of sixteen locations -- bank 0..7,
+  row `{row[14:1], 0 or 1}` -- chosen by a xorshift generator, a READ with
+  auto-precharge three PCLK later, and a REFRESH in place of an access every
+  700 PCLK. The image simulation now checks every bank's tRCD, tRAS, tRP,
+  tRC, tRRD and tFAW; it issued 631 such READs and passed.
+* **`fpga/ddr3_write/rd_check.v`, the single-burst checker.** The host writes
+  each of the sixteen rows with its own pattern -- distinct aperiodic 8-bit
+  necklaces held as their least rotation -- so any captured word names the
+  pattern it carries whatever its rotation. The checker reduces every cycle
+  to (pins consistent, least rotation, rotation index) per lane, and keeps a
+  32-offset histogram of when after each READ all four lanes hold that READ's
+  pattern, plus a per-READ check at a chosen offset with a rotation lock, an
+  optional predicted move per READ, and the first failure's raw words and
+  address. Its own unit test (`tools/sim_rd_check.sh`) covers latency, lock,
+  a frame jump, a predicted move and a mis-framed pin. The checker's status
+  is a second frame, command `0x27`.
+* **A windowed RBURST count.** Command `0x24 n` counts each lane's RBURST
+  edges for exactly 2^n PCLK, saturating at 255, then holds.
+
+### Two faults in the committed image
+
+The status frame of the previous image was 1020 bits wide in a 1016-bit wire
+-- byte 119 was a 12-bit field -- so every byte above 119 was read four bits
+off, and Verilator and iverilog both confirm the width. The relock count of
+the alignment cycle was read as `(relocks << 4) & 0xffff`, so its "about
+48,800 slips followed" is only known modulo 4096. The RBURST rates of the
+previous cycle mixed nibbles of neighbouring lanes, and their 8-bit counters
+also wrapped within the 250 ms window, so that table cannot support its
+conclusion and RBURST is an open question again. The field is now 8 bits.
+
+The refresh interval did not count through `I_WAIT` pauses. The streaming
+modes pause rarely, which is why their worst interval was 7.6 us; random mode
+pauses most of the time and would have overrun tREFI. The interval now runs
+through pauses taken from a running state, and the simulation's worst case is
+7.17 us.
+
+The build script never looked at the Gowin control's timing. Rebuilt from the
+committed source, that control misses PCLK at 89.9 MHz (14 endpoints,
+-8.6 ns). The causes were GowinSynthesis packing the two-flop setting
+synchronizers into counter-addressed LUT-RAM shift registers
+(`syn_srlstyle = "registers"` on `wr_core` now prevents it), register merging
+that pulled one `dq_q` copy across the die for every consumer (`rd_align`
+and `rd_check` now keep their own, `syn_preserve`/`keep`), and long single
+cycles in `rd_align`: its match count is now "any match of a pattern whose
+rotations are distinct", its lock offsets are registered with the
+measurement, and its burst check runs one stage after the burst is
+registered. The aligner's unit test passes unchanged. `build_ddr3_write.sh`
+now fails when the Gowin report shows any negative slack. Separately,
+flattening began naming the PCLK net `core.align.pclk`, which the existing
+guard caught; `top.v` now keeps its own `pclk` wire and the open SDC names
+that.
+
+The open-flow image closes PCLK at 126.29 MHz and equals the Gowin build on
+all 306 DDR3 tables; the Gowin control closes PCLK at 100.51 MHz with no
+negative slack.
+
+| Image | Bytes | SHA-256 |
+|---|---:|---|
+| open flow `.fs` | | `e8ce9472045d8b0ee7e84b7059087068072119b823e2ac3134407f3ec3551615` |
+| open flow | 4,330,782 | `466979d693fba0c147af379ca17ccb010ae4b4d6d167d1b080c4fc5eda18a0cd` |
+| vendor control | 4,330,802 | `f2cc60e1240396450fb04e4bd3ef6f91806957aeda91b6ac4faa497c2416aaca` |
+
+### The gate decides the frame move
+
+On the board the open image streamed pattern `1d` back on all four lanes at
+every eligible cycle. `tools/ddr3_write_probe.py gate` then ran read-run 32,
+gap 8 at every read delay and gate offset and counted, over about 5 ms, the
+word-frame moves seen at read interruptions, each as the step every lane
+moved, in beats modulo 8:
+
+| Delay | k = 0 | k = 1 | k = 2 | k = 3 |
+|---|---|---|---|---|
+| 0 | 4 every gap | 6 every gap | 2, 77 moves | 2 every gap |
+| 1 | 4 every gap | 6 every gap | **none** | **none** |
+| 2..7 | 6 every gap | 4 every gap | 2 every gap | 2, 77 to 461 moves |
+
+"Every gap" is about 25,000 moves in the window; "none" is a single counted
+move, the monitor's known first comparison against a zeroed phase. Data
+matched on every lane at delays 0 to 5 and degraded at 6 and 7. The step is
+set by the gate's memory-clock offset alone, 2 beats per clock as each clock
+carries two beats, and whole PCLK of delay change only which offsets are
+clean. TOOL-023's move at every interruption was therefore the gate opening
+at the wrong memory clock, not a property of the PHY: at delay 1 with
+`k = 2` or `3` the stream frame holds across gaps.
+
+### Single READs do not yet return clean bursts
+
+After writing the sixteen rows and aligning every DQ bit with `CALIB`,
+`random --sweep-gate` ran each of the 32 gate positions for 0.2 s, about
+2.4 million READs each. None passed. No offset of the histogram was full
+anywhere; at delay 1, `k = 2` -- the stream-stable position -- the right
+pattern was on all lanes at offset 10, a latency of 7 PCLK, in 12.5% of
+READs, and almost nowhere else. The failing captures kept each lane's
+even/odd pin consistency but carried other patterns, differing between
+lanes.
+
+The likely reading is that a single burst is not guaranteed to fall inside
+one captured 8-beat word: it can straddle two consecutive words, and a
+stream hid that because every neighbouring burst carried the same pattern,
+so a straddled word was still a rotation of it. The checker built that
+stream assumption in. Upstream LiteDRAM's GW5 PHY reassembles each burst
+from two consecutive words with a per-lane bit-slip. That is a hypothesis
+from the data and from LiteDRAM's design, not yet a measurement; the next
+cycle captures raw words around single READs to see where a burst lands and
+reassembles bursts accordingly.
+
+The desktop `tinytang.bin` was restored afterwards and answered `0x54`. The
+images are on the card as `ddr3_rand.bin` and `ddr3_rand_vendor.bin`; the
+vendor control was not loaded.

@@ -5,12 +5,17 @@
 // with fpga/ddr3_phy_bringup/tb_dqs_standin.v for Gowin's empty DQS model.
 // No DDR3 device model is attached: this checks what the image does to the
 // device.  After the power-up it switches the modes over the link -- write
-// leveling, idle, writes, idle, reads, idle -- and asserts, from the
-// commands decoded at every CK rising edge and from the pads:
+// leveling, idle, writes, idle, reads, idle, random single READs, idle --
+// and asserts, from the commands decoded at every CK rising edge and from
+// the pads:
 //
-//   * READ and WRITE only to an open row, tRCD after its ACTIVATE;
-//     ACTIVATE, REFRESH and MRS only with every bank precharged; tRP after
-//     a PRECHARGE and tRFC after a REFRESH before the next command;
+//   * READ and WRITE only to an open row of their bank, tRCD after its
+//     ACTIVATE; REFRESH and MRS only with every bank precharged, ACTIVATE
+//     only to a precharged bank; tRP after a bank's precharge, tRC between
+//     ACTIVATEs to one bank, tRRD and tFAW between ACTIVATEs, tRAS before a
+//     precharge, and tRFC after a REFRESH before the next command;
+//   * streaming modes in bank 0 without auto-precharge; random mode only
+//     READs with auto-precharge, to the sixteen rows {row[14:1], 0 or 1};
 //   * a REFRESH at least every 7.8 us outside write leveling;
 //   * write leveling entered with MR1 0x00C4 and left with MR1 0x0044,
 //     ODT high before any strobe is driven, and no DQ driven inside it;
@@ -71,48 +76,81 @@ module tb;
     endtask
 
     // pads: nothing while the device is in reset or outside the driving modes
-    wire [1:0] mode = dut.core.mode;
+    wire [2:0] mode = dut.core.mode;
     always @(dq_pads or dqs_pads or ddr_reset_n or mode) begin
-        if (ddr_reset_n === 1'b1 && mode != 2'd2 && dq_pads !== {36{1'bz}})
+        if (ddr_reset_n === 1'b1 && mode != 3'd2 && dq_pads !== {36{1'bz}})
             fail("DQ or DM driven outside write mode");
-        if (ddr_reset_n === 1'b1 && mode != 2'd2 && mode != 2'd1 && dqs_pads !== {8{1'bz}})
+        if (ddr_reset_n === 1'b1 && mode != 3'd2 && mode != 3'd1 && dqs_pads !== {8{1'bz}})
             fail("a strobe driven outside the write and leveling modes");
-        if (mode == 2'd1 && dqs_pads !== {8{1'bz}} && ddr_odt !== 1'b1)
+        if (mode == 3'd1 && dqs_pads !== {8{1'bz}} && ddr_odt !== 1'b1)
             fail("a strobe driven in leveling before ODT");
     end
 
-    // commands at every CK rising edge
-    reg row_open = 1'b0, in_level = 1'b0;
-    time t_act = 0, t_pre = 0, t_ref = 0, t_cmd = 0, t_last_ref = 0;
-    integer nwr = 0, nrd = 0, nref = 0, nact = 0, nlevel = 0;
+    // commands at every CK rising edge, per bank: DDR3-800E, tCK 2.5 ns
+    reg [7:0] open_b = 8'd0;
+    reg [15:0] open_row [0:7];
+    time t_act_b [0:7];
+    time t_pre_b [0:7];                 // the bank's precharge began
+    time t_act4 [0:3];                  // the last four ACTIVATEs, any bank
+    reg in_level = 1'b0;
+    wire row_open = |open_b;
+    time t_ref = 0, t_last_ref = 0, t_last_act = 0, t_last_pre = 0;
+    integer nwr = 0, nrd = 0, nref = 0, nact = 0, nlevel = 0, nrand = 0, b;
     time max_refi = 0;
     reg [3:0] c;
+    initial for (b = 0; b < 8; b = b + 1) begin
+        t_act_b[b] = 0; t_pre_b[b] = 0; open_row[b] = 16'd0;
+        if (b < 4) t_act4[b] = 0;
+    end
+    task precharge(input integer bk, input time at);
+        begin
+            if (open_b[bk] && at - t_act_b[bk] < 37) fail("a precharge inside tRAS");
+            open_b[bk] = 1'b0; t_pre_b[bk] = at;
+            if (at > t_last_pre) t_last_pre = at;
+        end
+    endtask
     always @(posedge ddr_ck_p) if (ddr_ck_n === 1'b0 && ddr_cs === 1'b0) begin
         c = {ddr_cs, ddr_ras, ddr_cas, ddr_we};
         if (c != 4'b0111) begin
             if (t_ref != 0 && $time - t_ref < 260) fail("a command inside tRFC");
             case (c)
                 4'b0011: begin                                   // ACTIVATE
-                    if (row_open) fail("ACTIVATE with a row open");
-                    if (t_pre != 0 && $time - t_pre < 15) fail("ACTIVATE inside tRP");
-                    row_open = 1'b1; t_act = $time; nact = nact + 1;
+                    if (open_b[bank]) fail("ACTIVATE to a bank with a row open");
+                    if (t_pre_b[bank] != 0 && $time < t_pre_b[bank] + 15) fail("ACTIVATE inside tRP");
+                    if (t_act_b[bank] != 0 && $time - t_act_b[bank] < 52) fail("ACTIVATE inside tRC");
+                    if (t_last_act != 0 && $time - t_last_act < 10) fail("ACTIVATE inside tRRD");
+                    if (t_act4[3] != 0 && $time - t_act4[3] < 50) fail("ACTIVATE inside tFAW");
+                    if (mode == 3'd4 && addr[15:1] !== dut.core.row_p2[14:1])
+                        fail("a random ACTIVATE outside the sixteen rows");
+                    open_b[bank] = 1'b1; open_row[bank] = addr; t_act_b[bank] = $time;
+                    t_act4[3] = t_act4[2]; t_act4[2] = t_act4[1]; t_act4[1] = t_act4[0];
+                    t_act4[0] = $time; t_last_act = $time; nact = nact + 1;
                 end
                 4'b0010: begin                                   // PRECHARGE
                     if (addr[10] !== 1'b1) fail("PRECHARGE not to all banks");
-                    row_open = 1'b0; t_pre = $time;
+                    for (b = 0; b < 8; b = b + 1) precharge(b, $time);
                 end
                 4'b0001: begin                                   // REFRESH
                     if (row_open) fail("REFRESH with a row open");
-                    if (t_pre != 0 && $time - t_pre < 15) fail("REFRESH inside tRP");
+                    if (t_last_pre != 0 && $time < t_last_pre + 15) fail("REFRESH inside tRP");
                     if (t_last_ref != 0 && !in_level && $time - t_last_ref > max_refi)
                         max_refi = $time - t_last_ref;
                     t_ref = $time; t_last_ref = $time; nref = nref + 1;
                 end
                 4'b0100, 4'b0101: begin                          // WRITE, READ
-                    if (!row_open) fail("a column command with no row open");
-                    if ($time - t_act < 15) fail("a column command inside tRCD");
-                    if (bank !== 3'd0 || addr[2:0] !== 3'd0 || addr[12] !== 1'b0 || addr[10] !== 1'b0)
-                        fail("a column command outside bank 0, BL8 aligned, no auto-precharge");
+                    if (!open_b[bank]) fail("a column command to a bank with no row open");
+                    if ($time - t_act_b[bank] < 15) fail("a column command inside tRCD");
+                    if (addr[2:0] !== 3'd0 || addr[12] !== 1'b0)
+                        fail("a column command not BL8 aligned");
+                    if (mode == 3'd4) begin
+                        if (c != 4'b0101 || addr[10] !== 1'b1)
+                            fail("random mode issued other than READ with auto-precharge");
+                        nrand = nrand + 1;
+                        // auto-precharge begins tRTP (4 tCK) after the READ
+                        precharge(bank, $time + 10);
+                    end else if (bank !== 3'd0 || addr[10] !== 1'b0) begin
+                        fail("a streaming column command outside bank 0 or with auto-precharge");
+                    end
                     if (c == 4'b0100) begin
                         nwr = nwr + 1;
                         if (ddr_odt !== 1'b1) fail("a WRITE with ODT low");
@@ -177,12 +215,19 @@ module tb;
         request(8'h0c, 8'h03);                                  // reads
         #30000;
         request(8'h0c, 8'h00);
+        #5000;
+        request(8'h0c, 8'h04);                                  // random single READs
+        #30000;
+        if (dut.core.istate != 4'd12 && dut.core.istate != 4'd6) fail("not in random mode");
+        if (dut.core.rc_total == 0) fail("rd_check saw no READ");
+        request(8'h0c, 8'h00);
         #10000;
         if (dut.core.istate != 4'd8) fail("not back in idle");
         if (row_open) fail("a row left open");
-        $display("      %0d ACTIVATE, %0d WRITE, %0d READ, %0d REFRESH, %0d leveling entries; longest refresh interval %0d ns",
-                 nact, nwr, nrd, nref, nlevel, max_refi);
+        $display("      %0d ACTIVATE, %0d WRITE, %0d READ (%0d random), %0d REFRESH, %0d leveling entries; longest refresh interval %0d ns",
+                 nact, nwr, nrd, nrand, nref, nlevel, max_refi);
         if (nwr < 1000 || nrd < 500) fail("writes or gated reads did not run");
+        if (nrand < 300) fail("random READs did not run");
         if (nlevel != 1) fail("leveling not entered once");
         if (max_refi > 7800) fail("a refresh interval over 7.8 us");
         if (nref < 8) fail("too few refreshes");

@@ -88,13 +88,22 @@ module rd_align #(
     always @(posedge pclk)
         pat_ok_r <= distinct(pat) != 0;
 
+    // The rotations, registered beside the comparisons that use them; the
+    // pattern only changes on command.
+    reg [63:0] rot_pat_r;
+    always @(posedge pclk)
+        rot_pat_r <= rot_pat;
+
     // Measure each lane's rotation: pin 0's word must be exactly one
     // rotation of P, and every other pin must hold that word or its
     // inverse, odd pins inverted as the write serializers drive them.
+    // "Exactly one" is "any, of a pattern whose rotations are distinct":
+    // a periodic pattern's rotations match in twos or more, so pat_ok_r
+    // stands in for counting the matches.
     reg  [3:0]  meas_ok;
     reg  [11:0] meas_rot;
     reg  [7:0]  w0, wp;
-    reg  [3:0]  nmatch;
+    reg         any;
     reg         pins_ok;
     integer     ml, mr, mp;
     always @(*) begin
@@ -102,10 +111,10 @@ module rd_align #(
         meas_rot = 12'd0;
         for (ml = 0; ml < 4; ml = ml + 1) begin
             w0 = dq_q[64*ml +: 8];
-            nmatch = 4'd0;
+            any = 1'b0;
             for (mr = 0; mr < 8; mr = mr + 1)
-                if (w0 == rot_pat[8*mr +: 8]) begin
-                    nmatch = nmatch + 4'd1;
+                if (w0 == rot_pat_r[8*mr +: 8]) begin
+                    any = 1'b1;
                     meas_rot[3*ml +: 3] = mr;
                 end
             pins_ok = 1'b1;
@@ -114,7 +123,7 @@ module rd_align #(
                 if (wp != ((mp % 2) ? ~w0 : w0))
                     pins_ok = 1'b0;
             end
-            meas_ok[ml] = (nmatch == 4'd1) && pins_ok;
+            meas_ok[ml] = any && pat_ok_r && pins_ok;
         end
     end
 
@@ -146,11 +155,17 @@ module rd_align #(
     // the others do not, or a move that never settles, is not followed:
     // DRIFT_CYCLES off the lock sets that lane's drift.
     // one 3-bit subtraction per lane: a 12-bit subtract would carry a borrow
-    // from one lane's field into the next
-    wire [2:0] d0 = meas_rot_r[2:0]  - rlock[2:0];
-    wire [2:0] d1 = meas_rot_r[5:3]  - rlock[5:3];
-    wire [2:0] d2 = meas_rot_r[8:6]  - rlock[8:6];
-    wire [2:0] d3 = meas_rot_r[11:9] - rlock[11:9];
+    // from one lane's field into the next.  The offsets are registered with
+    // the measurement they belong to, so the slip decision starts from
+    // flops; for the one cycle after a relock they still hold the old lock's
+    // offsets, which the settle window and the relock count already cover.
+    reg [2:0] d0 = 3'd0, d1 = 3'd0, d2 = 3'd0, d3 = 3'd0;
+    always @(posedge pclk) begin
+        d0 <= meas_rot[2:0]  - rlock[2:0];
+        d1 <= meas_rot[5:3]  - rlock[5:3];
+        d2 <= meas_rot[8:6]  - rlock[8:6];
+        d3 <= meas_rot[11:9] - rlock[11:9];
+    end
     wire uniform = (&meas_ok_r) && (d0 == d1) && (d0 == d2) && (d0 == d3);
     wire moved = uniform && (d0 != 3'd0);
     wire relock_now = stream && moved && (rcnt >= RELOCK_CYCLES - 1);
@@ -249,14 +264,15 @@ module rd_align #(
         end
     endgenerate
 
-    // The burst is registered once, then checked the cycle it is presented:
-    // ok(t) and valid(t) describe data(t), and bad_r(t) is that burst's
-    // per-lane mismatch, so `err` is a lane's own failure, not a neighbour's.
-    reg [255:0] data_r;
-    reg         valid_r, ok_r;
+    // The burst is registered once, checked from that register, and
+    // presented with its check one cycle later: ok(t) and valid(t) describe
+    // data(t), and bad_q(t) is that burst's per-lane mismatch, so `err` is a
+    // lane's own failure, not a neighbour's.
+    reg [255:0] data_r, data_q;
+    reg         valid_r, valid_q, ok_q, errok_q;
     reg  [1:0]  settle_cnt;         // a burst captured across a relock is not offered
     reg [7:0]   exp;
-    reg [3:0]   bad, bad_r;
+    reg [3:0]   bad, bad_q;
     integer     bl, cl;
     always @(posedge pclk) begin
         if (rst || arm)
@@ -271,8 +287,11 @@ module rd_align #(
             // must not set err against a lock made after it
             data_r <= 256'd0;
             valid_r <= 1'b0;
-            ok_r <= 1'b1;
-            bad_r <= 4'b0000;
+            data_q <= 256'd0;
+            valid_q <= 1'b0;
+            ok_q <= 1'b1;
+            bad_q <= 4'b0000;
+            errok_q <= 1'b0;
             err_r <= 4'b0000;
         end else begin
             data_r <= aligned;
@@ -285,21 +304,24 @@ module rd_align #(
             for (bl = 0; bl < 8; bl = bl + 1) begin
                 exp = pat[bl] ? 8'h55 : 8'hAA;
                 for (cl = 0; cl < 4; cl = cl + 1)
-                    if (aligned[32*bl + 8*cl +: 8] != exp)
+                    if (data_r[32*bl + 8*cl +: 8] != exp)
                         bad[cl] = 1'b1;
             end
-            bad_r <= bad;
-            ok_r <= (bad == 4'b0000);
-            if (valid_r && settle_cnt == 2'd0)
-                err_r <= err_r | bad_r;
+            data_q <= data_r;
+            valid_q <= valid_r;
+            bad_q <= bad;
+            ok_q <= (bad == 4'b0000);
+            errok_q <= valid_r && settle_cnt == 2'd0;
+            if (errok_q)
+                err_r <= err_r | bad_q;
         end
     end
 
     assign trained = trained_r;
     assign rot = rlock;
-    assign data = data_r;
-    assign valid = valid_r;
-    assign ok = valid_r && ok_r;
+    assign data = data_q;
+    assign valid = valid_q;
+    assign ok = valid_q && ok_q;
     assign err = err_r;
     assign drift = drift_r;
     assign pat_ok = pat_ok_r;
