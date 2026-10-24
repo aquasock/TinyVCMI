@@ -1390,3 +1390,57 @@ offers IOLOGIC lanes 0 and 2 only, and the lane fields are compared apart for
 that reason. A real controller clocks the lanes from its memory PLL through
 `CLKDIV`s. No image has been written, and nothing has been loaded onto the
 board.
+
+## The declared DDR3 context
+
+A design may now configure a pad on banks 6 and 7 in exactly one way:
+`gowin_pack --ddr3-context MANIFEST`. The manifest is
+`fpga/ddr3/ddr3_balls.json`, written by `tools/ddr3_ball_manifest.py` from
+the proven pin map and checked by its `--check` mode. It lists the board's
+72 DDR3 balls: 44 on bank 6 and 28 on bank 7, five of them SSTL15D pairs. For
+each ball it gives the port, IO site, bank and standard, and for a pair half
+which half it is and its partner. It also states the settings every ball
+carries: `BANK_VCCIO=1.5`, `PULL_MODE=NONE` and `DRIVE=8`. The manifest is
+board knowledge, so it lives here and not in the Apicula fork.
+
+The Apicula fork accepts the flag on the GW5AST-138C only. It checks the
+manifest against the die on load and refuses it if any ball fails:
+
+- each ball is a bank 6/7 pad at the IO site it claims;
+- a single ball is SSTL15, and both halves of a pair are SSTL15D, name each
+  other and share one IO cell;
+- the settings are exactly the proven three.
+
+Inside the context, every bank 6/7 pad must meet all of these, or the packer
+refuses it by name:
+
+- it is a listed ball;
+- it has exactly the listed standard and pair half, so a strobe ball used
+  single-ended is refused;
+- it carries `BANK_VCCIO=1.5` and `PULL_MODE=NONE`, `DRIVE=8` on an output and
+  no drive on an input;
+- it carries no other IO attribute.
+
+LVCMOS is refused like any other wrong standard. A used DDR3 bank must also
+resolve to 1.5 V, which catches the `is_mipi` class of error however it
+arises. A context set without a manifest is refused. Without the flag
+nothing changes, and every bank 6/7 pad is refused as before.
+
+`tools/ddr_bank_check.py` now packs through the flag itself, with the
+committed manifest, rather than setting the context on an in-memory device.
+Through it:
+
+| Designs | Result |
+|---|---|
+| `dqs_sstl` and `lane_sstl` on all four lanes, the five bank-7 designs, `full_sstl` | all 102 tables equal to the vendor |
+| `dq_sstl`, `dq_nodelay_sstl`, `dm_sstl` on every lane | refused: they use the strobe ball Y3, V9, W6 or R3 as a single-ended SSTL15 input, a measurement shape the controller never uses |
+| `dq_lvcmos` | refused for LVCMOS33 |
+
+The refused designs' fuses were compared against the vendor in stage 1b.
+`tests/test_ddr3_context_138c.py` in the fork pins every admission rule and
+every manifest refusal. The fork's full suite fails the same 58 tests with
+and without this change. With the flag absent, seven non-DDR netlists pack to
+unchanged fuse digests and both DDR designs are refused.
+
+This is stage 2. Writing an image with the context is stage 3 and needs its
+own approval, as does any access to the board.

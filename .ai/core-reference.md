@@ -132,6 +132,7 @@ Topic IDs are the `record_id` prefix. An entry reserves a namespace; it does not
 | Do lanes 1 to 3 share lane 0's DQS and IOLOGIC encoding? | TOOL | TOOL-012 |
 | Does the open packer write the vendor's DDR3-bank IO configuration? | TOOL | TOOL-013 |
 | How much IOLOGIC does a plain OSER8 take, and does the whole pad set match? | TOOL | TOOL-014 |
+| How does a design declare a DDR3 context, and what does the packer admit in it? | TOOL | TOOL-015 |
 | Which sources and licenses constrain reuse? | PROV | PROV-001 |
 
 ---
@@ -169,6 +170,7 @@ TOOL-011: "Lanes 1 to 3 have byte groups (99,0), (90,0) and (63,0) and DQS sites
 TOOL-012: "Lanes 1 to 3 share lane 0's 24-input and 13-output DQS map, table-58 keys, memory-serializer attributes and bit order"
 TOOL-013: "Under ddr_context the open packer's bank 6/7 IOB and BANK fuses now equal the vendor's on every measured SSTL lane and bank-7 shape, including unused-pin DRIVE=8 against the fork's D108 rule and an is_mipi call bug corrected; the full bank 7 is unplaced"
 TOOL-014: "A plain OSER8 configures only its own IOLOGIC side on this die; with that modelled, the whole controller's pad set packs to the vendor's fuses in DQS, IOLOGIC, IOB and BANK"
+TOOL-015: "A DDR3 context is declared only by gowin_pack --ddr3-context with a 72-ball manifest; each bank 6/7 pad must be a listed ball at SSTL15/SSTL15D, BANK_VCCIO=1.5, PULL_MODE=NONE, DRIVE=8 on outputs, nothing else"
 PROV-001: "Reuse source and interface ideas with their original license boundaries and attribution intact"
 ```
 
@@ -581,6 +583,19 @@ PROV-001: "Reuse source and interface ideas with their original license boundari
     - "aquasock/nextpnr branch epic/gw5ast138c, himbaechel/uarch/gowin/pack_iologic.cc oser8_one_side"
     - "Tang-PSX build/ddr3-vendor/ip/ddr3_memory_interface/ddr3_memory_interface.vo, u_ddr_phy_cmd_lane OSER8 instances; gateware/ddr3_vendor/tang_psx_ddr3.cst"
   verification: "Three single-cell vendor builds decoded at both IOLOGIC configuration cells, and the open flow's single-side builds compared fuse for fuse, equal outside the lane field with nothing on the other side. After the nextpnr change all five bank-7 designs and the pad set place and route; tools/dq_pack_check.py, tools/dqs_pack_check.py and tools/ddr_bank_check.py pass on each against its vendor build. No image was written and no hardware was accessed."
+
+- record_id: TOOL-015
+  topic_id: TOOL
+  title: "The declared DDR3 context"
+  status: VERIFIED
+  verified_date: 2026-10-24
+  statement: "The aquasock/apicula fork admits a pad on GW5AST-138C banks 6 and 7 only when the design is packed with gowin_pack --ddr3-context MANIFEST, a flag no other device accepts. The manifest is checked against the die on load: every ball a bank 6/7 pad at its claimed IO site, SSTL15 on a single ball, SSTL15D on both halves of a pair that name each other in one IO cell, and settings exactly BANK_VCCIO=1.5, PULL_MODE=NONE, DRIVE=8. Inside the context each bank 6/7 pad must be a listed ball at exactly its listed standard and pair half, carry BANK_VCCIO=1.5 and PULL_MODE=NONE, DRIVE=8 on an output and no drive on an input, and no other IO attribute, and a used DDR3 bank must resolve to 1.5 V; anything else is refused by name. TinyVCMI's manifest, fpga/ddr3/ddr3_balls.json, lists the board's 72 DDR3 balls, 44 on bank 6 and 28 on bank 7 with five SSTL15D pairs, generated from the proven pin map."
+  consequence: "A design that owns the DDR3 banks can now be packed through the packer's own entry point with the proven controller's pad configuration, and the measured vendor fuses of TOOL-013 and TOOL-014 apply to it; every other configuration of those banks, and every design without the flag, is still refused. This makes an image technically possible; writing one, and any hardware use of it, are separate decisions."
+  sources:
+    - "aquasock/apicula branch epic/gw5ast138c, apycula/gowin_pack.py CliArgs --ddr3-context, GW5AST_138C._load_ddr3_manifest, _admit_ddr3_pad and check_io_banks; tests/test_ddr3_context_138c.py and tests/test_ddr_bank_refusal_138c.py"
+    - "TinyVCMI tools/ddr3_ball_manifest.py, fpga/ddr3/ddr3_balls.json and tools/ddr_bank_check.py"
+    - "Tang-PSX commit 61974ca, gateware/ddr3_vendor/tang_psx_ddr3.cst"
+  verification: "The fork's 26 context tests pass, covering each admission rule and each manifest refusal, the manifest tests against the built chipdb. Through the flag, tools/ddr_bank_check.py finds all 102 bank tables equal to the vendor on dqs_sstl and lane_sstl on four lanes, the five bank-7 designs and the whole pad set, and refuses the single-ended strobe probes and the LVCMOS probe by name. Without the flag, seven non-DDR netlists pack to unchanged fuse digests, both DDR designs are refused, and the full fork suite fails the same 58 pre-existing tests. No image was written and no hardware was accessed."
 
 - record_id: PROV-001
   topic_id: PROV

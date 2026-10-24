@@ -1230,3 +1230,36 @@ The open flow now places, routes and packs the whole DDR3 pad set to the vendor'
 - User Test: N/A
 
 ---
+
+## 40 COMMIT Unreleased 2026-10-24T00:55:00-07:00
+
+#### Coming From:
+
+Unreleased b0fbf71
+
+#### Purpose:
+
+Replace the in-memory DDR context with a narrow declared DDR3 context that a design requests explicitly with a ball manifest, which is the approved stage 2.
+
+#### Outcome:
+
+Committed `55b1404` to the Apicula fork's `epic/gw5ast138c` and pushed it to the `aquasock` remote only. `gowin_pack --ddr3-context MANIFEST` is now the one way a design may configure a pad on banks 6 and 7, and only the GW5AST-138C accepts it. The manifest is loaded and checked against the die: every ball a bank 6/7 pad at its claimed IO site, SSTL15 on a single ball, SSTL15D on both halves of a pair that name each other in one IO cell, and settings exactly `BANK_VCCIO=1.5`, `PULL_MODE=NONE`, `DRIVE=8`. Inside the context each bank 6/7 pad must be a listed ball at exactly its listed standard and pair half, carry `BANK_VCCIO=1.5` and `PULL_MODE=NONE`, `DRIVE=8` on an output and no drive on an input, and no other IO attribute, and a used DDR3 bank must resolve to 1.5 V; anything else, LVCMOS included, is refused by name, as is a context set without a manifest. The stage-1b corrections are unchanged and now apply only under that declared context. On the TinyVCMI side the new `tools/ddr3_ball_manifest.py` writes `fpga/ddr3/ddr3_balls.json` from the proven pin map, 72 balls with 44 on bank 6, 28 on bank 7 and five SSTL15D pairs, each bank read from the chipdb, and its `--check` reproduces the committed file byte for byte. `tools/ddr_bank_check.py` now packs through the flag with that manifest. Through it, `dqs_sstl` and `lane_sstl` on all four lanes, the five bank-7 designs and the whole pad set match the vendor on all 102 tables, while `dq_sstl`, `dq_nodelay_sstl` and `dm_sstl` on every lane are refused because they use a strobe ball as a single-ended SSTL15 input, a measurement shape the controller never uses whose fuses were matched in stage 1b, and `dq_lvcmos` is refused for LVCMOS33. That split follows from the approved rules and is recorded rather than worked around. The fork's new `tests/test_ddr3_context_138c.py` pins every admission rule and every manifest refusal, 26 tests with the manifest ones against the built chipdb, and the existing guard test now declares its context with a manifest. The full fork suite fails the same 58 pre-existing tests with and without the change and passes 27 more. Without the flag, seven non-DDR netlists pack to fuse digests identical to the committed `7a82e4a` packer's and both DDR designs are refused. The results are in `docs/ddr3-open-flow.md` and the new TOOL-015. No image was written and no hardware was accessed. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering, and active-log capacity.
+
+#### Next Steps:
+
+Stage 3, writing an image, needs the user's approval before it starts. The first candidate is an open-flow image built with `--ddr3-context` from a design whose pads are exactly the manifest's, checked fuse for fuse against a vendor build of the same source on every bank 6/7 table before it counts as produced; loading it onto the Tang is a further separate approval. A meaningful hardware image also needs what the pad-set probe leaves out, a memory clock from the PLL through `CLKDIV`s, and the IOLOGIC `FCLK` model reaches HCLK lanes 0 and 2 only. The unused-pin contradiction with the fork's `D108` corpus and the `is_mipi` bug outside the DDR context remain open.
+
+#### Files Modified:
+
+- docs/ddr3-open-flow.md
+- fpga/ddr3/ddr3_balls.json
+- tools/ddr3_ball_manifest.py
+- tools/ddr_bank_check.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: N/A
+- User Test: N/A
+
+---
