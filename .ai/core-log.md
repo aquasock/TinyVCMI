@@ -776,3 +776,34 @@ Obtain the user's decision on the DDR3-bank guard before any open-flow lane imag
 - User Test: N/A
 
 ---
+
+## 26 COMMIT Unreleased 2026-10-23T17:50:25-07:00
+
+#### Coming From:
+
+Unreleased 3aac7e8
+
+#### Purpose:
+
+Measure how the lane's `OSER8_MEM` and `IDES8_MEM` are wired and configured before any open-flow model is written for them.
+
+#### Outcome:
+
+Added `tools/dq_lane_probe.py`, which builds the B1 `base` lane plus one memory-mode serializer on lane 0's `dq[0]` pad Y4, wired as the hardware-proven vendor netlist wires lane 0, and ran twenty-one Gowin EDA 1.9.11.03 builds into `build/dq_lane` and `build/dq_lane_b`. Lane 0 sits on IOLOGIC A and B of the left-edge cells at rows 68 to 79, beside the `DQS` site and its byte group, from Tang-PSX's proven pin map. Driving `ICLK`, `WADDR`, `RADDR` or `TCLK` from a fabric register instead of its `DQS` output was refused all four times with `CK2060` while the proven wiring built, so all four are hard-wired links like `DLLSTEP`, and TOOL-006 was revised to say so. Both serializers' differences from `base` attribute with no unattributed fuse, and their configuration is named IOLOGIC attributes the packer already uses: `IDES8_MEM` writes `INMODE=MIDDRX4`, `FIFO=ENABLE` and `CLKIMUX=ENABLE`, and `OSER8_MEM` writes `OUTMODE=MODDRX4`, `CLKOMUX=ENABLE` and `WRFCLKSEL` from `TCLK_SOURCE`, with `TXCLK_POL` and `HWL` each isolated by a build. Side A writes in the pad's cell and side B in the cell below, the offset the packer already applies. Pinning a `CLKDIV` to each HCLK lane showed that the vendor clocks IOLOGIC from all four lanes with distinct `FCLKSEL` fields per primitive, while the Apicula fork's IOLOGIC model offers lanes 0 and 2 only; that is recorded as a limit of the model, not of the silicon, and it does not block a lane because the open router already puts the `DQS` on lane 0. `tools/dq_lane_probe.py --check` asserts the refusals, every design's decoded attribute set, the lane chains and the absence of unattributed fuses, and passed on all twenty-one builds. Only `dq[0]` and `dm[0]` were built; the other lane positions come from the proven pin map. The results are in `docs/ddr3-open-flow.md` and the new TOOL-009. No hardware was accessed and the packer's DDR3-bank guard is unchanged. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering, and active-log capacity.
+
+#### Next Steps:
+
+Propose the C2 implementation for approval: in the nextpnr fork, `TCLK`, `ICLK`, `WADDR` and `RADDR` pins on the eleven lane-0 IOLOGIC positions, joined to the `DQS` outputs by fuse-free links, and packing of `OSER8_MEM` and `IDES8_MEM` alongside `OSER8` and `IDES8`; in the Apicula fork, the measured attribute sets through the existing IOLOGIC path, accepted when the in-process packer output matches the vendor fuses on both sides and on lanes 0 and 2. Do not touch the Tang unless the user explicitly changes that instruction.
+
+#### Files Modified:
+
+- docs/ddr3-open-flow.md
+- tools/dq_lane_probe.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: N/A
+- User Test: N/A
+
+---

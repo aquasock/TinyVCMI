@@ -788,3 +788,76 @@ any design that configures a bank 6/7 pad outside a declared DDR context, and
 refused. The guard exists because a pull or drive configuration on the DDR3
 rail is a thermal hazard. It has no switch, and adding one is a decision for
 the user, not for this work.
+
+## DQ serializers: OSER8_MEM and IDES8_MEM
+
+### Where lane 0 sits
+
+The hardware-proven vendor controller puts lane 0's strobe pair on Y3 and AA3,
+`dq[7:0]` on Y4, AB3, AA5, V4, AA1, AB2, AB5 and AB1, and `dm[0]` on AA4
+(Tang-PSX `gateware/ddr3_vendor/tang_psx_ddr3.cst`). Those are IOLOGIC A and B
+of the left-edge cells at rows 68, 70, 73, 75, 77 and 79, beside the `DQS`
+site `(81,5)` and the byte group's config cell `(72,0)`:
+
+    pad   IO       cell    side    role
+    Y3    IOL69A   (68,0)  A       DQS (strobe out: OSER8_MEM, TCLK_SOURCE=DQSW270)
+    AA3   IOL69B   (68,0)  B       DQS complement
+    AA1   IOL71A   (70,0)  A       dq[4]      AB1   IOL71B  (70,0)  B   dq[7]
+    AB3   IOL74A   (73,0)  A       dq[1]      AB2   IOL74B  (73,0)  B   dq[5]
+    AA5   IOL76A   (75,0)  A       dq[2]      AB5   IOL76B  (75,0)  B   dq[6]
+    Y4    IOL78A   (77,0)  A       dq[0]      AA4   IOL78B  (77,0)  B   dm[0]
+    V4    IOL80A   (79,0)  A       dq[3]
+
+In the vendor netlist every lane-0 `OSER8_MEM` takes `TCLK` from the lane
+`DQS`'s `DQSW0`, except the strobe serializer, which takes `DQSW270` and says
+so in `TCLK_SOURCE`. Every `IDES8_MEM` takes `ICLK` from `DQSR90`, `WADDR`
+from `WPOINT` and `RADDR` from `RPOINT`.
+
+### The memory-mode pins are hard-wired
+
+`tools/dq_lane_probe.py` builds the B1 `base` lane plus one serializer on
+`dq[0]`, wired as the vendor wires it, and then the same design with one
+memory-mode pin driven from a fabric register instead. Gowin builds the
+proven wiring for both primitives and refuses all four alternatives with
+`CK2060`, "the connection between instance ... and instance 'ser' is
+incorrect": `ICLK`, `WADDR`, `RADDR` and `TCLK` take only their `DQS` output.
+They are dedicated links of the same kind as `DLLSTEP`, which is why they are
+missing from the IOLOGIC port map.
+
+### Configuration
+
+Against `base`, both serializers' differences attribute with no unattributed
+fuse. Apart from routing and the pad's own IOB settings, everything is in the
+IOLOGIC short-value table of the serializer's side, as named IOLOGIC
+attributes the packer already uses. Side A writes in the pad's cell,
+`(77,0)`; side B writes in the cell below, `(78,0)`, which is the
+`fuse_cell_offset` the packer already gives `IOLOGICB`:
+
+    IDES8_MEM  INMODE=MIDDRX4, FIFO=ENABLE, CLKIMUX=ENABLE
+    OSER8_MEM  OUTMODE=MODDRX4, CLKOMUX=ENABLE, WRFCLKSEL=DQSW | DQSW270
+               TXCLK_POL=1 when TXCLK_POL is 1, HWL=TRUE when HWL is "true"
+
+`TCLK_SOURCE` maps onto `WRFCLKSEL`, `TXCLK_POL` onto `TXCLK_POL` and `HWL`
+onto `HWL`, each isolated by its own build. Several attribute names share a
+fuse set (`OUTMODE=ODDRX4` reads alongside `MODDRX4`), so a packer has to
+match the fuses, not the names.
+
+The serializers' `FCLK` lane is selected by `FCLKSEL` attributes that differ
+between the two primitives. The four lane designs pin a `CLKDIV` to each lane,
+as for the `DQS`:
+
+    lane  IDES8_MEM                                  OSER8_MEM
+    0     FCLKSEL3=HCLK0/HCLK0_, FCLKSEL5=HCLK0      FCLKSEL0=HCLK0, FCLKSEL1/2, FCLKSEL3=HCLK0/HCLK0_
+    1     as lane 3, plus FCLKSEL4=HCLK1/HCLK1_      FCLKSEL0=HCLK1/HCLK3, FCLKSEL4=HCLK1/HCLK1_
+    2     none                                       FCLKSEL1/2
+    3     FCLKSEL5=HCLK1/3, FCLKSEL6/7               FCLKSEL0=HCLK1/HCLK3
+
+The vendor clocks IOLOGIC from all four lanes. The Apicula fork's IOLOGIC
+`FCLK` model offers lanes 0 and 2 only, because its `FCLKSEL1`/`FCLKSEL2` rows
+cannot spell 1 and 3. That is a limit of the model, not of the silicon. It
+does not block a lane, because the `DQS` and every serializer must share one
+memory clock lane, and the open router already puts the `DQS` on lane 0.
+
+`tools/dq_lane_probe.py --check` asserts the refusals, the attribute set of
+every built design on both sides, the lane chains and the absence of
+unattributed fuses, and passes on all 21 builds.

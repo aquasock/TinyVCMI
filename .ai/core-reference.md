@@ -126,6 +126,7 @@ Topic IDs are the `record_id` prefix. An entry reserves a namespace; it does not
 | Are the lane primitives independent sites or one complex? | TOOL | TOOL-006 |
 | Which site wires do the DQS ports use? | TOOL | TOOL-007 |
 | Which fuses configure a DQS? | TOOL | TOOL-008 |
+| How are the DQ serializers wired and configured? | TOOL | TOOL-009 |
 | Which sources and licenses constrain reuse? | PROV | PROV-001 |
 
 ---
@@ -154,9 +155,10 @@ TOOL-002: "Yosys declares all required PHY cells; the GW5AST backend places and 
 TOOL-003: "DDRDLL is a two-cell macro: ports in the column-1 tile, configuration fuses in the corner, LOCK on a dedicated row-99 escape now modelled as a fuse-free node; open flow covers the bottom-left master only"
 TOOL-004: "DDRDLL STEP reads zero at 50 and 400 MHz in both the open-flow and the vendor-built image, under every static STOP/UPDNCNTL combination, so the zero is not this toolchain"
 TOOL-005: "The hardware-proven vendor controller holds STOP at PLL lock, drives UPDNCNTL from its init FSM, uses DDRDLLM_BL with this project's four parameters, and feeds STEP to four DQS blocks with no path back into the DLL"
-TOOL-006: "DQS, OSER8_MEM and IDES8_MEM form one lane complex: every serializer's TCLK comes from its lane's DQS output, so the internal connections must be modelled, not measured as fabric wires"
+TOOL-006: "DQS, OSER8_MEM and IDES8_MEM form one lane complex: TCLK, ICLK, WADDR and RADDR take only their lane DQS's outputs, so the internal connections must be modelled, not measured as fabric wires"
 TOOL-007: "The DQS control and status side is tile (81,5): 24 inputs and 13 outputs named, three outputs by route inference; FCLK is an HCLK-lane sink selected by table 58 at (72,0), and DQSIN arrives fuse-free from the pad tile"
 TOOL-008: "Every DQS configuration fuse, parameters and FCLK lane, is in longfuses table 58 of the byte group's config tile, (72,0) for this lane"
+TOOL-009: "Lane 0's OSER8_MEM and IDES8_MEM sit on IOLOGIC A/B of cells (68..79,0); their memory-mode pins are hard-wired and their configuration is named IOLOGIC attributes"
 PROV-001: "Reuse source and interface ideas with their original license boundaries and attribution intact"
 ```
 
@@ -448,7 +450,7 @@ PROV-001: "Reuse source and interface ideas with their original license boundari
     - "Tang-PSX build/ddr3-vendor/ip/ddr3_memory_interface/ddr3_memory_interface.vo, the 40 OSER8_MEM TCLK connections and per-lane instance counts"
     - "Gowin EDA 1.9.11.03 IDE/simlib/gw5a/prim_sim.v, module OSER8_MEM TCLK_SOURCE parameter"
     - "Gowin EDA 1.9.11.03 error CK2060 observed when TCLK was driven from a pin in TinyVCMI build/meas_oser/oser"
-  verification: "Read from the vendored post-place-and-route netlist and confirmed against two vendor build attempts: one that Gowin refused for driving TCLK from a pin, and one it refused for a DQS without a DDRDLL on DLLSTEP. The four-lane split was checked by counting instances per data_lane_gen index."
+  verification: "Read from the vendored post-place-and-route netlist and confirmed against two vendor build attempts: one that Gowin refused for driving TCLK from a pin, and one it refused for a DQS without a DDRDLL on DLLSTEP. The four-lane split was checked by counting instances per data_lane_gen index. Revised 2026-10-23: tools/dq_lane_probe.py drove ICLK, WADDR, RADDR and TCLK each from a fabric register in otherwise proven lane designs and Gowin refused all four with CK2060, while the proven wiring built; the hard-wired set is therefore TCLK, ICLK, WADDR and RADDR from the DQS plus DLLSTEP from the DDRDLL."
 
 - record_id: TOOL-007
   topic_id: TOOL
@@ -477,6 +479,22 @@ PROV-001: "Reuse source and interface ideas with their original license boundari
     - "Gowin EDA 1.9.11.03 IDE/simlib/gw5a/prim_sim.v, module DQS parameter list"
     - "Apicula commit 1d43011, apycula/GW5AST-138C.msgpack.xz: tile type 64 longfuses unknown_58 and hclk_pips at (81,0); apycula/chipdb.py P1.T08d LEFTSIDE convention"
   verification: "Fifteen vendor builds on 2026-10-23 in build/dqs_b1: a base, nine single-parameter variants, a design without the DQS and four pinned-lane designs. tools/fs_attribute.py attributed each variant's full difference from the base with no unattributed fuse, and every change outside routing, global clock and HCLK fell in table 58 at (72,0). tools/dqs_param_probe.py --check asserts the exact table-58 fuse set of all fifteen builds, each lane design's BETA, BUF and ALPHA chain at (81,0), and zero unattributed fuses, and passed. The same attribution showed that the per-port constant bits recorded earlier at (81,5) are routing: the HOLD constant pair's eight bits are the B3 input mux choosing VCC through W240 or GND through X04. No hardware was accessed. Revised 2026-10-23: tools/dqs_pack_check.py ran the Apicula packer in-process on all twelve B1 designs built in the open flow; its table-58 fuses equal this encoding in every case and the vendor build outside the lane field, exactly where the lanes agree, and lanes 1 to 3 were checked through --fclk-lane because the open router always chose lane 0. No image was written, since the packer refuses any bank 6/7 pad outside a declared DDR context."
+
+- record_id: TOOL-009
+  topic_id: TOOL
+  title: "Measured GW5AST-138C lane-0 DQ serializers"
+  status: VERIFIED
+  verified_date: 2026-10-23
+  statement: "Lane 0 of the proven controller puts the strobe pair on Y3/AA3 and dq[7:0] and dm[0] on IOLOGIC A and B of the left-edge cells at rows 68, 70, 73, 75, 77 and 79. Every OSER8_MEM takes TCLK from the lane DQS's DQSW0, except the strobe serializer, which takes DQSW270 with TCLK_SOURCE=DQSW270. Every IDES8_MEM takes ICLK from DQSR90, WADDR from WPOINT and RADDR from RPOINT, and Gowin EDA 1.9.11.03 refuses any of the four from a fabric register with CK2060. The configuration is named IOLOGIC attributes in the serializer side's short-value table, side A in the pad's cell and side B in the cell below: IDES8_MEM writes INMODE=MIDDRX4, FIFO=ENABLE and CLKIMUX=ENABLE; OSER8_MEM writes OUTMODE=MODDRX4, CLKOMUX=ENABLE and WRFCLKSEL equal to TCLK_SOURCE, plus TXCLK_POL=1 and HWL=TRUE when those parameters are set. The FCLK lane is chosen by FCLKSEL attributes that differ between the two primitives, and the vendor uses all four HCLK lanes for IOLOGIC FCLK."
+  consequence: "The open model needs the four memory-mode pins as fuse-free links from the DQS outputs, as DLLSTEP already is, at the eleven lane-0 IOLOGIC positions the proven pin map uses, and a packer that writes the attribute sets above through the existing IOLOGIC attribute path, which already offsets side B by one cell. Several attribute names share one fuse set, so acceptance must compare fuses, not names. The Apicula fork's IOLOGIC FCLK model reaches lanes 0 and 2 only; that is a limit of its FCLKSEL1/FCLKSEL2 encoding, not of the silicon, and it suffices while the DQS and its serializers share a lane the model can spell."
+  sources:
+    - "TinyVCMI tools/dq_lane_probe.py (designs and --check) and tools/fs_attribute.py"
+    - "TinyVCMI docs/ddr3-open-flow.md: DQ serializers: OSER8_MEM and IDES8_MEM"
+    - "Tang-PSX build/ddr3-vendor/ip/ddr3_memory_interface/ddr3_memory_interface.vo, data_lane_gen[0] OSER8_MEM and IDES8_MEM instances"
+    - "Tang-PSX gateware/ddr3_vendor/tang_psx_ddr3.cst, ddr_dq, ddr_dm and ddr_dqs pins"
+    - "Gowin EDA 1.9.11.03 IDE/simlib/gw5a/prim_sim.v, modules OSER8_MEM and IDES8_MEM"
+    - "Apicula commit c85ed79, apycula/attrids.py iologic_attrids/attrvals and GW5AST-138C.msgpack.xz IOLOGIC logicinfo"
+  verification: "Twenty-one Gowin EDA builds on 2026-10-23 in build/dq_lane and build/dq_lane_b: the proven IDES8_MEM and OSER8_MEM on dq[0] (side A) and dm[0] (side B), four fabric-sourced variants that Gowin refused, three OSER8_MEM parameter variants, and both primitives with FCLK pinned to each HCLK lane. tools/dq_lane_probe.py --check asserts the refusals, the exact decoded attribute set of every built design on its side's cell, every lane design's HCLK chain and no unattributed fuse against the B1 base, and passed. Only dq[0] and dm[0] were built; the other nine lane positions come from the proven pin map, not from builds. No hardware was accessed."
 
 - record_id: PROV-001
   topic_id: PROV
