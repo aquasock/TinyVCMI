@@ -23,8 +23,12 @@ Each comparison is restricted to that table's own fuses, so routing and
 IOLOGIC stay out of it.  A difference is named by the table entries fully
 set on each side.
 
+`--summary` prints one line per distinct difference instead of one per
+table: how many tables share it, the first one's label, and the fuses.
+
 Usage:
     tools/ddr_bank_check.py ROUTED.json --vendor build/dq_pad/dq_sstl/impl/pnr/probe.fs
+    tools/ddr_bank_check.py ROUTED.json --vendor build/dq_pad/dq_sstl/impl/pnr/probe.fs --summary
 
 Run it with the open-flow environment sourced (`tools/openflow_env.sh`).
 """
@@ -116,6 +120,8 @@ def main() -> int:
     ap.add_argument("routed")
     ap.add_argument("--vendor", required=True,
                     help="vendor .fs built from the same source")
+    ap.add_argument("--summary", action="store_true",
+                    help="one line per distinct difference")
     args = ap.parse_args()
 
     packed = packer_fuses(args.routed)
@@ -125,6 +131,7 @@ def main() -> int:
     name = namer(dev)
 
     failures = configured = 0
+    groups = {}
     for label, cell, table_name in scope(dev):
         table = dev.longval[dev.grid[cell[0]][cell[1]]][table_name]
         field = set().union(*({tuple(f) for f in v} for v in table.values()))
@@ -136,6 +143,10 @@ def main() -> int:
                 print(f"  PASS  {label:16s} {table_name} at {cell}: {len(got)} fuses")
             continue
         failures += 1
+        if args.summary:
+            key = (table_name, tuple(sorted(got - want)), tuple(sorted(want - got)))
+            groups.setdefault(key, []).append(f"{label} at {cell}")
+            continue
         print(f"  FAIL  {label:16s} {table_name} at {cell}: packer {len(got)} fuses, "
               f"vendor {len(want)}; packer only {sorted(got - want)}, "
               f"vendor only {sorted(want - got)}")
@@ -143,6 +154,9 @@ def main() -> int:
             keys = entries_set(table, state)
             print(f"        {side} entries: "
                   + ("; ".join(sorted(name(table_name, k) for k in keys)) or "none"))
+    for (table_name, extra, missing), labels in sorted(groups.items(), key=lambda g: g[1][0]):
+        print(f"  FAIL  {len(labels):3d} x {table_name} e.g. {labels[0]}: "
+              f"packer only {list(extra)}, vendor only {list(missing)}")
     pads = len(scope(dev)) - len(DDR3_BANKS)
     print(f"\n{pads} bank 6/7 pads and {len(DDR3_BANKS)} BANK tables compared, "
           f"{configured} configured in either build.")

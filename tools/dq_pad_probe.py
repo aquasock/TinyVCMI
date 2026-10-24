@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the vendor designs that expose lane 0's complete pads.
+"""Build the vendor designs that expose a DDR3 lane's complete pads.
 
 `tools/dq_lane_probe.py` measured one serializer per pad.  The proven
 controller (Tang-PSX `ddr3_memory_interface.vo`) builds each lane-0 pad from
@@ -37,6 +37,11 @@ design's difference from the B1 `base`.
 Usage:
     tools/dq_pad_probe.py
     tools/dq_pad_probe.py --only dq_sstl,dqs_sstl
+    tools/dq_pad_probe.py --lane 2 --only dq_sstl,dq_nodelay_sstl,dqs_sstl,dm_sstl
+
+`--lane N` moves the strobe pair, the DQ pad and the DM pad to lane N's pins
+from `LANE_PADS` and builds into `build/dq_pad_l<N>`; lane 0 keeps its pads
+and directory.
     tools/dq_pad_probe.py --check
 """
 
@@ -119,7 +124,15 @@ def render(shape: str, delay: bool = True) -> str:
     return text
 
 
-def cst(shape: str, sstl: bool) -> str:
+#: Per lane: the strobe pair, the representative side-A DQ pad and the DM
+#: pad, from the hardware-proven pin map (Tang-PSX `tang_psx_ddr3.cst`).
+LANE_PADS = {0: {"dqs": ("Y3", "AA3"), "dq": "Y4", "dm": "AA4"},
+             1: {"dqs": ("V9", "V8"), "dq": "AA8", "dm": "V7"},
+             2: {"dqs": ("W6", "W5"), "dq": "R4", "dm": "T6"},
+             3: {"dqs": ("R3", "R2"), "dq": "W2", "dm": "W1"}}
+
+
+def cst(shape: str, sstl: bool, lane_n: int = 0) -> str:
     single = ('IO_TYPE=SSTL15 PULL_MODE=NONE DRIVE=8 BANK_VCCIO=1.5' if sstl
               else 'IO_TYPE=LVCMOS33 PULL_MODE=NONE')
     # Gowin refuses DRIVE on an input port (CT1108)
@@ -130,14 +143,16 @@ def cst(shape: str, sstl: bool) -> str:
     lines = ['IO_LOC "clk" V22;', 'IO_PORT "clk" IO_TYPE=LVCMOS33 PULL_MODE=NONE;',
              'IO_LOC "q" F18;', 'IO_PORT "q" IO_TYPE=LVCMOS33 PULL_MODE=NONE;',
              'INS_LOC "dll" DDRDLLM_BL;']
+    pads = LANE_PADS[lane_n]
     if shape == "dqs":
-        lines += ['IO_LOC "dqs_p" Y3,AA3;', f'IO_PORT "dqs_p" {diff};']
+        lines += [f'IO_LOC "dqs_p" {pads["dqs"][0]},{pads["dqs"][1]};',
+                  f'IO_PORT "dqs_p" {diff};']
     else:
-        lines += ['IO_LOC "dqsi" Y3;', f'IO_PORT "dqsi" {single_in};']
+        lines += [f'IO_LOC "dqsi" {pads["dqs"][0]};', f'IO_PORT "dqsi" {single_in};']
     if shape == "dq":
-        lines += ['IO_LOC "dq_pad" Y4;', f'IO_PORT "dq_pad" {single};']
+        lines += [f'IO_LOC "dq_pad" {pads["dq"]};', f'IO_PORT "dq_pad" {single};']
     if shape == "dm":
-        lines += ['IO_LOC "dm_pad" AA4;', f'IO_PORT "dm_pad" {single};']
+        lines += [f'IO_LOC "dm_pad" {pads["dm"]};', f'IO_PORT "dm_pad" {single};']
     return "\n".join(lines) + "\n"
 
 
@@ -238,11 +253,18 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--only", help="comma-separated subset of " + ",".join(DESIGNS))
-    ap.add_argument("--out", default=os.path.join(base.ROOT, "build/dq_pad"))
+    ap.add_argument("--out", default=None)
+    ap.add_argument("--lane", type=int, choices=sorted(LANE_PADS), default=0,
+                    help="DDR3 lane whose pads the designs use; --check knows lane 0 only")
     ap.add_argument("--check", action="store_true",
                     help="assert the recorded results on built designs; build nothing")
     args = ap.parse_args()
+    if args.out is None:
+        args.out = base.lane_dir(os.path.join(base.ROOT, "build/dq_pad"), args.lane)
     if args.check:
+        if args.lane != 0:
+            print("--check records lane 0's IOLOGIC rows only", file=sys.stderr)
+            return 2
         return check(args.out)
     names = [n for n in (args.only or ",".join(DESIGNS)).split(",") if n]
     unknown = [n for n in names if n not in DESIGNS]
@@ -258,7 +280,7 @@ def main() -> int:
         if os.path.isdir(d):
             shutil.rmtree(d)
         os.makedirs(d)
-        for fn, body in (("top.v", render(shape, delay)), ("top.cst", cst(shape, sstl)),
+        for fn, body in (("top.v", render(shape, delay)), ("top.cst", cst(shape, sstl, args.lane)),
                          ("top.sdc", base.SDC), ("run.tcl", base.TCL)):
             with open(os.path.join(d, fn), "w") as f:
                 f.write(body)

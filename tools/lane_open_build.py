@@ -56,8 +56,9 @@ import sys
 import dqs_port_probe as base
 
 #: vendor build sets, each a directory per lane through `base.lane_dir`;
-#: `dq_pad` exists for lane 0 only
-SETS = ("dqs_b1", "dq_lane", "dq_lane_b", "dq_pad")
+#: `cmd_pad`, bank 7's address and command pads, belongs to no lane and is
+#: read as lane 0's
+SETS = ("dqs_b1", "dq_lane", "dq_lane_b", "dq_pad", "cmd_pad")
 
 #: memory-mode pin -> the DQS output it is hard-wired from (TOOL-009)
 MEM_LINKS = {"TCLK_DQSW0": "DQSW0", "TCLK_DQSW270": "DQSW270", "ICLK": "DQSR90",

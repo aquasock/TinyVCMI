@@ -1222,3 +1222,64 @@ the declared DDR context, for banks 6 and 7 only.
 No bank-7 address, command or clock shape and no lane-1-to-3 SSTL pad has
 been built for the vendor yet, so bank 7's used pads and the other lanes'
 pads are unmeasured. The DDR3-bank refusal itself is unchanged.
+
+### All lanes, bank 7, and unused pins
+
+The comparison now covers every lane and bank 7:
+
+- `tools/dq_pad_probe.py --lane N` builds lane N's four SSTL pad designs on
+  its own strobe pair, a side-A DQ pad and its DM pad, into `build/dq_pad_lN`.
+- `tools/cmd_pad_probe.py` builds bank 7's shapes from the proven vendor
+  netlist: a plain `OSER8` into an SSTL15 `OBUF` for each address, bank and
+  command ball; an `OSER8` with a constant `0101...` pattern into an SSTL15D
+  `ELVDS_OBUF` for the clock pair L3/K3; and a register into an `OBUF` for
+  `reset_n` on L6.
+- `tools/ddr_bank_check.py --summary` prints one line per distinct
+  difference.
+
+Lanes 1 to 3 show exactly lane 0's signatures. The two missing fuses of a
+serializer-driven output pad, `TRI_MUX=TMDDR` and `SLEWRATE=FAST`, follow the
+pad's side, not its type: lane 1's DM pad sits on side A and lacks the DQ
+pad's pair.
+
+Bank 7 exposed two more gaps:
+
+- The open flow cannot place `cmd_full_sstl`, all 28 balls. Its plain `OSER8`
+  takes both IOLOGIC halves of a cell, while the vendor builds both halves and
+  the proven map uses both (M1/L1, J5/H5 and others). `cmd_min_sstl` uses
+  `ddr_addr[0]` on M1 and `ddr_addr[9]` on H5, each with its cell's other half
+  unused, and routes.
+- Packing `cmd_min_sstl` stops with a VCCIO conflict, and the cause is an
+  upstream packer bug. `BankDesc.add_io_bel` tests `if bel.is_mipi:` without
+  calling it, so the test is always true. The N half of any differential
+  output that carries no `IO_TYPE` is therefore taken as MIPI, `LVDS25`, and
+  sets the bank's LVDS VCCIO to 2.5 V. With a single-ended 1.5 V output
+  present the bank refuses. Without one, as in `dqs_sstl`, the packer programs
+  bank 6 for 2.5 V. That is the `BANK` difference `(20,44)` against `(20,43)`.
+  The line is on upstream `master`, and the desktop core's TMDS N halves take
+  the same path.
+
+Unused pins contradict the fork's own record. The 138C class drops `DRIVE`
+and `DRIVE_LEVEL` from every unused pin, citing 35 vendor pairs (`P3.T26`,
+`D108`) in which the vendor programmed no drive strength on a floating pin.
+`tools/unused_pin_probe.py` builds a plain non-DDR design four ways:
+
+- this project's non-project `run.tcl` or the fork harness's project-mode
+  `run.tcl` and option set;
+- this project's `.cst` conventions or the harness's (`PULL_STRENGTH=MEDIUM`,
+  a `BANK_VCCIO` on every pin).
+
+Packed in memory and compared fuse for fuse on all 199 unused left- and
+right-edge pins:
+
+| Packer setting for unused pins | Pins equal to Gowin EDA 1.9.11.03 on Linux |
+|---|---|
+| fork rule, no drive | 0 of 199, in all four builds |
+| GW5A base set, `DRIVE=8` and `DRIVE_LEVEL=8` | 199 of 199, in all four builds |
+
+So the build recipe does not explain the difference. The fork's corpus lives
+on another host and its harness defaults to the macOS Gowin package; neither
+can be examined here, so the platform and the corpus itself remain the
+untested explanations. The user chose to follow these measurements for banks
+6 and 7 inside a declared DDR context only, leaving the fork's rule in place
+for every other bank and core.

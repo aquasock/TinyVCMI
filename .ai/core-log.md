@@ -1129,3 +1129,38 @@ Run the approved stage 1b, still writing no image. Build Gowin EDA SSTL designs 
 - User Test: N/A
 
 ---
+
+## 37 COMMIT Unreleased 2026-10-23T22:53:28-07:00
+
+#### Coming From:
+
+Unreleased acd9a08
+
+#### Purpose:
+
+Extend the DDR3-bank comparison to every lane and to bank 7, and find out why the vendor's unused-pin drive setting contradicts the Apicula fork's recorded rule, which is the diagnostic part of the approved stage 1b and the user-chosen option (a).
+
+#### Outcome:
+
+`tools/dq_pad_probe.py --lane N` and the new `tools/cmd_pad_probe.py` built lanes 1 to 3's four SSTL pad designs and bank 7's address, command, clock and reset shapes from the proven vendor netlist with Gowin EDA 1.9.11.03, `tools/lane_open_build.py` gained them as sets, and `tools/ddr_bank_check.py --summary` reports one line per distinct difference. Lanes 1 to 3 reproduce lane 0's signatures exactly. Bank 7 exposed two further gaps that change the stage-1b work. The open flow's plain `OSER8` takes both IOLOGIC halves of a cell, so `cmd_full_sstl`, all 28 balls, cannot be placed, while `cmd_min_sstl`, with its two address balls on unpaired cells, routes. And `BankDesc.add_io_bel` tests `bel.is_mipi` without calling it, so the N half of any differential output with no `IO_TYPE` sets the bank's LVDS VCCIO to 2.5 V; that stops `cmd_min_sstl` with a conflict and programs bank 6 for 2.5 V under the SSTL15D strobe, the `(20,44)` against `(20,43)` difference. The line is on upstream `master`, and the desktop core's TMDS N halves take the same path. The unused-pin difference is `DRIVE=8` and `DRIVE_LEVEL=8`, which the fork's 138C class deliberately drops on the strength of its `P3.T26`/`D108` corpus. The new `tools/unused_pin_probe.py` built one plain non-DDR design with this project's and the fork harness's `run.tcl`, option set and `.cst` conventions in all four combinations. Packed in memory and compared fuse for fuse, the GW5A base set with drive equals the vendor on 199 of 199 unused left- and right-edge pins in every build and the fork's rule on none, so the build recipe is ruled out. The fork's corpus is on another host and its harness defaults to the macOS install, so the platform and the corpus itself remain untested. The user chose option (b): follow these measurements for banks 6 and 7 inside a declared DDR context only. The results are in `docs/ddr3-open-flow.md` and a TOOL-013 revision. No packer change was made in this cycle, no image was written and no hardware was accessed. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering, and active-log capacity.
+
+#### Next Steps:
+
+Implement the stage-1b corrections in the Apicula fork, each applied only to banks 6 and 7 under `ddr_context` so every other bank and core is unchanged: unused pins with the vendor's `DRIVE=8` and `DRIVE_LEVEL=8` and without the bank's SSTL15 `IO_TYPE` the vendor does not give them, a differential pair's N half taking its P half's `IO_TYPE` instead of the always-true `is_mipi` default, the used-pad `TRI_MUX=TMDDR` and `SLEWRATE=FAST`, the SSTL15D pair's missing fuses, and bank 6's SSTL15 `BANK` fuses. Accept them only when `tools/ddr_bank_check.py` passes all 102 tables on every lane design and on `cmd_min_sstl`. The `OSER8` IOLOGIC pairing in nextpnr is needed before the full bank 7 can be compared and belongs in its own measured change. Stage 2's narrow declared context, any written image and all Tang access each need separate user approval.
+
+#### Files Modified:
+
+- docs/ddr3-open-flow.md
+- tools/cmd_pad_probe.py
+- tools/ddr_bank_check.py
+- tools/dq_pad_probe.py
+- tools/lane_open_build.py
+- tools/unused_pin_probe.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: N/A
+- User Test: N/A
+
+---

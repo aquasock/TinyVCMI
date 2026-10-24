@@ -166,7 +166,7 @@ TOOL-009: "Lane 0's OSER8_MEM and IDES8_MEM sit on IOLOGIC A/B of cells (68..79,
 TOOL-010: "A complete DQ pad's IOLOGIC is the union of its serializers plus three IODELAY fuses; IO standard touches only IOB and the BANK table"
 TOOL-011: "Lanes 1 to 3 have byte groups (99,0), (90,0) and (63,0) and DQS sites (99,0), (90,0) and (81,6); every site moves lane 0's 24 input wires"
 TOOL-012: "Lanes 1 to 3 share lane 0's 24-input and 13-output DQS map, table-58 keys, memory-serializer attributes and bit order"
-TOOL-013: "With SSTL15 kept whole, the open packer's bank 6/7 IOB and BANK fuses still differ from the vendor's on used pads, every unused pad and bank 6's BANK table"
+TOOL-013: "With SSTL15 kept whole, the open packer's bank 6/7 IOB and BANK fuses still differ from the vendor's on used pads, every unused pad (DRIVE=8 and DRIVE_LEVEL=8, against the fork's D108 rule) and bank 6's BANK table, partly through an is_mipi call bug"
 PROV-001: "Reuse source and interface ideas with their original license boundaries and attribution intact"
 ```
 
@@ -559,7 +559,10 @@ PROV-001: "Reuse source and interface ideas with their original license boundari
     - "TinyVCMI build/dq_pad/{dq_sstl,dq_nodelay_sstl,dm_sstl,dqs_sstl} vendor builds and build/open/dq_pad routed netlists"
     - "aquasock/apicula branch epic/gw5ast138c, apycula/gowin_pack.py GW5AST_138C io_type_alias, add_io_to_bank and BankDesc"
     - "Tang-PSX commit 61974ca, gateware/ddr3_vendor/tang_psx_ddr3.cst, bank and IO_TYPE of every DDR3 ball"
-  verification: "tools/ddr_bank_check.py ran gowin_pack's stages in memory with ddr_context set on one device instance and no bitstream object, and compared all 100 bank 6/7 pad tables and both BANK tables restricted to each table's own fuses on all four designs. The ordinary-bank comparison used the same packed result on banks 2 and 3. Bank 7's used pads and the SSTL pads of lanes 1 to 3 have no vendor builds yet. No image was written and no hardware was accessed."
+    - "Tang-PSX build/ddr3-vendor/ip/ddr3_memory_interface/ddr3_memory_interface.vo, OSER8, OBUF and ELVDS_OBUF instances of u_ddr_phy_cmd_lane"
+    - "TinyVCMI tools/dq_pad_probe.py --lane N, tools/cmd_pad_probe.py and tools/unused_pin_probe.py"
+    - "aquasock/apicula branch epic/gw5ast138c, apycula/gowin_pack.py BankDesc.add_io_bel and GW5AST_138C.get_unused_io_attrvals"
+  verification: "tools/ddr_bank_check.py ran gowin_pack's stages in memory with ddr_context set on one device instance and no bitstream object, and compared all 100 bank 6/7 pad tables and both BANK tables restricted to each table's own fuses on all four designs. The ordinary-bank comparison used the same packed result on banks 2 and 3. Bank 7's used pads and the SSTL pads of lanes 1 to 3 have no vendor builds yet. No image was written and no hardware was accessed. Revised 2026-10-23: lanes 1 to 3 (tools/dq_pad_probe.py --lane N) show exactly lane 0's signatures, and the used-pad pair TRI_MUX=TMDDR and SLEWRATE=FAST follows the pad's side. Bank 7 (tools/cmd_pad_probe.py) exposed two further gaps. The open flow's plain OSER8 takes both IOLOGIC halves of a cell, so the full 28-ball bank cannot be placed. BankDesc.add_io_bel tests bel.is_mipi without calling it, so a differential output's N half with no IO_TYPE sets the bank's LVDS VCCIO to 2.5 V, which programs bank 6 for 2.5 V under an SSTL15D strobe and is the (20,44)/(20,43) difference; the line is on upstream master. The unused-pin difference is DRIVE=8 and DRIVE_LEVEL=8: tools/unused_pin_probe.py found the GW5A base set equal to Gowin EDA 1.9.11.03 on Linux on 199 of 199 unused left- and right-edge pins and the fork's no-drive rule on none, under both this project's and the fork harness's build recipe and constraint conventions. That contradicts the fork's P3.T26/D108 corpus, which is on another host and was built with the harness's macOS default install; the platform and the corpus remain untested explanations. The user chose to follow these measurements for banks 6 and 7 inside a declared DDR context only."
 
 - record_id: PROV-001
   topic_id: PROV
