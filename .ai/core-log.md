@@ -1263,3 +1263,35 @@ Stage 3, writing an image, needs the user's approval before it starts. The first
 - User Test: N/A
 
 ---
+
+## 41 COMMIT Unreleased 2026-10-24T01:09:41-07:00
+
+#### Coming From:
+
+Unreleased f2bdc35
+
+#### Purpose:
+
+Write the first open-flow DDR3 image through the declared DDR3 context and verify the written file against the vendor's build table by table, which is the approved stage 3 without any board access.
+
+#### Outcome:
+
+Added `tools/build_ddr3_pad_image.sh`, which checks the manifest, synthesizes, places and routes the whole pad set of `tools/ddr3_pad_set_probe.py`, packs it with `gowin_pack --ddr3-context fpga/ddr3/ddr3_balls.json` into `build/ddr3_image/full_sstl.fs` and never writes the loadable `.bin`, and `tools/ddr3_image_check.py`, which decodes the written image and the vendor build and compares every DDR3 table: the IOB table of every bank 6/7 pad and both `BANK` tables exactly, the IOLOGIC of every bank 6/7 cell outside `FCLKSEL`, the four byte groups' table 58 outside the lane field, and the corner cell's `DLL0` exactly. The first image differed only in `DLL0`, where the vendor sets features 5, 17, 18 and 19, fuses `(21,7)`, `(21,8)`, `(21,9)` and `(21,15)`, in every build with a DDRDLL while the packer had left them to a measurement switch because they are unattributed. At the user's choice of option (a), committed `c8b9622` to the Apicula fork's `epic/gw5ast138c`, pushed to the `aquasock` remote only, which writes them under a declared DDR3 context; the image then equals the vendor on all 306 tables, 102 IOB and `BANK`, 199 IOLOGIC, four DQS and the DDRDLL, with SHA-256 `4c24096e1666c7606b2147a6e8e71d741a21cb25442ec13e6fe947d5154df81f`, reproduced by a rebuild into another directory. The two raw corner bits TOOL-003 recorded with those features, `(1,12)` and `(9,13)`, turned out to be the unused-pin drive of the corner cell's bank-6 pad, and TOOL-003 was revised. Without the flag the DDRDLL probe designs and the other non-DDR netlists pack to fuse digests identical to the committed `55b1404` packer's, and the fork's full suite fails the same 58 pre-existing tests. The image is a measurement artifact whose serializers run from the board clock with no memory PLL or controller, so it was not converted for or loaded onto the board, and no hardware was accessed. The results are in `docs/ddr3-open-flow.md` and the new TOOL-016. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering, and active-log capacity.
+
+#### Next Steps:
+
+The configuration path is complete offline, so the next work is what makes an image worth loading. Extend the IOLOGIC `FCLK` model from HCLK lanes 0 and 2 to all four, measured as lanes 0 and 2 were, so a lane's serializers can follow its `DQS` and `CLKDIV` on any lane. Then build a PHY-only image clocked as the proven controller is, the memory PLL at 400 MHz through a `CLKDIV` per lane, with a TinyTang readout of `LOCK` and the lanes' status outputs and the DDR3 device held in reset, and propose it for user approval together with the first Tang load. The `D108` unused-pin contradiction and the `is_mipi` bug outside the DDR context remain open.
+
+#### Files Modified:
+
+- docs/ddr3-open-flow.md
+- tools/build_ddr3_pad_image.sh
+- tools/ddr3_image_check.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: N/A
+- User Test: N/A
+
+---

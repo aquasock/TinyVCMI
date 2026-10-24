@@ -133,6 +133,7 @@ Topic IDs are the `record_id` prefix. An entry reserves a namespace; it does not
 | Does the open packer write the vendor's DDR3-bank IO configuration? | TOOL | TOOL-013 |
 | How much IOLOGIC does a plain OSER8 take, and does the whole pad set match? | TOOL | TOOL-014 |
 | How does a design declare a DDR3 context, and what does the packer admit in it? | TOOL | TOOL-015 |
+| Does a written open-flow DDR3 image equal the vendor's? | TOOL | TOOL-016 |
 | Which sources and licenses constrain reuse? | PROV | PROV-001 |
 
 ---
@@ -171,6 +172,7 @@ TOOL-012: "Lanes 1 to 3 share lane 0's 24-input and 13-output DQS map, table-58 
 TOOL-013: "Under ddr_context the open packer's bank 6/7 IOB and BANK fuses now equal the vendor's on every measured SSTL lane and bank-7 shape, including unused-pin DRIVE=8 against the fork's D108 rule and an is_mipi call bug corrected; the full bank 7 is unplaced"
 TOOL-014: "A plain OSER8 configures only its own IOLOGIC side on this die; with that modelled, the whole controller's pad set packs to the vendor's fuses in DQS, IOLOGIC, IOB and BANK"
 TOOL-015: "A DDR3 context is declared only by gowin_pack --ddr3-context with a 72-ball manifest; each bank 6/7 pad must be a listed ball at SSTL15/SSTL15D, BANK_VCCIO=1.5, PULL_MODE=NONE, DRIVE=8 on outputs, nothing else"
+TOOL-016: "The open-flow image of the whole DDR3 pad set, written with --ddr3-context, equals the vendor build on all 306 DDR3 tables, the DDRDLL's four unattributed vendor defaults included"
 PROV-001: "Reuse source and interface ideas with their original license boundaries and attribution intact"
 ```
 
@@ -422,7 +424,7 @@ PROV-001: "Reuse source and interface ideas with their original license boundari
     - "Apicula commit 8918f14, apycula/attrids.py, apycula/chipdb.py and apycula/dat_parser.py"
     - "aquasock/nextpnr branch epic/gw5ast138c, himbaechel/uarch/gowin/{gowin_arch_gen.py,cst.cc,constids.inc}"
     - "aquasock/apicula branch epic/gw5ast138c, apycula/gowin_pack.py get_DDRDLL_fuses"
-  verification: "Eight offline vendor builds covered all four master placements and isolated CODESCAL, SCAL_EN, DIV_SEL and DLL_FORCE changes, and the BL deltas were re-derived from the raw bitstreams rather than the tile tables. Revised 2026-10-22: three further offline builds isolated the ports and LOCK (constants on STOP, UPDNCNTL and RESET; LOCK open; STEP open). The corner DLL0 tables agree with the TL, BL and BR baselines on features 12 to 15; TR's table has no entry for feature 12 or 13. The open-flow path reproduces the four measured feature sets and sets none of the three unset bits, which shows the packing is derived from the measurement; it does not show the primitive works. No Tang access occurred. Revised 2026-10-23: LOCK now has a pin on a fuse-free node to Q7 of cell (99,1), and the preflight's DDRDLL probe routes it through X1Y99/E820 <- Q7, the pip the vendor sets when LOCK is routed."
+  verification: "Eight offline vendor builds covered all four master placements and isolated CODESCAL, SCAL_EN, DIV_SEL and DLL_FORCE changes, and the BL deltas were re-derived from the raw bitstreams rather than the tile tables. Revised 2026-10-22: three further offline builds isolated the ports and LOCK (constants on STOP, UPDNCNTL and RESET; LOCK open; STEP open). The corner DLL0 tables agree with the TL, BL and BR baselines on features 12 to 15; TR's table has no entry for feature 12 or 13. The open-flow path reproduces the four measured feature sets and sets none of the three unset bits, which shows the packing is derived from the measurement; it does not show the primitive works. No Tang access occurred. Revised 2026-10-23: LOCK now has a pin on a fuse-free node to Q7 of cell (99,1), and the preflight's DDRDLL probe routes it through X1Y99/E820 <- Q7, the pip the vendor sets when LOCK is routed. Revised 2026-10-24: the corner bits (1,12) and (9,13) are the unused-pin DRIVE and DRIVE_LEVEL of the corner cell's bank-6 pad (TOOL-013), not DDRDLL configuration; DLL0 features 5, 17, 18 and 19 remain unattributed and are written under a declared DDR3 context because the vendor sets them in every build with a DDRDLL (TOOL-016)."
 
 - record_id: TOOL-004
   topic_id: TOOL
@@ -596,6 +598,19 @@ PROV-001: "Reuse source and interface ideas with their original license boundari
     - "TinyVCMI tools/ddr3_ball_manifest.py, fpga/ddr3/ddr3_balls.json and tools/ddr_bank_check.py"
     - "Tang-PSX commit 61974ca, gateware/ddr3_vendor/tang_psx_ddr3.cst"
   verification: "The fork's 26 context tests pass, covering each admission rule and each manifest refusal, the manifest tests against the built chipdb. Through the flag, tools/ddr_bank_check.py finds all 102 bank tables equal to the vendor on dqs_sstl and lane_sstl on four lanes, the five bank-7 designs and the whole pad set, and refuses the single-ended strobe probes and the LVCMOS probe by name. Without the flag, seven non-DDR netlists pack to unchanged fuse digests, both DDR designs are refused, and the full fork suite fails the same 58 pre-existing tests. No image was written and no hardware was accessed."
+
+- record_id: TOOL-016
+  topic_id: TOOL
+  title: "The first written open-flow DDR3 image"
+  status: VERIFIED
+  verified_date: 2026-10-24
+  statement: "tools/build_ddr3_pad_image.sh synthesizes, places, routes and packs the whole DDR3 pad set of tools/ddr3_pad_set_probe.py with gowin_pack --ddr3-context fpga/ddr3/ddr3_balls.json into build/ddr3_image/full_sstl.fs, SHA-256 4c24096e1666c7606b2147a6e8e71d741a21cb25442ec13e6fe947d5154df81f, reproducible across rebuilds. Decoded from the files, it equals the Gowin EDA 1.9.11.03 build of the same source on all 306 DDR3 tables: 102 IOB and BANK tables, 199 IOLOGIC tables outside FCLKSEL, four DQS table-58 configurations outside the lane field, and the DDRDLL corner cell's DLL0 table. The DLL0 equality depends on features 5, 17, 18 and 19, which the vendor sets in every build with a DDRDLL and the Apicula fork writes under a declared DDR3 context since commit c8b9622; what they configure is unattributed."
+  consequence: "The open flow can write a DDR3 image whose pad, IOLOGIC, strobe and DLL configuration is the vendor's, through the packer's own entry point. This image is a measurement artifact -- its serializers run from the board clock with no memory PLL, controller or calibration -- so it establishes configuration equivalence only, and loading it onto the board would test nothing about DDR3 operation. A hardware-meaningful image still needs the memory clock through CLKDIVs, IOLOGIC FCLK on all four HCLK lanes, and controller logic."
+  sources:
+    - "TinyVCMI tools/build_ddr3_pad_image.sh, tools/ddr3_image_check.py and tools/ddr3_pad_set_probe.py"
+    - "TinyVCMI docs/ddr3-open-flow.md: The first written DDR3 image"
+    - "aquasock/apicula branch epic/gw5ast138c, apycula/gowin_pack.py get_DDRDLL_fuses"
+  verification: "The image was written twice into different directories with the same digest, and tools/ddr3_image_check.py found every compared table equal; before the DDRDLL change the DLL0 table was the only difference. Without the flag the two DDRDLL probe designs pack to unchanged fuse digests, and the fork's full suite fails the same 58 pre-existing tests. The image was not converted to a loadable .bin and no hardware was accessed."
 
 - record_id: PROV-001
   topic_id: PROV

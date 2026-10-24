@@ -1444,3 +1444,50 @@ unchanged fuse digests and both DDR designs are refused.
 
 This is stage 2. Writing an image with the context is stage 3 and needs its
 own approval, as does any access to the board.
+
+## The first written DDR3 image
+
+`tools/build_ddr3_pad_image.sh` writes the open-flow image of the whole pad
+set, `build/ddr3_image/full_sstl.fs`, and checks it in five steps:
+
+1. confirm the manifest matches the pin map (`tools/ddr3_ball_manifest.py --check`);
+2. synthesize the source `tools/ddr3_pad_set_probe.py` generated;
+3. place and route it;
+4. pack it with `gowin_pack --ddr3-context fpga/ddr3/ddr3_balls.json`;
+5. compare the written file with the vendor's build of the same source.
+
+It writes only a `.fs`, never the raw `.bin` TinyTang loads. The image is a
+measurement artifact: its serializers run from the board clock, with no
+memory PLL and no controller, so it is not for the board.
+
+The comparison, `tools/ddr3_image_check.py`, decodes both files and compares
+every table the DDR3 interface configures:
+
+| Table | Scope | Compared |
+|---|---|---|
+| IOB and `BANK` | every bank 6/7 pad, used or not, and both bank tables | exactly |
+| IOLOGIC | every bank 6/7 cell | outside the `FCLKSEL` entries |
+| DQS | table 58 at the four byte groups | outside the lane field |
+| DDRDLL | the corner cell's `DLL0` table | exactly |
+
+The first image differed in one table only. The vendor sets `DLL0` features
+5, 17, 18 and 19, fuses `(21,7)`, `(21,8)`, `(21,9)` and `(21,15)`, in every
+build with a DDRDLL. No parameter sweep moves them, and the packer had left
+them to a measurement switch. At the user's choice the Apicula fork now
+writes them under a declared DDR3 context. With them, the image equals the
+vendor on all 306 tables:
+
+| Table | Equal |
+|---|---|
+| IOB and BANK | 102 of 102 |
+| IOLOGIC | 199 of 199 |
+| DQS | 4 of 4 |
+| DDRDLL | 1 of 1 |
+
+The image's SHA-256 is
+`4c24096e1666c7606b2147a6e8e71d741a21cb25442ec13e6fe947d5154df81f`, and a
+rebuild into another directory reproduces it. What the four features
+configure is still unattributed. The two raw corner bits recorded with them
+in TOOL-003, `(1,12)` and `(9,13)`, are the unused-pin drive of the corner
+cell's own bank-6 pad. Without the flag, the DDRDLL designs pack exactly as
+before.
