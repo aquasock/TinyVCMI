@@ -745,3 +745,34 @@ Implement B2b in the Apicula fork: accept `DQS` in the packer's bel pattern, ref
 - User Test: N/A
 
 ---
+
+## 25 COMMIT Unreleased 2026-10-23T17:31:21-07:00
+
+#### Coming From:
+
+Unreleased aeb9b11
+
+#### Purpose:
+
+Pack the measured DQS configuration in the open flow and accept it against the vendor's fuses, which is B2b of the approved DQS implementation.
+
+#### Outcome:
+
+Committed `c85ed79` to the Apicula fork's `epic/gw5ast138c` and pushed it to the `aquasock` remote only. `get_DQS_fuses` writes the TOOL-008 encoding into longfuses table 58 of `X0Y72` and nowhere else, takes the lane from nextpnr's fuse-free `HCLK2<n> -> DQS_FCLK` pip, which the GW5AST-138C device now keeps out of the chipdb pip lookup, and refuses another site, an unmeasured parameter value and a connected `FCLK` with no lane pip; both refusals were exercised. The approved acceptance test could not run as written. `gowin_pack` refuses any design that configures a bank 6/7 pad outside a declared DDR context, a deliberate guard against pull and drive configurations on the DDR3 rail with no switch to set it, and a lane's `DQSIN` must be on pin Y3 in bank 6, so no image containing a real `DQS` can be written. The guard was left untouched, because changing it is the user's decision. Acceptance moved to `tools/dqs_pack_check.py`, which runs the packer's own routing stage and only the `DQS` bel's fuse method in-process and writes no image. All twelve B1 designs were built in the open flow and pass: the packer's table-58 fuses equal the recorded encoding in every case and equal the vendor build outside the lane field, exactly where the lanes agree. The open router put `FCLK` on lane 0 every time, carrying the clock on two lanes where a pinned `CLKDIV` held another, so lanes 1 to 3 were checked with `--fclk-lane`, which rewrites only that pip, against the lane-matched vendor builds and match; that tests the packer's encoding, not the router. No image containing a `DQS` exists and no hardware was accessed. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering, and active-log capacity.
+
+#### Next Steps:
+
+Obtain the user's decision on the DDR3-bank guard before any open-flow lane image is written: either a declared DDR context for designs that legitimately own bank 6 and 7, with the DDR3 IO standard and rail checked, or a different first image that keeps every DQS pad unconfigured. Independently and offline, the lane needs `OSER8_MEM` and `IDES8_MEM` bels, whose missing `TCLK` path from the `DQS` outputs belongs on the same fuse-free link mechanism, and the open router should be taught to keep one clock net on one HCLK lane as the vendor does. Do not touch the Tang unless the user explicitly changes that instruction.
+
+#### Files Modified:
+
+- docs/ddr3-open-flow.md
+- tools/dqs_pack_check.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: N/A
+- User Test: N/A
+
+---

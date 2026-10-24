@@ -759,7 +759,32 @@ on `X1Y108/DDRDLL_BL`, and the clock reaches `FCLK` over lane 0. The `LOCK`
 net leaves through `X1Y99/E820 <- Q7`, which is the same pip the vendor
 bitstream sets when `LOCK` is routed.
 
-Nothing here packs a `DQS` yet: Apicula has no `DQS` packing, so no open-flow
-bitstream containing one exists. That is the next increment, written from the
-table-58 encoding above and accepted only when the open-flow build of the
-`base` lane design matches the vendor build in table 58.
+### Packing
+
+Apicula's `get_DQS_fuses` (aquasock/apicula `epic/gw5ast138c`) writes the
+table-58 encoding above at cell `X0Y72` and nowhere else. It takes the lane
+from nextpnr's `HCLK2<n> -> DQS_FCLK` pip, which carries no fuse of its own
+and is kept out of the chipdb pip lookup, and it refuses another site, an
+unmeasured parameter value, and a connected `FCLK` that reached the site on no
+lane.
+
+`tools/dqs_pack_check.py` accepts it without writing an image. It runs
+`gowin_pack`'s own routing stage on an open-flow routed netlist and then only
+the `DQS` bel's fuse method, and compares the table-58 fuses with the recorded
+encoding and with the vendor build of the same source. All twelve B1 designs
+were built in the open flow and pass: the packer's fuses equal the recorded
+encoding in every case, and equal the vendor's outside the lane field. They
+equal the vendor's exactly when the two routers chose the same lane. The open
+router put `FCLK` on lane 0 in every build, even when a `CLKDIV` pinned to
+another lane held the same net. It carries the net on two lanes where the
+vendor uses one, so the lane-1 to lane-3 encodings were checked with
+`--fclk-lane`, which rewrites only the `FCLK` pip before packing, against the
+lane-matched vendor builds. All three match. That makes them a test of the
+packer, not of the router.
+
+No open-flow image containing a `DQS` has been written. The packer refuses
+any design that configures a bank 6/7 pad outside a declared DDR context, and
+`DQSIN` must be on its lane's own pad, pin Y3 in bank 6, so every real lane is
+refused. The guard exists because a pull or drive configuration on the DDR3
+rail is a thermal hazard. It has no switch, and adding one is a decision for
+the user, not for this work.
