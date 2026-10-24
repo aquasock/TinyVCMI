@@ -2,7 +2,9 @@
 """Check the open packer's lane-serializer fuses against the vendor's.
 
 Apicula's `get_OSER8_MEM_fuses` and `get_IDES8_MEM_fuses` write the TOOL-009
-attributes through the existing IOLOGIC path.  Like `tools/dqs_pack_check.py`
+attributes through the existing IOLOGIC path.  A pad may carry one of each on
+the same IOLOGIC side, with an `IODELAY` folded into the `IDES8_MEM` by
+nextpnr, so the fuses are compared per side.  Like `tools/dqs_pack_check.py`
 this runs the packer on an open-flow routed netlist exactly as `gowin_pack`
 does -- its own `Netlist`, `Device` and routing stage -- and then only the
 serializer's fuse method, so no bitstream is written and the packer's
@@ -42,7 +44,7 @@ import fs_site_diff as fsd
 
 
 def packer_serializer_fuses(routed: str):
-    """(cell, x, y, side, {(x, y): fuses}) for the one lane serializer."""
+    """(cell, x, y, side, {(x, y): fuses}) for every lane serializer."""
     from apycula import gowin_pack as gp
     import os
 
@@ -110,11 +112,9 @@ def main() -> int:
     finally:
         if routed != args.routed:
             os.unlink(routed)
-    if len(found) != 1:
-        print(f"FAIL  expected one lane serializer, found {len(found)}")
+    if not found:
+        print("FAIL  no lane serializer in the netlist")
         return 1
-    cell, x, y, side, cells = found[0]
-    cfg = (x, y if side == "A" else y + 1)          # packer cells are (x, y)
     failures = 0
 
     def report(ok, line):
@@ -122,43 +122,46 @@ def main() -> int:
         print(f"  {'PASS' if ok else 'FAIL'}  {line}")
         failures += not ok
 
-    report(set(cells) <= {cfg}, f"{cell.typ} {cell.name} at X{x}Y{y} side {side}: packer "
-                                f"writes cells {sorted(f'X{a}Y{b}' for a, b in cells)}")
+    # A pad can carry an OSER8_MEM and an IDES8_MEM on one IOLOGIC side, so
+    # the packer's fuses are compared per side's configuration cell.
+    sides = {}
+    for cell, x, y, side, cells in found:
+        cfg = (x, y if side == "A" else y + 1)          # packer cells are (x, y)
+        report(set(cells) <= {cfg}, f"{cell.typ} {cell.name} at X{x}Y{y} side {side}: packer "
+                                    f"writes cells {sorted(f'X{a}Y{b}' for a, b in cells)}")
+        sides.setdefault((cfg, side), set()).update(cells.get(cfg, set()))
 
     dev = fsd.chipdb.load_chipdb(fsd.DB)
     grid = fsd.Grid(dev)
-    row, col = cfg[1], cfg[0]
-    table = dev.shortval[dev.grid[row][col]][f"IOLOGIC{side}"]
-    field = set().union(*({tuple(f) for f in v} for v in table.values()))
-    if args.outside_lane:
-        from apycula import attrids
-        fclksel = {v for k, v in attrids.iologic_attrids.items() if k.startswith("FCLKSEL")}
-        lane_fuses = set()
-        for k, v in table.items():
-            if any(i and dev.logicinfo["IOLOGIC"] and
-                   {a for (a, _), n in dev.logicinfo["IOLOGIC"].items() if n == abs(i)} & fclksel
-                   for i in k):
-                lane_fuses |= {tuple(f) for f in v}
-        field -= lane_fuses
-    got = cells.get(cfg, set()) & field
-    vendor = fa.tile_state(dev, grid, fsd.load_matrix(args.vendor), (row, col)) & field
-    ok = got == vendor
-    scope = " outside the lane field" if args.outside_lane else ""
-    report(ok, f"IOLOGIC{side} at X{col}Y{row}{scope}: {len(got)} packer fuses vs {len(vendor)} vendor")
-    if not ok:
-        from apycula import attrids
-        ids = {v: k for k, v in attrids.iologic_attrids.items()}
-        vals = {v: k for k, v in attrids.iologic_attrvals.items()}
-        rev = {v: k for k, v in dev.logicinfo["IOLOGIC"].items()}
-        for label, fuses in (("packer only", got - vendor), ("vendor only", vendor - got)):
-            for f in sorted(fuses):
-                def name(i):
-                    # a negative key is the entry for that attribute's absence
-                    a, b = rev[abs(i)]
-                    return ("NOT " if i < 0 else "") + f"{ids.get(a)}={vals.get(b)}"
-                owners = sorted({" & ".join(name(i) for i in k if i)
-                                 for k, v in table.items() if f in {tuple(t) for t in v}})
-                print(f"        {label} {f}: {owners[:4]}")
+    vendor_m = fsd.load_matrix(args.vendor)
+    from apycula import attrids
+    ids = {v: k for k, v in attrids.iologic_attrids.items()}
+    vals = {v: k for k, v in attrids.iologic_attrvals.items()}
+    rev = {v: k for k, v in dev.logicinfo["IOLOGIC"].items()}
+    fclksel = {v for k, v in attrids.iologic_attrids.items() if k.startswith("FCLKSEL")}
+    for (cfg, side), packed in sorted(sides.items()):
+        row, col = cfg[1], cfg[0]
+        table = dev.shortval[dev.grid[row][col]][f"IOLOGIC{side}"]
+        field = set().union(*({tuple(f) for f in v} for v in table.values()))
+        if args.outside_lane:
+            for k, v in table.items():
+                if any(i and rev[abs(i)][0] in fclksel for i in k):
+                    field -= {tuple(f) for f in v}
+        got = packed & field
+        vendor = fa.tile_state(dev, grid, vendor_m, (row, col)) & field
+        ok = got == vendor
+        scope = " outside the lane field" if args.outside_lane else ""
+        report(ok, f"IOLOGIC{side} at X{col}Y{row}{scope}: {len(got)} packer fuses vs {len(vendor)} vendor")
+        if not ok:
+            def name(i):
+                # a negative key is the entry for that attribute's absence
+                a, b = rev[abs(i)]
+                return ("NOT " if i < 0 else "") + f"{ids.get(a, a)}={vals.get(b, b)}"
+            for label, fuses in (("packer only", got - vendor), ("vendor only", vendor - got)):
+                for f in sorted(fuses):
+                    owners = sorted({" & ".join(name(i) for i in k if i)
+                                     for k, v in table.items() if f in {tuple(t) for t in v}})
+                    print(f"        {label} {f}: {owners[:4]}")
 
     print(f"\n{'All checks passed' if not failures else f'{failures} check(s) failed'}; "
           "no bitstream was written and hardware was not accessed.")

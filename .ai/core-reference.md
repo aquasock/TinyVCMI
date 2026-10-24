@@ -127,6 +127,7 @@ Topic IDs are the `record_id` prefix. An entry reserves a namespace; it does not
 | Which site wires do the DQS ports use? | TOOL | TOOL-007 |
 | Which fuses configure a DQS? | TOOL | TOOL-008 |
 | How are the DQ serializers wired and configured? | TOOL | TOOL-009 |
+| What do lane 0's complete pads add? | TOOL | TOOL-010 |
 | Which sources and licenses constrain reuse? | PROV | PROV-001 |
 
 ---
@@ -159,6 +160,7 @@ TOOL-006: "DQS, OSER8_MEM and IDES8_MEM form one lane complex: TCLK, ICLK, WADDR
 TOOL-007: "The DQS control and status side is tile (81,5): 24 inputs and 13 outputs named, three outputs by route inference; FCLK is an HCLK-lane sink selected by table 58 at (72,0), and DQSIN arrives fuse-free from the pad tile"
 TOOL-008: "Every DQS configuration fuse, parameters and FCLK lane, is in longfuses table 58 of the byte group's config tile, (72,0) for this lane"
 TOOL-009: "Lane 0's OSER8_MEM and IDES8_MEM sit on IOLOGIC A/B of cells (68..79,0); their memory-mode pins are hard-wired and their configuration is named IOLOGIC attributes"
+TOOL-010: "A complete DQ pad's IOLOGIC is the union of its serializers plus three IODELAY fuses; IO standard touches only IOB and the BANK table"
 PROV-001: "Reuse source and interface ideas with their original license boundaries and attribution intact"
 ```
 
@@ -495,6 +497,20 @@ PROV-001: "Reuse source and interface ideas with their original license boundari
     - "Gowin EDA 1.9.11.03 IDE/simlib/gw5a/prim_sim.v, modules OSER8_MEM and IDES8_MEM"
     - "Apicula commit c85ed79, apycula/attrids.py iologic_attrids/attrvals and GW5AST-138C.msgpack.xz IOLOGIC logicinfo"
   verification: "Twenty-one Gowin EDA builds on 2026-10-23 in build/dq_lane and build/dq_lane_b: the proven IDES8_MEM and OSER8_MEM on dq[0] (side A) and dm[0] (side B), four fabric-sourced variants that Gowin refused, three OSER8_MEM parameter variants, and both primitives with FCLK pinned to each HCLK lane. tools/dq_lane_probe.py --check asserts the refusals, the exact decoded attribute set of every built design on its side's cell, every lane design's HCLK chain and no unattributed fuse against the B1 base, and passed. Only dq[0] and dm[0] were built; the other nine lane positions come from the proven pin map, not from builds. No hardware was accessed. Revised 2026-10-23: the nextpnr fork models the ten positions with fuse-free links and packs both primitives; the vendor designs place and route in the open flow with the memory-mode pins on the DQS nets bit for bit, the fabric-sourced shapes fail routing as Gowin refuses them, and per-bit builds confirmed OSER8_MEM.D<i> on IOLOGIC D<i> and IDES8_MEM.Q<i> on IOLOGIC Q<8+i>. Revised again 2026-10-23: the Apicula fork packs both primitives, and tools/dq_pack_check.py finds its IOLOGIC fuses equal to the vendor's on both sides on lane 0, on lane 2 through --fclk-lane, and outside the lane field for every parameter variant; the input's lane-0 selection is FCLKSEL5=HCLK0 and FCLKSEL3=HCLK0 and its lane-2 selection is empty, and both reset muxes must be written at 0 to keep their absence entries clear."
+
+- record_id: TOOL-010
+  topic_id: TOOL
+  title: "Measured GW5AST-138C lane-0 pad shapes"
+  status: VERIFIED
+  verified_date: 2026-10-23
+  statement: "Gowin EDA 1.9.11.03 builds lane 0's proven pad shapes on pin Y4 (dq[0]), Y3/AA3 (strobe) and AA4 (dm[0]). A bidirectional DQ pad, an IOBUF driven by OSER8_MEM Q0/Q1 with its O reaching IDES8_MEM through a static IODELAY, has IOLOGIC fuses equal to the union of the two serializers' plus three for the IODELAY: C_STATIC_DLY and the unnamed attribute 133 at value 118, fuse (11,15) of side A. Gowin also builds the pad without the IODELAY. The ELVDS_IOBUF strobe's IOLOGIC is the plain OSER8_MEM set with WRFCLKSEL=DQSW270 and its complement side is empty; the TBUF DM's is the plain set on side B. LVCMOS33 against SSTL15 changes no IOLOGIC fuse, only the pads' IOB entries and bank 6's longval BANK table in cell (90,0)."
+  consequence: "Nothing beyond the single-serializer model is needed at IOLOGIC level except the IODELAY's unnamed attribute, which the packer now writes by its logicinfo index. The remaining difference between an open-flow lane and the vendor's is IOB and bank configuration for SSTL15 and SSTL15D on bank 6, which is exactly what the packer's DDR3-bank guard refuses; comparing it is part of deciding that guard."
+  sources:
+    - "TinyVCMI tools/dq_pad_probe.py (designs and --check), tools/dq_pack_check.py and tools/fs_attribute.py"
+    - "TinyVCMI docs/ddr3-open-flow.md: Lane 0's complete pads"
+    - "Tang-PSX build/ddr3-vendor/ip/ddr3_memory_interface/ddr3_memory_interface.vo, dq_iobuf_gen, dq_iodelay, dqs_iobuf_gen and dm_obuf_gen instances"
+    - "Tang-PSX gateware/ddr3_vendor/tang_psx_ddr3.cst, SSTL15 and SSTL15D IO_PORT lines"
+  verification: "Six vendor builds on 2026-10-23 in build/dq_pad; tools/dq_pad_probe.py --check asserts every pad's IOLOGIC attributes, the fuse-level union, that SSTL configures only the pad cells and (90,0), and no unattributed fuse against the B1 base, and passed. The open flow places and routes all six, and tools/dq_pack_check.py finds the open packer's IOLOGIC fuses equal to the vendor's outside the lane field for each. Only side A was built with an IODELAY, and the IOB and BANK fuses have not been compared against the open packer. No hardware was accessed."
 
 - record_id: PROV-001
   topic_id: PROV

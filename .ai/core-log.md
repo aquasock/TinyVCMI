@@ -873,3 +873,35 @@ The lane-0 primitives are now modelled and packed offline: the `DDRDLL`, the `DQ
 - User Test: N/A
 
 ---
+
+## 29 COMMIT Unreleased 2026-10-23T18:34:36-07:00
+
+#### Coming From:
+
+Unreleased 7faf17a
+
+#### Purpose:
+
+Measure lane 0's complete pad shapes, the bidirectional DQ, the differential strobe and DM, and bring the open flow into agreement with them.
+
+#### Outcome:
+
+Added `tools/dq_pad_probe.py`, which builds the proven controller's pad shapes on top of the B1 `base`. The DQ pad is an `IOBUF` driven by an `OSER8_MEM` and feeding an `IDES8_MEM` through a static `IODELAY`, the strobe is an `ELVDS_IOBUF` on Y3 and AA3 feeding `DQSIN`, and DM is a `TBUF`. Six Gowin EDA 1.9.11.03 designs built in `build/dq_pad`. Three first attempts were refused for my own constraints, not as findings: `DRIVE` on an input port (`CT1108`) and `LVCMOS33D` on an `ELVDS_IOBUF` (`CT1109`). The bidirectional pad's IOLOGIC fuses are exactly the union of its two serializers plus three for the `IODELAY`, among them the unnamed attribute 133 at value 118. Gowin builds the pad without the `IODELAY` as well. The strobe and DM add only the plain `OSER8_MEM` set, and the IO standard changes no IOLOGIC fuse, only the pads' IOB entries and bank 6's `BANK` table in `(90,0)`. `--check` asserts all of it with no unattributed fuse and passed. The six shapes already place and route in the open flow: the `IODELAY` folds into the `IDES8_MEM` and the strobe becomes a differential IOB pair. `tools/dq_pack_check.py` now compares per IOLOGIC side and found one gap, the attribute 133=118. The Apicula fork's `237b246`, pushed to `aquasock` only, adds it by its `logicinfo` index because `attrids` cannot name it, and with it the packer's IOLOGIC fuses equal the vendor's outside the lane field for every pad. The lane-0 single-serializer checks were rerun and still match exactly. Only side A was built with an `IODELAY`. The SSTL IOB and `BANK` fuses have not been compared against the open packer, because that is the configuration the DDR3-bank guard exists to refuse. The results are in `docs/ddr3-open-flow.md` and the new TOOL-010. No hardware was accessed. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering, and active-log capacity.
+
+#### Next Steps:
+
+Lane 0 is now modelled at IOLOGIC level for every primitive and pad the proven controller uses there. The next step that changes anything is the user's decision on the DDR3-bank guard: comparing the packer's SSTL15 and SSTL15D IOB fuses and bank 6's `BANK` table with the vendor's is the work that decision would open, and it is the last gap before an open-flow lane image. Independently and offline, the router could be taught to keep one clock net on one HCLK lane as the vendor does, and lanes 1 to 3 could be measured the same way lane 0 was. Do not touch the Tang unless the user explicitly changes that instruction.
+
+#### Files Modified:
+
+- docs/ddr3-open-flow.md
+- tools/dq_pack_check.py
+- tools/dq_pad_probe.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: N/A
+- User Test: N/A
+
+---

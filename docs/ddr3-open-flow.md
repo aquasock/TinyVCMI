@@ -918,3 +918,41 @@ pip and its `IOLOGIC_FCLK` attribute, which is what the packer reads. For the
 they are equal outside the lane field. A lane-1 rewrite stops at routing,
 because the chipdb has no `FCLKA <- HCLK21` pip, and a serializer moved off the
 lane is refused by name.
+
+## Lane 0's complete pads
+
+The proven controller builds each lane-0 pad from several primitives at once
+(Tang-PSX `ddr3_memory_interface.vo`). A DQ pad is an `IOBUF` driven by an
+`OSER8_MEM`'s `Q0` and `Q1`, whose `O` reaches the `IDES8_MEM` through a
+static `IODELAY` (`C_STATIC_DLY=5`). The strobe is an `ELVDS_IOBUF` over Y3
+and AA3, driven by the strobe `OSER8_MEM`, whose `O` is `DQS.DQSIN`. DM is a
+`TBUF` driven by an `OSER8_MEM`. All of them use `SSTL15` or `SSTL15D` at
+`BANK_VCCIO=1.5`. `tools/dq_pad_probe.py` builds those shapes on top of the B1
+`base`, the DQ and DM pads in both LVCMOS33 and SSTL15, and checks the result
+with `--check`:
+
+- The bidirectional pad's IOLOGIC carries exactly the union of the two
+  serializers' fuses, which was checked at fuse level, plus three fuses for
+  the `IODELAY`: `C_STATIC_DLY` and the unnamed attribute 133 at value 118.
+  Tristate use through `Q1` and `TX0..TX3` adds nothing. Gowin builds the
+  pad without the `IODELAY` too, so the delay is the controller's choice, not
+  a requirement.
+- The strobe's IOLOGIC is the plain `OSER8_MEM` set with
+  `WRFCLKSEL=DQSW270`, and the complement side's is empty. DM's is the plain
+  set on side B.
+- The IO standard never touches IOLOGIC. Moving from LVCMOS33 to SSTL15
+  changes only the pads' IOB entries and bank 6's `BANK` table in cell
+  `(90,0)`. Every one of those fuses is attributed to a named entry. That is
+  the configuration the packer's DDR3-bank guard protects, and it has not yet
+  been compared against the open packer.
+- Every design's difference from `base` attributes with no unattributed fuse.
+
+In the open flow every shape places and routes with the existing machinery:
+the `IODELAY` folds into the `IDES8_MEM` cell (`IODELAY=IN`, `C_STATIC_DLY`),
+and the strobe pair becomes two IOBs with `DIFF_TYPE=ELVDS_IOBUF`, the A side
+feeding `DQSIN` through its link. `tools/dq_pack_check.py`, now comparing per
+IOLOGIC side so that two serializers can share one, finds the packer's
+IOLOGIC fuses equal to the vendor's outside the lane field for all of them.
+That needed one packer addition: the IODELAY-fed `IDES8_MEM`'s attribute
+133=118, which `attrids` cannot name and which is therefore added by its
+`logicinfo` index. Only side A was built with an `IODELAY`.
