@@ -1367,3 +1367,46 @@ Step 3, approved by the user: release the DDR3 device from reset and read the MP
 - User Test: N/A
 
 ---
+## 44 COMMIT Unreleased 2026-10-24T10:03:27-07:00
+
+#### Coming From:
+
+Unreleased 52c6e55
+
+#### Purpose:
+
+Take the DDR3 device out of reset for the first time and read its MPR pattern back through the open-flow PHY, with nothing written, as step 3 of the approved path to working DDR3.
+
+#### Outcome:
+
+Committed with `d69c764` to the Apicula fork's `epic/gw5ast138c` and `a0935e6b` to the nextpnr fork's, both pushed to the `aquasock` remotes only. Two measurements came first. `tools/pll_enclk_probe.py` found the PLL's output enables, which neither fork modelled, on wires `B6` (`ENCLK0`) and `B4` (`ENCLK2`) of tile (27,4), routed inputs that a register or VCC reaches by a pip with no PLL fuse moving, and rows 183 and 185 of the vendor `.dat`'s `PllIn` table, whose rows 183 to 189 run `B6` to `B0`; Apicula now builds `ENCLK0` to `ENCLK6` from those rows for this device, after a rebuild of the untouched database reproduced its recorded digest `4b257561`, and nextpnr still drops a high tie, or a low tie on an unused output, so the DDRDLL liveness and open-flow smoke images rebuild to their earlier digests and the step-2 bring-up image to equal tables with one ground-net tie broken differently at X93Y27. `tools/vendor_memsync_trace.py` cut the vendor IP's 106-cell `ddr_sync` block out of its post-route netlist and simulated it with Gowin's models: the DLL reset releases at the IP reset's release, then 16392 clocks after DLL `LOCK` the PHY raises `HOLD`, pulses `UPDNCNTL`, drops `HOLD`, stops the memory clock through `ENCLK2`, pulses the `CLKDIV` and lane reset with the clock stopped, restarts it and is ready, which step 2 had not done. `fpga/ddr3_mpr` follows that order, runs the JEDEC power-up at DDR3-800, enables MPR and streams reads, with every lane serializer in tristate and ODT low; `tools/build_ddr3_mpr.sh` gated it with a command-decoding simulation, a counter testbench, nextpnr timing (`PCLK` 115 MHz) and the exact-lane table check, all 306 tables equal to its Gowin build. A first `iverilog` failure turned out to be OSS CAD Suite's stricter build rejecting a use-before-declaration the system one accepted, and the build scripts could not overwrite Gowin's read-only `.bin`; both were fixed, the second in the step-2 script too. On the Tang both the vendor control, SHA-256 `cfa1705832ca47d4f2006a9afbadfc42d72cf3fca5e448327672f148d9712b59`, and the open-flow image, SHA-256 `bfced70834f9f7dbf59435c1b732b43487216fb5aaa69c6bb67ab76f036d9a5a`, initialized the device and read `0xAA` on all 32 DQ in 65535 of 65535 cycles on every lane at every `RCLKSEL` with `RVALID` high, after a first load whose counter read 0 because a fully matching 65536-cycle window overflowed it. With reads off the deserializers hold their last word, so liveness was shown by `tools/ddr3_mpr_probe.py` stepping each lane's read delay with `RMOVE`: the lower edges are -8 to -9, -13, -18 to -19 and -22 to -23 steps in the vendor image and -17 to -18, -23, -23 and -27 to -28 in the open-flow image, repeatable within one step, and only lane 3 has an upper edge, at +43 in both. The 4-to-10-step offset is unexplained by any compared table and is recorded as open. The desktop core was reloaded and answered `0x54`. `tools/lane_open_build.py --pack` passed 246 of 246 designs and 224 of 224 packer checks on the new forks, the Apicula suite fails the same 58 pre-existing tests by name with thirteen of its own new tests passing, and the nextpnr generator checks pass. `docs/ddr3-open-flow.md` gained the cycle, TOOL-019 and TOOL-020 were added and TOOL-005 revised. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering and active-log capacity.
+
+#### Next Steps:
+
+Step 4, approved by the user: write leveling, writes and read-back. The image `fpga/ddr3_write` and its tools are built and gated offline -- simulation, timing and all 306 tables equal to the vendor build -- but not committed, because the user asked that the Tang not be touched; its board session waits for the user's go-ahead, and it is committed with that session's result. After writes come read calibration for real reads (gating, per-lane centering, word alignment, and the edge offset above), then a controller, likely LiteDRAM's over this PHY, then the AE350 port. The `D108` unused-pin contradiction and the `is_mipi` bug outside the DDR context remain open.
+
+#### Files Modified:
+
+- docs/ddr3-open-flow.md
+- fpga/ddr3_mpr/mpr_core.v
+- fpga/ddr3_mpr/top.v
+- fpga/ddr3_mpr/top.cst
+- fpga/ddr3_mpr/open.sdc
+- fpga/ddr3_mpr/vendor.sdc
+- fpga/ddr3_mpr/tb_mpr.v
+- fpga/ddr3_mpr/tb_mpr_count.v
+- tools/ddr3_mpr.py
+- tools/build_ddr3_mpr.sh
+- tools/sim_ddr3_mpr.sh
+- tools/ddr3_mpr_probe.py
+- tools/pll_enclk_probe.py
+- tools/vendor_memsync_trace.py
+- tools/build_ddr3_phy_bringup.sh
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: N/A
+
+---

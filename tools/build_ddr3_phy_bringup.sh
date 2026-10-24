@@ -83,7 +83,8 @@ echo "[6/6] image against the vendor build, lanes exact"
 "$oss_suite/py3bin/python3" "$root/tools/fs2bin.py" "$out/bringup.fs" "$out/bringup.bin"
 # Gowin writes the raw image itself (bit_compress 0); it is the .fs packed
 # eight bits to a byte, so the vendor control needs no conversion
-cp "$vendor/impl/pnr/probe.bin" "$out/../vendor_control.bin"
+# (Gowin writes it read-only, so it is installed rather than copied)
+install -m 0644 "$vendor/impl/pnr/probe.bin" "$out/../vendor_control.bin"
 sha256sum "$out/bringup.fs" "$out/bringup.bin" "$out/../vendor_control.bin"
 echo "Bring-up images written: $out/bringup.bin (open flow), $out/../vendor_control.bin (vendor)"
 echo "Hardware was not accessed."

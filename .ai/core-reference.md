@@ -136,6 +136,8 @@ Topic IDs are the `record_id` prefix. An entry reserves a namespace; it does not
 | Does a written open-flow DDR3 image equal the vendor's? | TOOL | TOOL-016 |
 | Which HCLK lanes can a DDR3 lane serializer use, and how are they encoded? | TOOL | TOOL-017 |
 | Does the open-flow DDR3 PHY run on the board, and what does it need beyond the pad set? | TOOL | TOOL-018 |
+| How does the proven PHY start up, and how is its memory clock stopped? | TOOL | TOOL-019 |
+| Does the open-flow DDR3 read path return the device's data? | TOOL | TOOL-020 |
 | Which sources and licenses constrain reuse? | PROV | PROV-001 |
 
 ---
@@ -177,6 +179,8 @@ TOOL-015: "A DDR3 context is declared only by gowin_pack --ddr3-context with a 7
 TOOL-016: "The open-flow image of the whole DDR3 pad set, written with --ddr3-context, equals the vendor build on all 306 DDR3 tables, the DDRDLL's four unattributed vendor defaults included"
 TOOL-017: "DDR3 lane serializers take FCLK from all four HCLK lanes; lanes 1 and 3 are FCLKSEL0/4/5/6/7 sets the open model now writes, with lane-1/3 FCLK pips on the lane cells"
 TOOL-018: "An open-flow DDR3 PHY image equal to its vendor build on all 306 tables ran on the board beside the vendor control: PLL lock, DLL LOCK, STEP 0x2c in both, with the device held in reset"
+TOOL-019: "The vendor PHY waits 16384 clocks after DLL LOCK, updates the DLL under HOLD, then resets CLKDIV and lanes with the memory clock stopped through the PLL's ENCLK, a routed pin at (27,4) B4/B6 the open flow now models"
+TOOL-020: "The open-flow DDR3 PHY initializes the device and reads its MPR pattern on all 32 DQ, every cycle, at every RCLKSEL, with live read-delay edges; its lower edges sit 4 to 10 steps from the vendor build's"
 PROV-001: "Reuse source and interface ideas with their original license boundaries and attribution intact"
 ```
 
@@ -448,7 +452,7 @@ PROV-001: "Reuse source and interface ideas with their original license boundari
   title: "How the hardware-proven vendor DDR3 controller drives the DDRDLL"
   status: VERIFIED
   verified_date: 2026-10-23
-  statement: "The vendor DDR3 IP netlist kept by Tang-PSX places its DDRDLL at DDRDLLM_BL and instantiates it as CLKIN=memory_clk, STOP=the inverse of pll_lock, RESET=dll_rsti, UPDNCNTL=uddcntln, with STEP driving DLLSTEP on all four DQS blocks and also being registered into the 100 MHz domain, with CODESCAL 111, SCAL_EN FALSE, DIV_SEL 0 and DLL_FORCE FALSE. UPDNCNTL is driven by the init state machine rather than held at a level, and STOP reads 0 during normal operation because the LUT1 driving it, n2457_s2 with INIT=2'h1, inverts the active-high pll_lock. dll_rsti and uddcntln are flops on the IP's 50 MHz clk, preset by its reset. The same memory_clk drives the PHY's single CLKDIV, fclkdiv at LEFTSIDE[4] with DIV_MODE 4, whose output is every lane's PCLK, and the bitstream clocks the DLL from that CLKDIV's HCLK lane 0 (DLL0 features 21 and 4) with all four DQS on lane 0. The DQS blocks have no output back to the DLL."
+  statement: "The vendor DDR3 IP netlist kept by Tang-PSX places its DDRDLL at DDRDLLM_BL and instantiates it as CLKIN=memory_clk, STOP=the inverse of pll_lock, RESET=dll_rsti, UPDNCNTL=uddcntln, with STEP driving DLLSTEP on all four DQS blocks and also being registered into the 100 MHz domain, with CODESCAL 111, SCAL_EN FALSE, DIV_SEL 0 and DLL_FORCE FALSE. UPDNCNTL is driven by the init state machine rather than held at a level, and STOP reads 0 during normal operation because the LUT1 driving it, n2457_s2 with INIT=2'h1, inverts the active-high pll_lock. dll_rsti and uddcntln are flops on the IP's 50 MHz clk, preset by its reset. The same memory_clk drives the PHY's single CLKDIV, fclkdiv at LEFTSIDE[4] with DIV_MODE 4, whose output is every lane's PCLK, and the bitstream clocks the DLL from that CLKDIV's HCLK lane 0 (DLL0 features 21 and 4) with all four DQS on lane 0. The DQS blocks have no output back to the DLL. Its start-up order, including the memory-clock stop through the PLL's ENCLK2, is TOOL-019."
   consequence: "This is the reference behaviour for an open-flow PHY: same master site, same four parameters this project packs, and a control sequence rather than static levels. Because the only coupling from DQS to the DLL is one way, an isolated DDRDLL with no PHY around it is not demonstrated to run by this design, which is consistent with this project's STEP readings and means a standalone lock-and-step diagnostic may not be physically meaningful."
   sources:
     - "Tang-PSX build/ddr3-vendor/ip/ddr3_memory_interface/ddr3_memory_interface.vo, DDRDLL instance gw3_top/u_ddr_phy_top/u_dll and the four DQS instances"
@@ -644,6 +648,32 @@ PROV-001: "Reuse source and interface ideas with their original license boundari
     - "aquasock/apicula branch epic/gw5ast138c, apycula/gowin_pack.py _lsr_attrs and get_DDRDLL_fuses; tests/test_ddr3_phy_138c.py"
     - "Gowin EDA 1.9.11.03, IDE/simlib/gw5a/prim_sim.v, modules OSER8_MEM and DQS"
   verification: "The vendor build met timing on all three clocks with no negative slack. The simulation passed against Gowin's primitive models with a stand-in for the empty DQS model. The image check passed every table after the two fixes and failed 67 tables before them. Both images were loaded with tangload and read with three status queries, a restart and two more queries each; the desktop core was reloaded afterwards and answered 0x54. Non-DDR images rebuild to their earlier digests, the DDRDLL liveness image among them, the Apicula suite fails the same 58 pre-existing tests by name, the fork's twelve new packer tests pass and ten of them fail on the previous packer, check_dqs_site.py passes nine of nine and the preflight passes six of six. tools/lane_open_build.py --pack over all four lanes found 246 of 246 designs as expected and 224 of 224 packer checks equal, 55 of them on a rerun after the first run packed against a temporarily stashed packer. No pin was probed and the device was never released from reset."
+
+- record_id: TOOL-019
+  topic_id: TOOL
+  title: "The proven PHY's start-up order and the PLL output enables"
+  status: VERIFIED
+  verified_date: 2026-10-24
+  statement: "The vendor DDR3 IP sequences its PHY in ddr_sync on the 50 MHz board clock. Simulated from the post-route netlist with Gowin's primitive models, it releases the DLL reset at the IP reset's release and the CLKDIV and lane reset (ddr_rst) three clocks later, then waits for DLL LOCK and 16392 clocks more, raises every DQS's HOLD, drives UPDNCNTL low for 4 clocks from +4, drops HOLD at +12, stops the memory clock at +27 (pll_stop low, the PLL's ENCLK2), holds ddr_rst high from +31 to +35 with the clock stopped, restarts the clock at +39 and is ready at +48; the wait counts from LOCK. On the GW5AST-138C PLL at PLL_L[0], ENCLK0 and ENCLK2 are ordinary routed inputs on wires B6 and B4 of tile (27,4): a register or VCC reaches them through a pip and no PLL fuse moves. They are rows 183 and 185 of the vendor .dat's PllIn table, whose rows 183 to 189 run B6 down to B0 in port order."
+  consequence: "An open-flow PHY can follow the proven order exactly, including the clock stop that aligns the CLKDIV with every serializer's gearbox. The Apicula fork builds ENCLK0 to ENCLK6 from the .dat rows for this device and nextpnr routes them when a signal or a low tie on a used output drives them; a high tie, or a low one on an unused output, is still dropped, as every earlier open-flow PLL image ran with the pin undriven. ENCLK1 and ENCLK3 to ENCLK6 are placed from the table, not measured."
+  sources:
+    - "TinyVCMI tools/vendor_memsync_trace.py, tools/pll_enclk_probe.py"
+    - "Tang-PSX build/gate1-ip/ddr3_memory_interface/ddr3_memory_interface.vo, u_ddr_phy_top/ddr_sync, stop_reg and ddr_rsti_reg"
+    - "Gowin EDA 1.9.11.03 IDE/share/device/GW5AST-138C/GW5AST-138C.dat, PllIn rows 183 to 189"
+    - "aquasock/apicula branch epic/gw5ast138c, apycula/chipdb.py _gw5a_pll_extra_inputs; aquasock/nextpnr branch epic/gw5ast138c, himbaechel/uarch/gowin/pack.cc drop_idle_output_enables"
+  verification: "The netlist cut has 106 cells and five inputs; its trace is the same with LOCK 20 us or 100 us after the DLL reset, shifted by the lock time. Four vendor builds in build/pll_enclk were diffed tile by tile. With the ports modelled, the DDRDLL liveness and open-flow smoke images rebuild to their earlier digests and the PHY bring-up image to equal tables, its ground net breaking one routing tie differently at X93Y27."
+
+- record_id: TOOL-020
+  topic_id: TOOL
+  title: "The open-flow DDR3 read path on the board"
+  status: VERIFIED
+  verified_date: 2026-10-24
+  statement: "fpga/ddr3_mpr brings the PHY up in the order of TOOL-019, runs the JEDEC power-up at DDR3-800 (RESET# 200 us after ready, CKE 500 us later, MR2 0x0000, MR3 0x0000, MR1 0x0044, MR0 0x0520, ZQCL), enables MPR with MR3 0x0004 and streams READs to bank 0, never writing. Built by tools/build_ddr3_mpr.sh it equals its Gowin EDA 1.9.11.03 build on all 306 tables with bank-6 lanes exact, and both meet timing. On 2026-10-24 the vendor control (SHA-256 cfa1705832ca47d4f2006a9afbadfc42d72cf3fca5e448327672f148d9712b59) and the open-flow image (SHA-256 bfced70834f9f7dbf59435c1b732b43487216fb5aaa69c6bb67ab76f036d9a5a) each initialized the device and read 0xAA on all 32 DQ in 65535 of 65535 PCLK cycles on every lane at every RCLKSEL from 0 to 7, with RVALID high. Moving each lane's read delay down from its default with RMOVE, capture first failed at -8 to -9, -13, -18 to -19 and -22 to -23 steps in the vendor image and at -17 to -18, -23, -23 and -27 to -28 in the open-flow image, repeatable within one step; up to +140 only lane 3 failed, at +43 in both, on one DQ bit."
+  consequence: "The open flow's DDR3 read path works on this board: the device obeys the open-flow PHY's commands and every DQ is captured live through the open-flow DQS and IDES8_MEM. The default read delay sits close to the lower edge in both builds, so a controller must calibrate it per lane, and the open-flow image's lower edges are 4 to 10 steps further out than the vendor's although every compared table is equal; the cause, most likely each tool's own memory-clock route from the PLL into the HCLK lane, is unmeasured. Writes, write levelling, refresh and data integrity beyond a fixed pattern remain untested."
+  sources:
+    - "TinyVCMI fpga/ddr3_mpr, tools/ddr3_mpr.py, tools/build_ddr3_mpr.sh, tools/sim_ddr3_mpr.sh, tools/ddr3_mpr_probe.py"
+    - "TinyVCMI docs/ddr3-open-flow.md: MPR read-back"
+  verification: "The simulation decoded every command at every CK edge against Gowin's models and passed, and a separate testbench checks the pattern counter, which on the first load read 0 on every lane because a fully matching 65536-cycle window overflowed it; the window is 65535 cycles since. With reads off the strobes stop and the deserializers hold their last word, so liveness rests on the read-delay edges, not on the count. The desktop core was reloaded afterwards and answered 0x54. tools/lane_open_build.py --pack over all four lanes passed after the PLL change."
 
 - record_id: PROV-001
   topic_id: PROV

@@ -1661,3 +1661,110 @@ model would give 25. The lane status bytes read 0 with the device in reset
 and no read issued, which is what they should read; they are not yet
 evidence that the lanes work. The desktop core was loaded again afterwards
 and answered `0x54`.
+
+## MPR read-back
+
+`fpga/ddr3_mpr` is the first image that takes the DDR3 device out of reset.
+It initializes it, puts it in MPR mode, and streams reads of the pattern MPR
+returns -- `0,1,0,1,0,1,0,1` on every DQ of every burst -- so the read path
+is tested against data the device produces itself. Nothing is ever written,
+no refresh is issued, ODT stays low, and every DQ, DM and strobe serializer
+keeps its `TX` inputs high.
+
+### Two measurements first
+
+**The PLL's output enables.** The proven controller stops its memory clock
+through the PLL's `ENCLK2`, and neither fork modelled `ENCLK`.
+`tools/pll_enclk_probe.py` built `PLL_L[0]` with a `CLKDIV` on the output
+and the enable tied high or driven by a register: `ENCLK0` and `ENCLK2`
+arrive on `B6` and `B4` of tile (27,4) through ordinary pips, VCC when tied
+high, and no PLL fuse moves. Those are rows 183 and 185 of the vendor
+`.dat`'s `PllIn` table, and rows 183 to 189 run `B6` down to `B0` in port
+order, so Apicula now builds `ENCLK0` to `ENCLK6` from them for this device.
+Every open-flow PLL image so far left the pin undriven and its output ran,
+so nextpnr still drops a tie-off that means the same -- high, or low on an
+unused output -- and routes a signal or a low tie on a used output. Existing
+images rebuild unchanged, except that the PHY bring-up's ground net now
+breaks one routing tie differently, at an unrelated tile, with equal tables.
+
+**The vendor's start-up order.** The vendor IP sequences its PHY in
+`ddr_sync`, on the 50 MHz board clock. `tools/vendor_memsync_trace.py` cuts
+those 106 cells, with the `stop_reg` and `ddr_rsti_reg` chains, out of the
+post-route netlist and simulates them with Gowin's models. The order, in
+board-clock cycles:
+
+| When | What |
+|---|---|
+| reset release | DLL reset released; `CLKDIV` and lane reset three cycles later |
+| DLL `LOCK` + 16392 | `HOLD` high on every `DQS` |
+| + 4 | `UPDNCNTL` low for 4 cycles |
+| + 12 | `HOLD` low |
+| + 27 | memory clock stopped |
+| + 31 to + 35 | `CLKDIV` and lane reset, clock stopped |
+| + 39 | clock restarted |
+| + 48 | ready; DDR initialization starts |
+
+The wait counts from `LOCK`, not from PLL lock: a 16384-cycle counter plus
+its synchronizers, the same with `LOCK` at 20 us or 100 us.
+
+### The image
+
+`mpr_core.v` follows that order exactly and then runs the JEDEC power-up at
+DDR3-800 in `PCLK`, one command in the first memory-clock slot of a cycle:
+`RESET#` 200 us after ready, `CKE` 500 us later, MR2 `0x0000`, MR3
+`0x0000`, MR1 `0x0044`, MR0 `0x0520`, ZQCL, MR3 `0x0004` (MPR on), then a
+READ to bank 0 every cycle while reads are on. `CK` is serialized `0,1` per
+clock so it rises mid-slot. The `DQS` read controls -- `READ`, `RCLKSEL`,
+`RLOADN`, `RMOVE`, `RDIR` -- come from the link. Per lane the core counts
+the `PCLK` cycles, out of 65535, in which all eight DQ words are equal and
+`0x55` or `0xAA`, and snapshots the words on request.
+`tools/ddr3_mpr_probe.py` drives the link.
+
+`tools/build_ddr3_mpr.sh` gates it like the bring-up. The simulation
+(`tools/sim_ddr3_mpr.sh`) decodes every command at every `CK` edge and
+asserts the order, the values, the 200 us and 500 us waits, one clock stop
+with the reset inside it, ODT low, and no lane pad driven while `RESET#` is
+high; a second testbench checks the counter alone. The image equals the
+vendor build on all 306 tables, bank-6 lanes exact. Both meet timing:
+nextpnr closes `PCLK` at 115 MHz, Gowin at 120 MHz.
+
+### On the board
+
+Both images were loaded on 2026-10-24, vendor control first:
+
+| Image | Bytes | SHA-256 |
+|---|---:|---|
+| vendor control | 4,330,802 | `cfa1705832ca47d4f2006a9afbadfc42d72cf3fca5e448327672f148d9712b59` |
+| open flow | 4,330,782 | `bfced70834f9f7dbf59435c1b732b43487216fb5aaa69c6bb67ab76f036d9a5a` |
+
+Both initialized the device (`CKE` and `RESET#` high, state reads, `STEP`
+`0x2b`) and, with reads on, **read `0xAA` on all 32 DQ, 65535 of 65535
+cycles on every lane, at every `RCLKSEL` from 0 to 7**, with `RVALID` high.
+Before any read the words were `00`; with reads off the strobes stop
+(`RVALID` 0, pointers frozen on lanes 0 to 2) and the deserializers hold
+their last word, so the pattern count alone cannot tell held data from new.
+The read-delay sweep can: moving each lane's `DQSR90` delay with `RMOVE`
+finds real edges.
+
+| Read delay from default | Lane 0 | Lane 1 | Lane 2 | Lane 3 |
+|---|---:|---:|---:|---:|
+| vendor, down: first imperfect | -8 to -9 | -13 | -18 to -19 | -22 to -23 |
+| vendor, down: first zero | -11 | -16 | -22 to -23 | -26 |
+| open flow, down: first imperfect | -17 to -18 | -23 | -23 | -27 to -28 |
+| open flow, down: first zero | -21 | -26 | -26 to -27 | -32 |
+| both, up to +140: first imperfect | none | none | none | +43 |
+
+Ranges are three runs of the vendor image and two of the open-flow image;
+every figure repeated within one step. Past the lower edge
+each lane comes back clean about one bit time later (lane 0 at -41 in the
+vendor image), the next eye. Lane 3's upper edge is one DQ bit, its second
+word reading `0x2a`.
+
+So the open-flow DDR3 read path works on the board: the device answers the
+open-flow PHY's commands and every DQ is captured live through the open
+flow's `DQS` and `IDES8_MEM`. The lower edges sit 9 to 10 steps further out
+in the open-flow image on lanes 0 and 1 and 4 to 5 on lanes 2 and 3, while
+every compared table is equal. The likeliest difference is the memory
+clock's route from the PLL into the HCLK lane, which each tool picks
+itself; it is not yet measured. The desktop core was loaded again
+afterwards and answered `0x54`.
