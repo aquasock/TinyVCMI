@@ -1,10 +1,11 @@
 `default_nettype none
 
-// Primitive probes for offline toolchain characterization.  None of these tops
-// drives a DDR3 package pin, and only the DQS probe touches one: its DQSIN
-// pad is constrained to Y3, a DDR3 strobe pin, in its own constraint file,
-// because a DQS can only take DQSIN from its own lane's pad (Gowin PR0014).
-// The preflight never packs an image, so nothing reaches the board.
+// Primitive probes for offline toolchain characterization.  The DQS and
+// serializer probes are constrained onto lane 0's DDR3 pins, Y3 and Y4, in
+// constraint files of their own, because a DQS takes DQSIN only from its
+// lane's pad (Gowin PR0014) and a serializer's memory-mode pins only from its
+// lane's DQS (CK2060).  The preflight never packs an image, so nothing reaches
+// the board.
 
 // The DDRDLL probe drives its result from `STEP` and `LOCK`.  `LOCK` leaves
 // the primitive on a dedicated path that reaches the fabric on `Q7` of cell
@@ -102,11 +103,38 @@ module probe_dqs (
                        wflag ^ ^rpoint ^ ^wpoint;
 endmodule
 
+// The serializer probes are lane 0 as the proven controller wires it: a
+// DDRDLL on DLLSTEP, the DQS on Y3, and the serializer on dq[0], Y4.  Its
+// TCLK, ICLK, WADDR and RADDR take only their DQS outputs (Gowin CK2060), so
+// an isolated serializer is not a shape either toolchain should accept.
 module probe_oser8_mem (
     input  wire sys_clk,
     input  wire probe_in,
     output wire probe_out
 );
+    wire [7:0] step;
+    wire [2:0] rpoint;
+    wire [2:0] wpoint;
+    wire dqsr90, dqsw0, dqsw270, rvalid, rburst, rflag, wflag;
+
+    DDRDLL #(
+        .DLL_FORCE("FALSE"), .CODESCAL("111"), .SCAL_EN("FALSE"), .DIV_SEL(1'b0)
+    ) ddrdll (
+        .CLKIN(sys_clk), .STOP(1'b1), .UPDNCNTL(1'b1), .RESET(1'b0), .STEP(step)
+    );
+
+    DQS #(
+        .FIFO_MODE_SEL(1'b0), .RD_PNTR(3'b000), .DQS_MODE("X4"), .HWL("true")
+    ) dqs (
+        .DQSIN(probe_in), .PCLK(sys_clk), .FCLK(sys_clk), .RESET(1'b0),
+        .READ(4'b0000), .RCLKSEL(3'b000), .DLLSTEP(step), .WSTEP(8'h00),
+        .RLOADN(1'b1), .RMOVE(1'b0), .RDIR(1'b0),
+        .WLOADN(1'b1), .WMOVE(1'b0), .WDIR(1'b0), .HOLD(1'b0),
+        .DQSR90(dqsr90), .DQSW0(dqsw0), .DQSW270(dqsw270),
+        .RPOINT(rpoint), .WPOINT(wpoint),
+        .RVALID(rvalid), .RBURST(rburst), .RFLAG(rflag), .WFLAG(wflag)
+    );
+
     wire q1_unused;
 
     OSER8_MEM #(
@@ -114,10 +142,10 @@ module probe_oser8_mem (
         .TCLK_SOURCE("DQSW"),
         .TXCLK_POL(1'b0)
     ) oser (
-        .D0(probe_in), .D1(1'b0), .D2(1'b1), .D3(1'b0),
-        .D4(1'b1), .D5(1'b0), .D6(1'b1), .D7(1'b0),
+        .D0(dqsr90 ^ rvalid), .D1(1'b0), .D2(1'b1), .D3(1'b0),
+        .D4(1'b1), .D5(rburst ^ rflag), .D6(1'b1), .D7(wflag ^ dqsw270),
         .TX0(1'b0), .TX1(1'b0), .TX2(1'b0), .TX3(1'b0),
-        .PCLK(sys_clk), .FCLK(sys_clk), .TCLK(sys_clk), .RESET(1'b0),
+        .PCLK(sys_clk), .FCLK(sys_clk), .TCLK(dqsw0), .RESET(1'b0),
         .Q0(probe_out), .Q1(q1_unused)
     );
 endmodule
@@ -125,18 +153,42 @@ endmodule
 module probe_ides8_mem (
     input  wire sys_clk,
     input  wire probe_in,
+    input  wire dq_in,
     output wire probe_out
 );
+    wire [7:0] step;
+    wire [2:0] rpoint;
+    wire [2:0] wpoint;
+    wire dqsr90, dqsw0, dqsw270, rvalid, rburst, rflag, wflag;
+
+    DDRDLL #(
+        .DLL_FORCE("FALSE"), .CODESCAL("111"), .SCAL_EN("FALSE"), .DIV_SEL(1'b0)
+    ) ddrdll (
+        .CLKIN(sys_clk), .STOP(1'b1), .UPDNCNTL(1'b1), .RESET(1'b0), .STEP(step)
+    );
+
+    DQS #(
+        .FIFO_MODE_SEL(1'b0), .RD_PNTR(3'b000), .DQS_MODE("X4"), .HWL("true")
+    ) dqs (
+        .DQSIN(probe_in), .PCLK(sys_clk), .FCLK(sys_clk), .RESET(1'b0),
+        .READ(4'b0000), .RCLKSEL(3'b000), .DLLSTEP(step), .WSTEP(8'h00),
+        .RLOADN(1'b1), .RMOVE(1'b0), .RDIR(1'b0),
+        .WLOADN(1'b1), .WMOVE(1'b0), .WDIR(1'b0), .HOLD(1'b0),
+        .DQSR90(dqsr90), .DQSW0(dqsw0), .DQSW270(dqsw270),
+        .RPOINT(rpoint), .WPOINT(wpoint),
+        .RVALID(rvalid), .RBURST(rburst), .RFLAG(rflag), .WFLAG(wflag)
+    );
+
     wire [7:0] q;
 
     IDES8_MEM ides (
-        .PCLK(sys_clk), .D(probe_in), .ICLK(sys_clk), .FCLK(sys_clk),
-        .RESET(1'b0), .CALIB(1'b0), .WADDR(3'b000), .RADDR(3'b000),
+        .PCLK(sys_clk), .D(dq_in), .ICLK(dqsr90), .FCLK(sys_clk),
+        .RESET(1'b0), .CALIB(1'b0), .WADDR(wpoint), .RADDR(rpoint),
         .Q0(q[0]), .Q1(q[1]), .Q2(q[2]), .Q3(q[3]),
         .Q4(q[4]), .Q5(q[5]), .Q6(q[6]), .Q7(q[7])
     );
 
-    assign probe_out = ^q;
+    assign probe_out = ^q ^ dqsw0 ^ dqsw270 ^ rvalid ^ rburst ^ rflag ^ wflag;
 endmodule
 
 module probe_iodelay (

@@ -807,3 +807,38 @@ Propose the C2 implementation for approval: in the nextpnr fork, `TCLK`, `ICLK`,
 - User Test: N/A
 
 ---
+
+## 27 COMMIT Unreleased 2026-10-23T18:08:43-07:00
+
+#### Coming From:
+
+Unreleased d85885b
+
+#### Purpose:
+
+Make lane 0's `OSER8_MEM` and `IDES8_MEM` placeable and routable in the open flow, which is C2a of the approved serializer implementation.
+
+#### Outcome:
+
+Committed `bc3a07b9` to the nextpnr fork's `epic/gw5ast138c` and pushed it to the `aquasock` remote only; it is the first C++ change of this work, and the binary and chipdb were rebuilt with the previous binary kept in the session scratchpad. The ten lane-0 IOLOGIC positions carry `ICLK`, `WADDR[0:2]`, `RADDR[0:2]`, `TCLK_DQSW0` and `TCLK_DQSW270` on pin-only wires joined to their `DQS` outputs by fuse-free links, and the six lane cells are marked so these pins reach none of the 36 other cells of their type. The proposal said eleven positions; the strobe complement on AA3 carries no serializer, so it is ten. `TCLK` became one pin per source, chosen by renaming the port from `TCLK_SOURCE` in the cell packer, which refuses any other value. The packer takes both primitives like `OSER8` and `IDES8`, with `OUTMODE=MODDRX4` and `INMODE=MIDDRX4` and without the aux cell, after a further sixteen vendor builds measured the bit order: `OSER8_MEM.D<i>` uses IOLOGIC `D<i>` and `IDES8_MEM.Q<i>` uses IOLOGIC `Q<8+i>`, as `OSER8` and `IDES8` do. The C1 vendor designs place and route in the open flow on both sides of `(77,0)`, with the memory-mode pins on the `DQS` nets bit for bit and `FCLK` on lane 0 for the `DQS` and the serializer. The fabric-sourced shapes Gowin refuses fail routing at the link's `DQS` output wire, and an invalid `TCLK_SOURCE` fails in the packer. The preflight's serializer probes are now lane-0 designs with their own constraint files, and the preflight reports all six primitives PASS. `tests/check_dqs_site.py` gained a lane-0 check and passes all six, `check_internal_net.py` and `check_arch_gen_deterministic.py` pass, and `check_constids_append_only.py` shows only its earlier failure, the new constids being appended. No serializer is packed yet and no hardware was accessed. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering, and active-log capacity.
+
+#### Next Steps:
+
+Implement C2b in the Apicula fork: `get_OSER8_MEM_fuses` and `get_IDES8_MEM_fuses` through the existing IOLOGIC attribute path, writing the TOOL-009 attribute sets and refusing any position outside the ten, and accept them with an in-process check like `tools/dqs_pack_check.py` that requires the IOLOGIC fuses to equal the vendor's `ides_lane0` and `oser_lane0` builds on both sides. Do not touch the Tang unless the user explicitly changes that instruction.
+
+#### Files Modified:
+
+- docs/ddr3-open-flow.md
+- fpga/ddr3_phy_probe/ddr3_phy_probe.sv
+- fpga/ddr3_phy_probe/ddr3_phy_probe_ides8_mem.cst
+- fpga/ddr3_phy_probe/ddr3_phy_probe_oser8_mem.cst
+- tools/ddr3_openflow_preflight.sh
+- tools/dq_lane_probe.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: N/A
+- User Test: N/A
+
+---

@@ -19,10 +19,12 @@ declare -A cell=(
     [iodelay]=IODELAY
     [clkdiv]=CLKDIV
 )
-# The DQS probe needs its DQSIN on the lane's own pad; every other probe uses
-# the shared constraints.
+# The DQS and serializer probes need their pads on lane 0 itself; every other
+# probe uses the shared constraints.
 declare -A cst=(
     [dqs]="$src/ddr3_phy_probe_dqs.cst"
+    [oser8_mem]="$src/ddr3_phy_probe_oser8_mem.cst"
+    [ides8_mem]="$src/ddr3_phy_probe_ides8_mem.cst"
 )
 
 printf '%-12s %-10s %-12s\n' PRIMITIVE SYNTHESIS NEXTPNR

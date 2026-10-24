@@ -35,6 +35,12 @@ Two kinds of design are built against those:
     `tools/dqs_param_probe.py` used to put the DQS on lane n.  These read the
     IOLOGIC `FCLKSEL` fields lane by lane.
 
+`ides_q<i>`, `oser_d<i>`
+    One data bit at a time: only `IDES8_MEM.Q<i>` reaches fabric, or only
+    `OSER8_MEM.D<i>` comes from a register with the other seven tied low.
+    The one IOLOGIC wire that bit uses is then the only one routed, which
+    gives the bit order a cell packer must follow.
+
 `Q1` of `OSER8_MEM` (the tristate control) is left unused and the pad is a
 plain output, so the designs stay the smallest lane shape the vendor builds.
 The lane pads are on bank 6.  Nothing here packs an open-flow image or
@@ -101,6 +107,9 @@ DESIGNS = {
 for _n in range(4):
     DESIGNS[f"ides_lane{_n}"] = ("ides", {}, _n)
     DESIGNS[f"oser_lane{_n}"] = ("oser", {}, _n)
+for _i in range(8):
+    DESIGNS[f"ides_q{_i}"] = ("ides", {"QBIT": str(_i)}, None)
+    DESIGNS[f"oser_d{_i}"] = ("oser", {"DBIT": str(_i)}, None)
 PROVEN = {"ICLK": "r90", "WADDR": "wp", "RADDR": "rp", "TCLK": "w0", "PCLK": "clk",
           "HWL": '"false"', "TCLK_SOURCE": '"DQSW"', "TXCLK_POL": "1'b0"}
 
@@ -217,7 +226,12 @@ def render(kind: str, overrides: dict, fclk_lane=None) -> str:
         body = body.replace(f"@{port}@", overrides.get(port, source))
     text = text.replace("    assign unused = 1'b0;", body + "    assign unused = 1'b0;")
     if kind == "ides":
-        text = text.replace("^ sig_r ^ sig_s ^ ^step;", "^ sig_r ^ sig_s ^ ^step ^ ^dq_q;")
+        used = f"dq_q[{overrides['QBIT']}]" if "QBIT" in overrides else "^dq_q"
+        text = text.replace("^ sig_r ^ sig_s ^ ^step;", f"^ sig_r ^ sig_s ^ ^step ^ {used};")
+    if "DBIT" in overrides:
+        i = int(overrides["DBIT"])
+        for j in range(8):
+            text = text.replace(f".D{j}(dq_d[{j}])", f".D{j}(sig_r)" if j == i else f".D{j}(1'b0)")
     return text
 
 

@@ -861,3 +861,37 @@ memory clock lane, and the open router already puts the `DQS` on lane 0.
 `tools/dq_lane_probe.py --check` asserts the refusals, the attribute set of
 every built design on both sides, the lane chains and the absence of
 unattributed fuses, and passes on all 21 builds.
+
+### Open-flow placement and routing
+
+The nextpnr fork (aquasock/nextpnr `epic/gw5ast138c`) now models the lane-0
+serializers:
+
+- The ten lane-0 IOLOGIC positions -- the strobe on Y3 and `dq[7:0]` and
+  `dm[0]` -- carry `ICLK`, `WADDR[0:2]` and `RADDR[0:2]` on their input bel and
+  `TCLK_DQSW0` and `TCLK_DQSW270` on their output bel. Each pin sits on a
+  wire of its own, joined to its `DQS` output by the same fuse-free links as
+  `DLLSTEP`, so there is no pip and nothing for the packer to encode. The six
+  lane cells are marked so these pins reach none of the 36 other cells of
+  their chipdb type. The AA3 position, the strobe's complement, carries no
+  serializer.
+- `TCLK` is one bel pin per source because `TCLK_SOURCE` chooses between
+  `DQSW0` and `DQSW270`: the cell packer renames the port onto the pin the
+  parameter names and refuses any other value.
+- `OSER8_MEM` and `IDES8_MEM` pack like `OSER8` and `IDES8`, with
+  `OUTMODE=MODDRX4` and `INMODE=MIDDRX4`, and without the aux cell those get,
+  because the vendor puts an independent serializer on each side of a lane
+  cell. Per-bit builds confirmed the bit order: `OSER8_MEM.D<i>` uses IOLOGIC
+  `D<i>` and `IDES8_MEM.Q<i>` uses IOLOGIC `Q<8+i>`, the same as `OSER8` and
+  `IDES8` on this die.
+
+The C1 vendor designs place and route in the open flow on both sides of
+`(77,0)`. `ICLK`, `WADDR`, `RADDR` and the chosen `TCLK` pin land on the same
+nets as `DQSR90`, `WPOINT`, `RPOINT` and `DQSW0` or `DQSW270`, bit for bit, and
+the `DQS` and the serializer share `FCLK` on lane 0. The open flow also
+refuses what Gowin refuses: the `fab_*` designs fail routing at the `DQS`
+output wire the link starts from, and `TCLK_SOURCE="DQSW90"` fails in the
+packer. The preflight's serializer probes are now lane-0 designs with their
+own constraint files, and `tools/ddr3_openflow_preflight.sh` reports all six
+primitives PASS, with no place-and-route gap. Nothing here packs a serializer
+yet; the Apicula side is the next increment.

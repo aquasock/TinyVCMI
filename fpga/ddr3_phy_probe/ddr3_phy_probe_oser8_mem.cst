@@ -1,0 +1,13 @@
+// probe_oser8_mem only.  Lane 0 as the proven controller places it: the DQS pad on
+// Y3 and the serializer on dq[0], Y4, both DDR3 pins.  Offline place-and-route
+// only: the preflight never packs or loads this design.
+IO_LOC "sys_clk" V22;
+IO_PORT "sys_clk" IO_TYPE=LVCMOS33 PULL_MODE=NONE;
+
+IO_LOC "probe_in" Y3;
+IO_PORT "probe_in" IO_TYPE=LVCMOS33 PULL_MODE=NONE;
+
+IO_LOC "probe_out" Y4;
+IO_PORT "probe_out" IO_TYPE=LVCMOS33 PULL_MODE=NONE;
+
+INS_LOC "ddrdll" DDRDLLM_BL;
