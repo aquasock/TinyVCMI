@@ -421,6 +421,14 @@ measurement, and the configuration bits, already measured. What is missing is
 only the routed-pin names, and the probe framework now in `tools` is what
 produces them.
 
+**Correction.** The two subsections above are superseded. Decoded by exact mux
+state with `tools/fs_attribute.py`, every one of the 102 bits is routing: the
+`HOLD` pair's eight bits are the `B3` input mux choosing `VCC` through `W240`
+against `GND` through `X04`, and the `RESET` pair's 66 are every site input
+re-choosing its constant source. They are not configuration, and tile `(81,5)`
+holds no `DQS` configuration at all; that lives in longfuses table 58 of the
+byte group's config tile, recorded under "DQS configuration" below.
+
 ## Internal paths
 
 The chip database now has a first-class way to state a link the silicon
@@ -621,9 +629,10 @@ configuration table:
 
 The keys form two identical two-bit fields, `(37, 38, 39)` over `(20,56)` and
 `(20,108)` and `(40, 41, 42)` over `(20,53)` and `(20,107)`, each holding the
-lane number in binary. That predicts lane 1 at keys 37 and 40 and lane 0 as no
-fuse at all, indistinguishable from an unclocked block; lanes 0 and 1 are not
-measured. This selector is separate from the ordinary IOLOGIC `FCLKSEL`
+lane number in binary. Lanes 0 and 1 were then measured by pinning a `CLKDIV`
+on the `FCLK` clock net to `LEFTSIDE[4]` and `LEFTSIDE[5]` (below): lane 1 is
+keys 37 and 40, and lane 0 sets no fuse at all, which reads the same as an
+unclocked block. This selector is separate from the ordinary IOLOGIC `FCLKSEL`
 attributes, whose GW5AST-138C rows can select lanes 0 and 2 only, and the
 vendor put the `DQS` on lane 3.
 
@@ -665,7 +674,7 @@ tap lives outside the site tile.
 ### Shape of the macro
 
 The control and status side of `DQS` is one tile, `(81,5)`: 24 input wires,
-13 output wires, and the constant-selection bits recorded earlier. What makes
+13 output wires, and no configuration. What makes
 it a multi-tile macro is the clock and pad side, and none of the three is an
 ordinary portmap entry. `FCLK` is an HCLK-lane sink whose select fuses live in
 table 58 of the byte group's config tile `(72,0)`, so it needs pips from the
@@ -673,3 +682,41 @@ HCLK lanes carrying those fuses, as IOLOGIC `FCLK` already has. `DQSIN`
 arrives fuse-free from the pad tile `(68,0)`. `DLLSTEP` is an internal net
 from the `DDRDLL`. Those three are the remaining modelling work before the bel
 can be written.
+
+## DQS configuration: longfuses table 58
+
+Every configuration fuse of the `DQS` is in longfuses table 58 of its byte
+group's config tile, `(72,0)` for this lane. `tools/dqs_param_probe.py` builds
+one design per parameter value against a common `base` (the proven
+controller's `FIFO_MODE_SEL=0`, `RD_PNTR=000`, `DQS_MODE="X4"`, `HWL="true"`,
+`FCLK` on the board clock), a design without the `DQS`, and four designs with
+`FCLK` pinned to each HCLK lane; `tools/fs_attribute.py` accounts for every
+changed fuse of each against `base` as routing, global clock, HCLK or a named
+table entry. All fourteen differences have no unattributed fuse, and every
+change outside routing is in table 58 at `(72,0)`. In tile coordinates:
+
+    presence      (20,57) (20,58) (20,59) (20,62) (20,63) (20,68) (20,73) (20,91)
+    FIFO_MODE_SEL 1 = (20,36) (20,67)
+    RD_PNTR       bit 0 = (20,64), bit 1 = (20,49), bit 2 = (20,52)
+    DQS_MODE      X1 = none, X2_DDR2 = (20,79), X2_DDR3 = (20,78),
+                  X4 = (20,78) (20,79), X2_DDR3_EXT = (20,78) (20,90)
+    HWL           true = (20,103)
+    FCLK lane     0 = none, 1 = (20,53) (20,56), 2 = (20,107) (20,108),
+                  3 = all four
+
+The presence fuses are set in every design that has a `DQS` and in none
+without one, across every parameter and lane tried. Every design uses the same
+`DQS` ports, so whether any of the eight depends on which ports are connected
+is not tested. The lane designs pin a `CLKDIV` with
+`INS_LOC "fdiv" LEFTSIDE[4+n]` on the clock net that also drives `FCLK`, its
+divided output on `PCLK`, which is the shape of a DDR3 PHY; `CLKDIV2` and
+`DHCE` refuse that constraint with `CT2001`. Each lane design routes exactly
+that lane's `BETA`, `BUF` and `ALPHA` chain at `(81,0)`.
+
+`tools/dqs_param_probe.py --check` asserts this table on all fifteen builds,
+the lane chains, and the absence of unattributed fuses.
+
+The encoding is recorded for this one byte group. Table 58 exists at 24 cells
+on the die, one per byte group, and its key numbering is shared by every tile
+type that carries it, but whether the fuse coordinates are the same at the
+other 23 has not been checked.

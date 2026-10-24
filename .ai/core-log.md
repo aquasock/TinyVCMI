@@ -679,3 +679,36 @@ Bring the Cycle B design to the user for approval before writing toolchain code:
 - User Test: N/A
 
 ---
+
+## 23 COMMIT Unreleased 2026-10-23T17:08:35-07:00
+
+#### Coming From:
+
+Unreleased dd1f162
+
+#### Purpose:
+
+Measure every DQS configuration fuse and the FCLK lanes that remained unmeasured, so the open packer has nothing left to guess before the DQS bel is implemented.
+
+#### Outcome:
+
+Added `tools/fs_attribute.py`, which accounts for every fuse that differs between two builds as tile routing, global clock, HCLK, a named `shortval`, `longval` or `longfuses` entry, or unattributed, and validated it on the `FCLK` clock pair, where it attributed all 367 changed fuses. Added `tools/dqs_param_probe.py`, which built fifteen Gowin EDA 1.9.11.03 designs in `build/dqs_b1`: a base with the proven controller's `DQS` parameters, nine single-parameter variants, a design without the `DQS`, and four designs pinning `FCLK` to HCLK lanes 0 to 3. Lane pinning needed a change of approach: `CLKDIV2` and `DHCE` refuse `INS_LOC LEFTSIDE[n]` with `CT2001`, so each lane design pins a `CLKDIV` on the clock net that also drives `FCLK` and feeds `PCLK` from its output, which is the shape of a DDR3 PHY. Every difference from the base attributed with no unattributed fuse, and every change outside routing fell in longfuses table 58 of `(72,0)`: eight presence fuses, two for `FIFO_MODE_SEL`, one per `RD_PNTR` bit, three that encode the five `DQS_MODE` values, one for `HWL`, and the lane field, where lane 1 is keys 37 and 40 and lane 0 sets nothing, confirming the reading in entry 22. The same attribution showed that tile `(81,5)` holds no `DQS` configuration and that the per-port constant bits recorded in entry 18 are input-mux routing, so that reading is withdrawn. `tools/dqs_param_probe.py --check` asserts the whole encoding, the lane chains and the absence of unattributed fuses on all fifteen builds and passed at 1.43 GB peak memory. Separately, the chipdb confirmed that the planned dedicated paths have single drivers: `F6` at `(68,0)` is driven only by `IOBA.O`, `Q0` to `Q7` at `(108,1)` carry no bel pin besides the fork's `DDRDLL`, and the `LOCK` tap `Q7` at `(99,1)` has no bel driver. The encoding is in `docs/ddr3-open-flow.md` and the new TOOL-008, with TOOL-007 revised. Two limits are recorded rather than closed: the presence fuses were tested with one set of connected ports only, and the encoding is measured at one of the 24 byte groups. No hardware was accessed. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering, and active-log capacity.
+
+#### Next Steps:
+
+Propose B2 for approval and then implement it offline: in the nextpnr fork, the dedicated-tap mechanism that joins pip-less wires across tiles into one node with a single fuse-free entry pip where the source already drives a fabric wire, covering `DQSIN` from `F6` at `(68,0)`, `DLLSTEP[0:7]` from `Q0` to `Q7` at `(108,1)` and the `DDRDLL` `LOCK` escape onto `Q7` at `(99,1)`, plus one `DQS` bel at `(81,5)` from TOOL-007 and `FCLK` pips from the four HCLK lanes of block 2; in the Apicula fork, `DQS` packing from TOOL-008 and no fuses for the tap pips. Acceptance is the preflight moving `DQS` from GAP to PASS and the open-flow probe matching the vendor build fuse for fuse in table 58 at `(72,0)`. Continue offline and do not touch the Tang unless the user explicitly changes that instruction.
+
+#### Files Modified:
+
+- docs/ddr3-open-flow.md
+- tools/dqs_map_check.py
+- tools/dqs_param_probe.py
+- tools/fs_attribute.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: N/A
+- User Test: N/A
+
+---

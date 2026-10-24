@@ -117,9 +117,10 @@ OUTPUTS = {
 HCLK_BLOCK = (81, 0)
 BYTE_GROUP = (72, 0)
 
-#: lane -> the two table-58 keys whose fuses select it.  Lanes 2 and 3 are
-#: measured; the keys run (37, 38, 39) and (40, 41, 42) as two 2-bit fields,
-#: which predicts lane 1 at keys 37 and 40 and lane 0 as no fuse at all.
+#: lane -> the two table-58 keys whose fuses select it.  The keys run
+#: (37, 38, 39) and (40, 41, 42) as two 2-bit fields holding the lane number;
+#: lane 1 is keys 37 and 40 and lane 0 is no fuse, both measured by
+#: `tools/dqs_param_probe.py`'s pinned-lane designs.
 FCLK_LANE_KEYS = {2: ((38,), (41,)), 3: ((39,), (42,))}
 
 #: (pair, reference, target, lane in reference or None, lane in target)
