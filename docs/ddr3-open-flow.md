@@ -1116,5 +1116,54 @@ lanes 1, 2 and 3, the `DQS` follows its `CLKDIV` in every lane. As on lane 0,
 an IOLOGIC `FCLK` pinned to lane 1 or 3 stays on lane 0 with the router's
 split warning, because the database offers IOLOGIC lanes 0 and 2 only. The
 lane-0 packer checks were rerun on the new netlists and still match the
-vendor. Apicula still packs only lane 0's `DQS` and positions, so this is
-placement and routing, not packing, for lanes 1 to 3.
+vendor.
+
+### Packing four lanes
+
+Apicula (aquasock/apicula `epic/gw5ast138c`) now packs all four lanes.
+`get_DQS_fuses` maps each site to its byte group's cell, `X0Y72`, `X0Y99`,
+`X0Y90` and `X0Y63`. It holds the encoding as table-58 keys rather than
+coordinates:
+
+    presence      11 12 17 18 21 22 23 29
+    FIFO_MODE_SEL=1          10 19
+    RD_PNTR bits 0, 1, 2     13 14 15
+    DQS_MODE  X1 none, X2_DDR2 31 35, X2_DDR3 32, X4 36, X2_DDR3_EXT 33 34
+    HWL=true                 30
+    FCLK lane 0 none, 1: 37 40, 2: 38 41, 3: 39 42
+
+It resolves each key through the cell's own table. All 26 keys exist in all
+four cell types. Type 64 places them on row 20, and 257, 259 and 270 share
+one other layout. Lane 0's fuses are unchanged. The serializer position check
+covers the forty positions of `DQS_LANES`.
+
+`tools/dqs_pack_check.py --lane N` checks a lane at its byte group. It moves
+the recorded lane-0 encoding to that cell by key, with the same helper,
+`at_byte_group` in `tools/dqs_param_probe.py`, that
+`tools/dqs_param_probe.py --check` now uses (still 15 of 15 per lane). A check
+of a lane-1 design against lane 0's byte group fails, as it should.
+`tools/dq_pack_check.py` reads the serializer's cell from its bel and needed
+no lane option.
+
+`tools/lane_open_build.py --pack` runs both checks on every routed design
+against its own vendor bitstream. On all four lanes, 188 packer checks pass:
+
+- 56 `DQS` designs pass by table key at their lane's byte group. The four
+  lane-pinned designs per lane match the vendor exactly. The other ten match
+  outside the lane field, because the vendor carries the board clock on lane
+  3 while the open router takes lane 0. All 56 also equal the recorded
+  encoding, lane field included.
+- 18 serializer designs match exactly. These are the `*_lane0` and
+  `*_lane2` designs of all four DDR3 lanes, whose clock rides HCLK lane 0 or
+  2, the IOLOGIC lanes the model spells.
+- 114 other serializer and pad designs match outside the lane field.
+
+There is nothing to compare for `no_dqs`. There is also nothing for
+`dq_pad`'s `dqs_lvcmos`, which Gowin refused for `LVCMOS33D` on an
+`ELVDS_IOBUF` (`CT1109`) and which the open flow places and routes. The full
+run takes about 14 minutes and never holds more than two vendor bitstreams.
+
+All four lanes are now modelled at the same level as lane 0: placed, routed
+and packed in-process to the vendor's fuses. What remains before an open-flow
+lane image is the DDR3-bank guard and the SSTL15 and SSTL15D IOB and BANK
+comparison it would open.

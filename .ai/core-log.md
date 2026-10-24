@@ -1065,3 +1065,36 @@ Implement D2b in the Apicula fork: have `get_DQS_fuses` map each of the four sit
 - User Test: N/A
 
 ---
+
+## 35 COMMIT Unreleased 2026-10-23T22:16:39-07:00
+
+#### Coming From:
+
+Unreleased b2cad29
+
+#### Purpose:
+
+Pack the DQS and memory serializers of all four DDR3 lanes in the open flow and accept them against the vendor's fuses, which is D2b of the approved four-lane implementation.
+
+#### Outcome:
+
+Committed `c54d6ba` to the Apicula fork's `epic/gw5ast138c` and pushed it to the `aquasock` remote only. `get_DQS_fuses` now maps the four sites to their byte-group cells `X0Y72`, `X0Y99`, `X0Y90` and `X0Y63` and holds the TOOL-008 encoding as table-58 keys resolved through each cell's own table, because the four cell types put the same 26 keys at two different coordinate layouts; all 26 exist in every type, a missing key is refused, and lane 0's fuses are unchanged. The `OSER8_MEM` and `IDES8_MEM` position check covers the forty positions of all four lanes. On the TinyVCMI side the key translation moved into `at_byte_group` in `tools/dqs_param_probe.py`, whose `--check` still passes 15 of 15 on lanes 0 and 2 at 1.43 GB peak; `tools/dqs_pack_check.py` gained `--lane N` using the same helper, and a lane-1 design checked against lane 0's byte group fails as it should; `tools/dq_pack_check.py` needed no change because it reads the serializer's cell from its bel. `tools/lane_open_build.py --pack` runs both checks on every routed design against its own vendor bitstream, and across the four lanes 188 checks passed. All 56 `DQS` designs equal the recorded encoding by key, lane field included, and equal the vendor exactly on the 16 lane-pinned designs and outside the lane field on the rest, where the vendor put the board clock on lane 3 and the open router on lane 0. The 18 serializer designs clocked on HCLK lane 0 or 2 match exactly, and the other 114 match outside the lane field. The first full run reported one failure, a crash on `dq_pad`'s `dqs_lvcmos`, which has no vendor bitstream because Gowin refused it with `CT1109`; the tool now skips a design without one and the `dq_pad` rerun passed. The run took about 14 minutes with no more than two vendor bitstreams held at once. Apicula's `tests/test_io_iologic_138c.py` fails only `test_io2hclk_places_the_vendor_oser4_cell_in_block_one`, which asserts four IOLOGIC lanes from the unchanged chipdb that offers two. No image was written, the DDR3-bank guard is unchanged, and no hardware was accessed. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering, and active-log capacity.
+
+#### Next Steps:
+
+All four lanes are now placed, routed and packed in-process to the vendor's fuses, so the next change that matters is the user's decision on the DDR3-bank guard: either a declared DDR context for designs that legitimately own banks 6 and 7, with the SSTL15 and SSTL15D IOB entries and bank 6 and 7 `BANK` tables then compared against the vendor, or a different first image. Independently and offline, the IOLOGIC `FCLK` model still reaches HCLK lanes 0 and 2 only, and the six unexplained `DDRDLL` corner bits and the other three `DDRDLL` masters remain unmeasured. Do not touch the Tang unless the user explicitly changes that instruction.
+
+#### Files Modified:
+
+- docs/ddr3-open-flow.md
+- tools/dqs_pack_check.py
+- tools/dqs_param_probe.py
+- tools/lane_open_build.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: N/A
+- User Test: N/A
+
+---

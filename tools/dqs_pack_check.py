@@ -18,14 +18,20 @@ It then requires that the table-58 fuses the packer emits equal both
   different HCLK lanes, everything outside the lane field must agree and each
   lane field must read as a lane.
 
+`--lane N` names the DDR3 lane whose DQS the design carries.  The packer must
+then write only that lane's byte-group cell (TOOL-011), and the recorded
+encoding is compared by table-58 key: lane 0's fuses are moved to the lane's
+cell through the keys they select there (TOOL-012).
+
 `--fclk-lane N` tests the packer's lane encoding rather than the router: the
-open router puts `FCLK` on lane 0 even when a pinned `CLKDIV` holds the same
-net on another lane, so this option rewrites the netlist's one
-`X5Y81/DQS_FCLK/HCLK2<m>` pip to lane N, in memory, before packing.
+open router used to put `FCLK` on lane 0 even when a pinned `CLKDIV` held the
+same net on another lane, so this option rewrites the netlist's one
+`DQS_FCLK/HCLK2<m>` pip to lane N, in memory, before packing.
 
 Usage:
     tools/dqs_pack_check.py ROUTED.json --vendor build/dqs_b1/lane0/impl/pnr/probe.fs
     tools/dqs_pack_check.py ROUTED.json --vendor build/dqs_b1/lane2/impl/pnr/probe.fs --fclk-lane 2
+    tools/dqs_pack_check.py ROUTED.json --vendor build/dqs_b1_l3/base/impl/pnr/probe.fs --lane 3
 
 Run it with the open-flow environment sourced (`tools/openflow_env.sh`).
 """
@@ -46,10 +52,10 @@ def with_fclk_lane(routed: str, lane: int) -> str:
     """A temporary copy of `routed` whose DQS FCLK pip names lane `lane`."""
     with open(routed) as f:
         text = f.read()
-    pips = re.findall(r"X5Y81/DQS_FCLK/HCLK2[0-3]", text)
+    pips = re.findall(r"X\d+Y\d+/DQS_FCLK/HCLK2[0-3]", text)
     if len(pips) != 1:
         raise SystemExit(f"expected one DQS FCLK pip in {routed}, found {len(pips)}")
-    text = text.replace(pips[0], f"X5Y81/DQS_FCLK/HCLK2{lane}")
+    text = text.replace(pips[0], pips[0][:-1] + str(lane))
     json.loads(text)
     fd, path = tempfile.mkstemp(suffix=".json")
     with os.fdopen(fd, "w") as f:
@@ -92,6 +98,8 @@ def main() -> int:
                     help="vendor .fs built from the same source")
     ap.add_argument("--fclk-lane", type=int, choices=range(4),
                     help="rewrite the DQS FCLK pip to this lane before packing")
+    ap.add_argument("--lane", type=int, choices=sorted(probe.base.LANES), default=0,
+                    help="DDR3 lane whose DQS the design carries")
     args = ap.parse_args()
 
     routed = args.routed
@@ -106,8 +114,10 @@ def main() -> int:
         print(f"FAIL  expected one DQS cell, found {len(found)}")
         return 1
     name, parms, lane, cells = found[0]
-    y, x = probe.BYTE_GROUP
+    byte_group = probe.base.LANES[args.lane]["byte_group"]
+    y, x = byte_group
     cfg = (x, y)                                     # packer cells are (x, y)
+    dev = fsd.chipdb.load_chipdb(fsd.DB)
     failures = 0
 
     def report(ok, line):
@@ -125,19 +135,20 @@ def main() -> int:
                 "RD_PNTR": f"3'b{params['RD_PNTR'] or '000'}",
                 "DQS_MODE": f'"{params["DQS_MODE"] or "X1"}"',
                 "HWL": f'"{(params["HWL"] or "FALSE").lower()}"'}
-    want = probe.expected_t58(params=as_probe, lane=lane or 0)
-    report(got == want, f"{name}: lane {lane}, {as_probe}: {len(got)} fuses vs recorded "
-                        f"encoding {len(want)}; extra {sorted(got - want)} missing "
-                        f"{sorted(want - got)}")
+    want, _, missing = probe.at_byte_group(
+        dev, byte_group, probe.expected_t58(params=as_probe, lane=lane or 0))
+    report(got == want and not missing,
+           f"{name}: lane {lane}, {as_probe}: {len(got)} fuses vs recorded encoding "
+           f"{len(want)} at X{cfg[0]}Y{cfg[1]}; extra {sorted(got - want)} missing "
+           f"{sorted(want - got)}; keys absent from the cell {sorted(missing)}")
 
-    dev = fsd.chipdb.load_chipdb(fsd.DB)
     grid = fsd.Grid(dev)
-    t58 = dev.longfuses[dev.grid[y][x]]["unknown_58"]
+    t58 = probe.t58_table(dev, byte_group)
     field = set().union(*({tuple(f) for f in v} for v in t58.values()))
-    vendor = fa.tile_state(dev, grid, fsd.load_matrix(args.vendor), probe.BYTE_GROUP) & field
-    lane_field = set().union(*probe.T58_LANE.values())
-    vendor_lane = next((n for n, f in probe.T58_LANE.items()
-                        if f == vendor & lane_field), None)
+    vendor = fa.tile_state(dev, grid, fsd.load_matrix(args.vendor), byte_group) & field
+    lanes = {n: probe.at_byte_group(dev, byte_group, f)[0] for n, f in probe.T58_LANE.items()}
+    lane_field = set().union(*lanes.values())
+    vendor_lane = next((n for n, f in lanes.items() if f == vendor & lane_field), None)
     if vendor_lane == (lane or 0):
         report(got == vendor, f"{name}: open packer vs vendor, both lane {vendor_lane}: "
                               f"extra {sorted(got - vendor)} missing {sorted(vendor - got)}")

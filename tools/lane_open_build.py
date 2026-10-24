@@ -23,6 +23,16 @@ It reports the HCLK lane the router put the DQS's `FCLK` on and any warning
 that a net feeding a DQS `FCLK` was split across lanes.  It writes no image,
 so the packer's DDR3-bank guard is not involved, and it needs no board.
 
+`--pack` then runs the in-process packer checks on every routed design
+against its own vendor bitstream: `tools/dqs_pack_check.py --lane N` for the
+`dqs_b1` designs, by table-58 key at the lane's byte group, and
+`tools/dq_pack_check.py` for every design with a serializer.  A serializer
+design whose clock both routers can carry on one lane -- `*_lane0` and
+`*_lane2`, the IOLOGIC lanes the model spells -- must match exactly; any
+other is compared outside the lane field, since the vendor carried its clock
+on a lane the open model does not offer an IOLOGIC.  Each check holds one
+vendor bitstream, about 1.5 GB, so `--pack-jobs` stays small.
+
 Output goes to `build/open/<vendor directory>/<design>/`, for example
 `build/open/dqs_b1_l2/base/routed.json`.
 
@@ -30,6 +40,7 @@ Usage:
     tools/lane_open_build.py --lane 1
     tools/lane_open_build.py --lane 0 --lane 1 --lane 2 --lane 3 --jobs 4
     tools/lane_open_build.py --lane 3 --sets dq_lane --only ok_oser,fab_tclk
+    tools/lane_open_build.py --lane 2 --pack
 
 Run it with the open-flow environment sourced (`tools/openflow_env.sh`).
 """
@@ -171,6 +182,39 @@ def run_one(job):
     return True, f"PASS  {out}: {detail}"
 
 
+def pack_one(job):
+    """Run the in-process packer check that applies to one routed design."""
+    lane, src, out, name = job
+    routed = os.path.join(out, "routed.json")
+    vendor = os.path.join(src, "impl/pnr/probe.fs")
+    with open(routed) as f:
+        types = {c["type"] for c in json.load(f)["modules"]["top"]["cells"].values()}
+    here = os.path.dirname(os.path.abspath(__file__))
+    tag = out.replace(base.ROOT + "/", "")
+    if not os.path.exists(vendor):
+        # Gowin refused the design, for a reason outside the lane model:
+        # dq_pad's dqs_lvcmos asks for LVCMOS33D on an ELVDS_IOBUF (CT1109)
+        return True, f"skip  {tag}: no vendor bitstream to compare against"
+    if os.path.basename(os.path.dirname(out)).startswith("dqs_b1"):
+        if "DQS" not in types:
+            return True, f"skip  {tag}: no DQS"
+        cmd, mode = [os.path.join(here, "dqs_pack_check.py"), routed, "--vendor", vendor,
+                     "--lane", str(lane)], "by table key"
+    elif types & set(SERIALIZERS):
+        exact = re.search(r"_lane[02]$", name) is not None
+        cmd = [os.path.join(here, "dq_pack_check.py"), routed, "--vendor", vendor]
+        if not exact:
+            cmd.append("--outside-lane")
+        mode = "exactly" if exact else "outside the lane field"
+    else:
+        return True, f"skip  {tag}: nothing to pack"
+    r = subprocess.run([sys.executable] + cmd, capture_output=True, text=True)
+    if r.returncode == 0:
+        return True, f"PASS  {tag}: packer equals vendor {mode}"
+    fails = [l.strip() for l in r.stdout.splitlines() if l.strip().startswith("FAIL")]
+    return False, f"FAIL  {tag}: {mode}; " + " | ".join(fails or [r.stderr.strip()[-300:]])
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -180,6 +224,9 @@ def main() -> int:
                     help="comma-separated subset of " + ",".join(SETS))
     ap.add_argument("--only", help="comma-separated design names")
     ap.add_argument("--jobs", type=int, default=4)
+    ap.add_argument("--pack", action="store_true",
+                    help="also run the in-process packer checks on every routed design")
+    ap.add_argument("--pack-jobs", type=int, default=2)
     args = ap.parse_args()
     for var in ("OSS_CAD_SUITE", "NEXTPNR_HIMBAECHEL", "GOWIN_DEVICE"):
         if var not in os.environ:
@@ -206,11 +253,25 @@ def main() -> int:
         return 2
 
     failures = 0
+    routed = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.jobs) as pool:
-        for passed, line in pool.map(run_one, jobs):
+        for job, (passed, line) in zip(jobs, pool.map(run_one, jobs)):
             print(line.replace(base.ROOT + "/", ""), flush=True)
             failures += not passed
-    print(f"\n{len(jobs) - failures} of {len(jobs)} designs as expected; hardware was not accessed")
+            if passed and not job[3].startswith(("fab_", "bad_")):
+                routed.append(job)
+    print(f"\n{len(jobs) - failures} of {len(jobs)} designs as expected")
+    if args.pack:
+        pack_failures = checked = 0
+        with concurrent.futures.ThreadPoolExecutor(max_workers=args.pack_jobs) as pool:
+            for passed, line in pool.map(pack_one, routed):
+                print(line, flush=True)
+                checked += not line.startswith("skip")
+                pack_failures += not passed
+        print(f"\n{checked - pack_failures} of {checked} packer checks passed; "
+              "no bitstream was written")
+        failures += pack_failures
+    print("Hardware was not accessed.")
     return 1 if failures else 0
 
 

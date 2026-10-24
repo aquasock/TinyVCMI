@@ -158,6 +158,33 @@ def expected_t58(params=None, dqs=True, lane=3) -> set:
     return out
 
 
+def maximal_keys(table, state):
+    """Table keys selected by `state`, excluding keys contained in another."""
+    selected = [(key, {tuple(f) for f in fuses})
+                for key, fuses in table.items()
+                if fuses and {tuple(f) for f in fuses} <= state]
+    return {key for key, fuses in selected
+            if not any(fuses < other for _, other in selected)}
+
+
+def t58_table(dev, byte_group):
+    """Longfuses table 58 of the cell at `byte_group`, `(row, col)`."""
+    return dev.longfuses[dev.grid[byte_group[0]][byte_group[1]]]["unknown_58"]
+
+
+def at_byte_group(dev, byte_group, fuses):
+    """(fuses, keys, missing keys): lane-0 table-58 `fuses`, in the
+    coordinates of `BYTE_GROUP`, moved to `byte_group`'s cell through the
+    table keys they select there.  The byte groups' cell types put the same
+    keys at different coordinates (TOOL-012)."""
+    keys = maximal_keys(t58_table(dev, BYTE_GROUP), fuses)
+    table = t58_table(dev, byte_group)
+    missing = keys - set(table)
+    moved = set().union(*({tuple(f) for f in table[key]} for key in keys)) \
+        if keys and not missing else set()
+    return moved, keys, missing
+
+
 def expectations():
     """name -> (table-58 fuses, HCLK lane or None)"""
     out = {"base": (expected_t58(), None), "no_dqs": (expected_t58(dqs=False), None)}
@@ -218,22 +245,13 @@ def check(out_dir: str, names, lane: int = 0) -> int:
     dev = fsd.chipdb.load_chipdb(fsd.DB)
     grid = fsd.Grid(dev)
     byte_group = base.LANES[lane]["byte_group"]
-    t58 = dev.longfuses[dev.grid[byte_group[0]][byte_group[1]]]["unknown_58"]
+    t58 = t58_table(dev, byte_group)
     field = set().union(*({tuple(f) for f in v} for v in t58.values()))
-    reference_t58 = dev.longfuses[dev.grid[BYTE_GROUP[0]][BYTE_GROUP[1]]]["unknown_58"]
     hclk = dev.hclk_pips[HCLK_BLOCK]
     fs = lambda n: os.path.join(out_dir, n, "impl/pnr/probe.fs")
     expect = expectations()
     base_m = fsd.load_matrix(fs("base"))
     failures = 0
-
-    def maximal_keys(table, state):
-        """Table keys selected by `state`, excluding keys contained in another."""
-        selected = [(key, {tuple(f) for f in fuses})
-                    for key, fuses in table.items()
-                    if fuses and {tuple(f) for f in fuses} <= state]
-        return {key for key, fuses in selected
-                if not any(fuses < other for _, other in selected)}
 
     for name in names:
         if not os.path.exists(fs(name)):
@@ -242,10 +260,7 @@ def check(out_dir: str, names, lane: int = 0) -> int:
             continue
         m = base_m if name == "base" else fsd.load_matrix(fs(name))
         want_reference, fclk_lane = expect[name]
-        want_keys = maximal_keys(reference_t58, want_reference)
-        missing_keys = want_keys - set(t58)
-        want = set().union(*({tuple(f) for f in t58[key]} for key in want_keys)) \
-            if want_keys and not missing_keys else set()
+        want, want_keys, missing_keys = at_byte_group(dev, byte_group, want_reference)
         got = fa.tile_state(dev, grid, m, byte_group) & field
         got_keys = maximal_keys(t58, got)
         ok = not missing_keys and got == want and got_keys == want_keys
