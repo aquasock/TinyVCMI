@@ -110,9 +110,10 @@ encoding cannot be emitted at TR from this database at all.
   table entry is absent at that site.
 - The Himbaechel Gowin arch creates one `DDRDLL` bel at the port tile with the
   four control pins and eight `STEP` pins, and `INS_LOC "<cell>" DDRDLLM_BL`
-  resolves to it through the chipdb's macro table. There is deliberately no
-  `LOCK` pin: a design that uses `LOCK` fails placement with "No wire found for
-  port LOCK" instead of routing a net that reaches nothing.
+  resolves to it through the chipdb's macro table. `LOCK` was at first left
+  without a pin, so that a design using it failed placement instead of
+  routing a net that reached nothing; it now has one, described under
+  "Open-flow DQS and dedicated links" below.
 - `tools/ddr3_openflow_preflight.sh` reports `DDRDLL PASS/PASS`, and packing
   the routed probe writes the measured `CODESCAL=111` bits at the configuration
   cell and none of the three unset parameter bits.
@@ -720,3 +721,45 @@ The encoding is recorded for this one byte group. Table 58 exists at 24 cells
 on the die, one per byte group, and its key numbering is shared by every tile
 type that carries it, but whether the fuse coordinates are the same at the
 other 23 has not been checked.
+
+## Open-flow DQS and dedicated links
+
+The nextpnr fork's chip-database generator now carries the lane pieces that
+the measurements above support, for this one byte group only (aquasock/nextpnr
+`epic/gw5ast138c`, `gowin_arch_gen.py`, gated by
+`tests/check_dqs_site.py`):
+
+- One `DQS` bel at `X5Y81`, the site tile `(81,5)`, with the 24 input and 13
+  output wires of the pin table above. Its chipdb tile type occurs eight times
+  on the die, so the generator gives that one cell an extra-function entry of
+  its own before any tile type is built; without it the deduplication would
+  copy the bel onto seven unmeasured cells.
+- `FCLK` as four pips from the block-2 HCLK lane wires `HCLK20` to `HCLK23`,
+  each lane's node extended to the site. The Apicula database already drives
+  each lane from its `HCLK_MUX_ALPHA2<n>`, so the router can take any lane and
+  the packer has to write that lane into table 58.
+- `DQSIN`, `DLLSTEP[0:7]` and the `DDRDLL`'s `LOCK` as dedicated links: each
+  is one fuse-free node joining the source's own wire to a pin-only wire --
+  `F6` at `(68,0)`, driven only by `IOBA.O` of pin Y3; `Q0` to `Q7` at
+  `(108,1)`, the `STEP` pins; and `Q7` at `(99,1)`, where `LOCK` reaches the
+  fabric. No pip enters any of them, so the router cannot put another net on
+  them and the packer sees nothing to encode. This replaces the tap pips the
+  plan proposed: joining the existing source wire needs no pip at all, and
+  only the `DQS` cell's tile type had to change.
+
+The preflight's `DQS` probe is now the smallest lane the vendor tool accepts --
+a `DDRDLL` on `DLLSTEP` and `DQSIN` on pin Y3 through its own constraint file,
+`fpga/ddr3_phy_probe/ddr3_phy_probe_dqs.cst` -- because the isolated shape it
+used before is one the vendor refuses (`PR0014`, `PR0015`) and a faithful
+model must refuse too. The `DDRDLL` probe now routes `LOCK` as well.
+`tools/ddr3_openflow_preflight.sh` reports `DDRDLL`, `DQS`, `IODELAY` and
+`CLKDIV` as PASS and `OSER8_MEM` and `IDES8_MEM` as GAP. In the routed `DQS`
+probe the `DQS` sits on `X5Y81/DQS`, the pad on `X0Y68/IOBA` and the `DDRDLL`
+on `X1Y108/DDRDLL_BL`, and the clock reaches `FCLK` over lane 0. The `LOCK`
+net leaves through `X1Y99/E820 <- Q7`, which is the same pip the vendor
+bitstream sets when `LOCK` is routed.
+
+Nothing here packs a `DQS` yet: Apicula has no `DQS` packing, so no open-flow
+bitstream containing one exists. That is the next increment, written from the
+table-58 encoding above and accepted only when the open-flow build of the
+`base` lane design matches the vendor build in table 58.

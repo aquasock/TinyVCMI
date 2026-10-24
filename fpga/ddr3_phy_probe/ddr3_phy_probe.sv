@@ -1,21 +1,22 @@
 `default_nettype none
 
-// Isolated primitive probes for offline toolchain characterization. None of
-// these tops exposes or drives a DDR3 package pin.
+// Primitive probes for offline toolchain characterization.  None of these tops
+// drives a DDR3 package pin, and only the DQS probe touches one: its DQSIN
+// pad is constrained to Y3, a DDR3 strobe pin, in its own constraint file,
+// because a DQS can only take DQSIN from its own lane's pad (Gowin PR0014).
+// The preflight never packs an image, so nothing reaches the board.
 
-// The DDRDLL probe drives its result from `STEP`, not from `LOCK`.  `LOCK`
-// leaves the primitive on a dedicated path that reaches the fabric on the
-// row-99 track of column 1 with no configurable bit in between, so the open
-// flow has no honest bel pin for it yet and refuses any design that uses one.
-// Wiring `STEP` instead keeps this probe a real placement and routing test of
-// the pins the toolchain does model; the lock-and-step diagnostic waits for a
-// LOCK model, not for a guess.
+// The DDRDLL probe drives its result from `STEP` and `LOCK`.  `LOCK` leaves
+// the primitive on a dedicated path that reaches the fabric on `Q7` of cell
+// (99,1) with no configurable bit in between; the chip database models that
+// as a fuse-free node, so routing `LOCK` here tests the link.
 module probe_ddrdll (
     input  wire sys_clk,
     input  wire probe_in,
     output wire probe_out
 );
     wire [7:0] step;
+    wire lock;
 
     DDRDLL #(
         .DLL_FORCE("FALSE"),
@@ -27,10 +28,11 @@ module probe_ddrdll (
         .STOP(1'b0),
         .UPDNCNTL(1'b1),
         .RESET(1'b0),
-        .STEP(step)
+        .STEP(step),
+        .LOCK(lock)
     );
 
-    assign probe_out = ^step;
+    assign probe_out = ^step ^ lock;
 endmodule
 
 module probe_dqs (
@@ -47,6 +49,22 @@ module probe_dqs (
     wire rburst;
     wire rflag;
     wire wflag;
+    wire [7:0] step;
+
+    // A DQS does not build without a DDRDLL on DLLSTEP (Gowin PR0015), so the
+    // probe is the smallest lane the vendor tool accepts.
+    DDRDLL #(
+        .DLL_FORCE("FALSE"),
+        .CODESCAL("111"),
+        .SCAL_EN("FALSE"),
+        .DIV_SEL(1'b0)
+    ) ddrdll (
+        .CLKIN(sys_clk),
+        .STOP(1'b1),
+        .UPDNCNTL(1'b1),
+        .RESET(1'b0),
+        .STEP(step)
+    );
 
     DQS #(
         .FIFO_MODE_SEL(1'b0),
@@ -60,7 +78,7 @@ module probe_dqs (
         .RESET(1'b0),
         .READ(4'b0000),
         .RCLKSEL(3'b000),
-        .DLLSTEP(8'h00),
+        .DLLSTEP(step),
         .WSTEP(8'h00),
         .RLOADN(1'b1),
         .RMOVE(1'b0),

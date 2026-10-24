@@ -19,6 +19,11 @@ declare -A cell=(
     [iodelay]=IODELAY
     [clkdiv]=CLKDIV
 )
+# The DQS probe needs its DQSIN on the lane's own pad; every other probe uses
+# the shared constraints.
+declare -A cst=(
+    [dqs]="$src/ddr3_phy_probe_dqs.cst"
+)
 
 printf '%-12s %-10s %-12s\n' PRIMITIVE SYNTHESIS NEXTPNR
 printf '%-12s %-10s %-12s\n' --------- --------- -------
@@ -48,7 +53,7 @@ for probe in "${probes[@]}"; do
         --write "$out/$probe-routed.json" \
         --device "$gowin_device" \
         --freq 50 \
-        --vopt "cst=$src/ddr3_phy_probe.cst" \
+        --vopt "cst=${cst[$probe]:-$src/ddr3_phy_probe.cst}" \
         --sdc "$src/ddr3_phy_probe.sdc" \
         >"$pnr_log" 2>&1; then
         printf '%-12s %-10s %-12s\n' "${cell[$probe]}" PASS PASS

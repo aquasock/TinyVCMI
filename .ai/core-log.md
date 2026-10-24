@@ -712,3 +712,36 @@ Propose B2 for approval and then implement it offline: in the nextpnr fork, the 
 - User Test: N/A
 
 ---
+
+## 24 COMMIT Unreleased 2026-10-23T17:21:14-07:00
+
+#### Coming From:
+
+Unreleased 36ce294
+
+#### Purpose:
+
+Make the measured DQS and its hard-wired links placeable and routable in the open flow, which is B2a of the approved DQS implementation.
+
+#### Outcome:
+
+Committed `0bc790a6` to the nextpnr fork's `epic/gw5ast138c` and pushed it to the `aquasock` remote only. The chip-database generator now creates one `DQS` bel at `X5Y81` with the 24 input and 13 output wires of TOOL-007, gives that cell a tile type of its own because its chipdb type occurs eight times, adds `FCLK` pips from the four block-2 HCLK lane wires with each lane node extended to the site, and gives the `DDRDLL` a `LOCK` pin. The approved design changed in one respect, recorded here rather than silently: `DQSIN`, `DLLSTEP[0:7]` and `LOCK` are modelled as fuse-free nodes that join the source's own wire, `F6` at `(68,0)`, `Q0` to `Q7` at `(108,1)` and `Q7` at `(99,1)`, to a pin-only wire, instead of through tap pips, because joining the existing wire needs no pip, leaves the packer nothing to skip, and changes only the `DQS` cell's tile type; the generator refuses a link onto a wire that already belongs to a node. The new `tests/check_dqs_site.py` passes all five checks, `check_internal_net.py` and `check_arch_gen_deterministic.py` pass, and `check_constids_append_only.py` fails identically with and without this change because the earlier `DDRDLL` commit inserted a constid mid-file. Generation takes about 18 s at 2.0 GB and adds exactly one tile shape; the rebuilt chipdb is installed beside the binary, which needed no rebuild, and the previous chipdb is kept in the session scratchpad. The proposed acceptance test was corrected: the preflight's `DQS` probe was the isolated shape the vendor refuses, so it is now the smallest accepted lane, a `DDRDLL` on `DLLSTEP` and `DQSIN` on pin Y3 through its own constraint file, and the `DDRDLL` probe now routes `LOCK`. `tools/ddr3_openflow_preflight.sh` reports `DDRDLL`, `DQS`, `IODELAY` and `CLKDIV` PASS and `OSER8_MEM` and `IDES8_MEM` GAP; the routed probe puts the `DQS` on `X5Y81/DQS` with the pad on `X0Y68/IOBA` and `FCLK` on lane 0, and `LOCK` leaves through `X1Y99/E820 <- Q7`, the pip the vendor bitstream sets for `LOCK`. The B1 `base` lane design also places and routes. No `DQS` is packed yet and no open-flow image containing one exists. No hardware was accessed. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering, and active-log capacity.
+
+#### Next Steps:
+
+Implement B2b in the Apicula fork: accept `DQS` in the packer's bel pattern, refuse a `DQS` at any site other than `X5Y81`, write the table-58 presence, parameter and lane fuses by key at `(72,0)` with the lane taken from the routed `HCLK2<n> -> DQS_FCLK` pip, and treat that pip as fuse-free routing. Accept it only when the open-flow build of `build/dqs_b1/base` matches the vendor build fuse for fuse in table 58 and `tools/fs_attribute.py` shows no configuration difference and no unattributed fuse in `(81,5)`, `(72,0)`, `(81,0)` and `(68,0)`. Continue offline and do not touch the Tang unless the user explicitly changes that instruction.
+
+#### Files Modified:
+
+- docs/ddr3-open-flow.md
+- fpga/ddr3_phy_probe/ddr3_phy_probe.sv
+- fpga/ddr3_phy_probe/ddr3_phy_probe_dqs.cst
+- tools/ddr3_openflow_preflight.sh
+
+#### Status:
+
+- Build: PASS
+- Deployment: N/A
+- User Test: N/A
+
+---

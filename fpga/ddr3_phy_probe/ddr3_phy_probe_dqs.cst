@@ -1,0 +1,13 @@
+// probe_dqs only.  DQSIN must come from the lane's own pad, so probe_in is on
+// Y3, a DDR3 strobe pin.  Offline place-and-route only: the preflight never
+// packs or loads this design.
+IO_LOC "sys_clk" V22;
+IO_PORT "sys_clk" IO_TYPE=LVCMOS33 PULL_MODE=NONE;
+
+IO_LOC "probe_in" Y3;
+IO_PORT "probe_in" IO_TYPE=LVCMOS33 PULL_MODE=NONE;
+
+IO_LOC "probe_out" V18;
+IO_PORT "probe_out" IO_TYPE=LVCMOS33 PULL_MODE=NONE;
+
+INS_LOC "ddrdll" DDRDLLM_BL;
