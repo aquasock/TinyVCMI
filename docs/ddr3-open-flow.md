@@ -725,9 +725,10 @@ other 23 has not been checked.
 ## Open-flow DQS and dedicated links
 
 The nextpnr fork's chip-database generator now carries the lane pieces that
-the measurements above support, for this one byte group only (aquasock/nextpnr
-`epic/gw5ast138c`, `gowin_arch_gen.py`, gated by
-`tests/check_dqs_site.py`):
+the measurements above support. This section describes the first, lane-0 form
+(aquasock/nextpnr `epic/gw5ast138c`, `gowin_arch_gen.py`, gated by
+`tests/check_dqs_site.py`); "Four lanes in the open flow" below extends it to
+every byte group:
 
 - One `DQS` bel at `X5Y81`, the site tile `(81,5)`, with the 24 input and 13
   output wires of the pin table above. Its chipdb tile type occurs eight times
@@ -1045,3 +1046,75 @@ fuse. The six B-side `ok_ides` and `ok_oser` builds match too, including the
 one-cell configuration offset. `tools/dq_lane_probe.py --lane N` defaults to
 the measured representative A pad and `build/dq_lane_lN`; an explicit B pad
 and output directory reproduce the B-side check.
+
+## Four lanes in the open flow
+
+The nextpnr fork now places and routes all four byte lanes. The generator's
+lane-0 constants became one table, `DQS_LANES`, with one entry per lane: the
+`DQS` site, the strobe pad, the pad's `F6` wire that feeds `DQSIN`, and the ten
+IOLOGIC positions of the strobe, `dq` and `dm` pads from the proven pin map.
+
+    lane  site    strobe  DQSIN source  IOLOGIC rows (side A, B)
+    0     X5Y81   Y3      X0Y68/F6      68A 70AB 73AB 75AB 77AB 79A
+    1     X0Y99   V9      X0Y95/F6      95A 97AB 100AB 102AB 104AB 106A
+    2     X0Y90   W6      X0Y93/F6      93A 82AB 84AB 86AB 88AB 91A
+    3     X6Y81   R3      X0Y64/F6      64A 55AB 57AB 59A 61AB 66AB
+
+Each of the four site cells gets an extra-function entry naming its strobe
+pad. That keeps the two type-241 sites apart from each other and from the six
+unmeasured cells of their type, and keeps lane 1's type-257 cell apart from
+its two siblings. No site needed a wire it did not already have. Every one of
+the 37 `DQS` wires is a pip destination or source in all four site cells, and
+none is a bel pin there. Lane 1's cell has no bels, and lane 2's has only
+`BANK6`, which uses none of them. No site is on a `dq` or `dm` row, so no
+site cell also holds a lane serializer.
+
+The dedicated links grew with the table. Each lane's `DQSIN` is joined to its
+own strobe pad's `F6`, which carries only `IOBA.O` and the IOLOGIC input `D`,
+exactly as lane 0's does. Each `STEP[i]` of the one `DDRDLL` is now one node
+reaching `DLLSTEP[i]` of all four sites, the vendor's own fan-out. Each lane's
+`DQS` outputs reach only that lane's ten positions. All four sites are added
+to the block-2 HCLK lane nodes, the block TOOL-012 found every lane's `FCLK`
+on. Block 2's lanes 0 and 2 already reach every IOLOGIC row of all four
+lanes.
+
+A new packer step, `pack_dqs`, runs after `pack_iologic`. With four `DQS` bels
+the placer could put a `DQS` on a site whose `DQSIN` node starts at another
+lane's pad, and routing would then fail. The step follows `DQSIN` to the IOB
+that drives it and locks the `DQS` to the one site whose `DQSIN` pin wire is
+that IOB pin's node. It refuses a `DQSIN` driven by anything but an IOB, as
+Gowin does (`PR0014`, `CK3001`). It also refuses a strobe pad with no
+location and a pad that is no lane's strobe. A `DQS` with `DQSIN` unconnected
+is left to the placer.
+
+`tests/check_dqs_site.py` covers all four lanes: unique site tile types, free
+pin wires at every site, single drivers for every link source, each strobe pad
+matching its `DQSIN` source and first position, every HCLK lane reaching every
+site, and 40 distinct lane positions on marked cells only. All seven checks
+pass, and so do `check_internal_net.py`, `check_arch_gen_deterministic.py`,
+`check_hclk_to_fclk_138c.py`, `check_postroute_refusal.py`,
+`check_iodelay_gw5a.py`, `check_io_timing_arcs.py` and
+`check_ae350_tap_wire_types.py`. `check_constids_append_only.py` and
+`check_hclk_6block.py` fail only their constid-ordering checks, the same way
+without this change. `DQSIN` was appended as a constid. The preflight still
+reports all six primitives PASS.
+
+`tools/lane_open_build.py` runs every vendor lane design through Yosys and
+nextpnr with the design's own `top.v`, `top.cst` and `top.sdc`, and writes
+`build/open/<vendor directory>/<design>/routed.json` for the packer checks.
+It asserts:
+
+- that the `fab_*` and `bad_*` designs are refused;
+- that every other design's `DQS` is on its lane's site;
+- that every serializer is on the IOLOGIC half beside a placed pad on that
+  pad's side;
+- that every memory-mode pin is on its `DQS` output's net, bit for bit.
+
+All 210 designs of `build/dqs_b1*`, `build/dq_lane*`, `build/dq_lane_b*` and
+`build/dq_pad` behave as expected, in about 90 s with four jobs. Pinned to
+lanes 1, 2 and 3, the `DQS` follows its `CLKDIV` in every lane. As on lane 0,
+an IOLOGIC `FCLK` pinned to lane 1 or 3 stays on lane 0 with the router's
+split warning, because the database offers IOLOGIC lanes 0 and 2 only. The
+lane-0 packer checks were rerun on the new netlists and still match the
+vendor. Apicula still packs only lane 0's `DQS` and positions, so this is
+placement and routing, not packing, for lanes 1 to 3.

@@ -19,6 +19,8 @@ gowin_family=GW5AST-138C
 source "$oss_suite/environment"
 export PYTHONHOME="$oss_suite"
 export PYTHONPATH="$apicula_fork:$python_deps:${PYTHONPATH:-}"
+# for the Python tools that run the flow themselves
+export OSS_CAD_SUITE="$oss_suite" NEXTPNR_HIMBAECHEL="$nextpnr_himbaechel" GOWIN_DEVICE="$gowin_device"
 
 [[ -x "$nextpnr_himbaechel" ]] || {
     echo "missing nextpnr-himbaechel: $nextpnr_himbaechel" >&2

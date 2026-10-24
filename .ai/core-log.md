@@ -1033,3 +1033,35 @@ Propose the four-lane implementation cycle: extend the nextpnr DQS sites, dedica
 - User Test: N/A
 
 ---
+
+## 34 COMMIT Unreleased 2026-10-23T21:49:09-07:00
+
+#### Coming From:
+
+Unreleased cdc8b2d
+
+#### Purpose:
+
+Make the DQS and memory serializers of DDR3 lanes 1 to 3 placeable and routable in the open flow, which is D2a of the approved four-lane implementation.
+
+#### Outcome:
+
+Committed `ccac5bfb` to the nextpnr fork's `epic/gw5ast138c` and pushed it to the `aquasock` remote only. The generator's lane-0 constants became one table, `DQS_LANES`, holding each lane's site, strobe pad, `DQSIN` source and ten IOLOGIC positions from the proven pin map: sites `X5Y81`, `X0Y99`, `X0Y90` and `X6Y81`, with `DQSIN` from `F6` of pads Y3, V9, W6 and R3. Before any model change the chipdb was checked for the risk named in the plan, and it did not occur: all 37 `DQS` wires are pip destinations or sources in every site cell and none is a bel pin there, lane 1's cell has no bels and lane 2's only `BANK6`, no site lies on a `dq` or `dm` row, every new `DQSIN` source carries only `IOBA.O` and IOLOGIC `D`, and HCLK block 2's lanes 0 and 2 already reach every lane's IOLOGIC rows. Every site cell is marked with its pad so the two type-241 sites and lane 1's type-257 cell keep tile types of their own, each `STEP` bit is one node reaching all four `DLLSTEP` pins, each lane's outputs reach only its own positions, and every site joins the block-2 lane nodes. The plan gained one piece that was not in it: with four bels the placer could put a `DQS` on a site whose `DQSIN` node starts at another lane's pad, so a new `pack_dqs` step locks each `DQS` to the site whose `DQSIN` shares a node with the pin of the placed IOB driving it, and refuses any non-pad source as Gowin does; `DQSIN` was appended as a constid and the binary and chipdb were rebuilt, with the previous pair kept in the session scratchpad. `tests/check_dqs_site.py` now covers all four lanes and passes seven checks, the other generator and router tests pass, and `check_constids_append_only.py` and `check_hclk_6block.py` fail only their earlier constid-ordering checks, reproduced without this change. The preflight still reports all six primitives PASS. The new `tools/lane_open_build.py` reruns every vendor lane design through Yosys and nextpnr from its own sources and asserts refusal of the `fab_*` and `bad_*` designs, the `DQS` on its lane's site, each serializer beside a placed pad on that pad's side, and every memory-mode pin on its `DQS` output's net bit for bit; all 210 designs behaved as expected, the `DQS` followed its pinned `CLKDIV` on lanes 1 to 3 in every lane, and IOLOGIC `FCLK` pinned to lane 1 or 3 kept the known split warning. `tools/openflow_env.sh` now exports the flow paths the tool reads. The lane-0 packer checks were rerun on the new netlists and still match the vendor, the two board-clock serializer designs outside the lane field. Apicula is unchanged, so lanes 1 to 3 are placed and routed but not packed. No image was written and no hardware was accessed. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering, and active-log capacity.
+
+#### Next Steps:
+
+Implement D2b in the Apicula fork: have `get_DQS_fuses` map each of the four sites to its byte-group cell and write table 58 by semantic key resolved through each cell type's own longfuses table, keeping lane 0's output bit-identical, and widen the serializer position set to all four lanes. Add `--lane N` to `tools/dqs_pack_check.py` and `tools/dq_pack_check.py`, and accept the change only when every lane's netlist in `build/open` packs equal to the vendor by table-58 key and IOLOGIC fuse state on both sides. The DDR3-bank guard, SSTL15 and SSTL15D IOB and BANK comparison, image generation and all Tang access stay outside that cycle until the user decides the guard.
+
+#### Files Modified:
+
+- docs/ddr3-open-flow.md
+- tools/lane_open_build.py
+- tools/openflow_env.sh
+
+#### Status:
+
+- Build: PASS
+- Deployment: N/A
+- User Test: N/A
+
+---
