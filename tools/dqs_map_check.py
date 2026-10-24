@@ -42,12 +42,14 @@ and `--mode clock` built under `build/fclk_rebuild/`.
 
 `--lane N` checks lane N (1 to 3) against the same lane-0 map, from the
 pairs built with `--lane N` into the `_l<N>` directories, at that lane's
-site (TOOL-011).  The inputs are checked exactly as for lane 0.  The default
-outputs' next hops are lane-specific, so instead of recorded hops the check
-infers them: an output whose pair changes nothing in the site takes the
-zero-state source of the destination used by the measured sibling it shares a
-downstream hop with.  `FCLK` is lane 0's measurement only; the other lanes'
-lane field is checked by `tools/dqs_param_probe.py --check --lane N`.
+site (TOOL-011).  The inputs are checked exactly as for lane 0.  An input
+whose two sources converge before the site is accepted only when both members
+select the same recorded destination and source there.  Every output is
+traced backward from the fixed probe pad through the configured inter-tile
+route to its exact first destination and source at the DQS site; this covers
+zero-state pips and sites where unrelated muxes move in the same pair without
+an inference from shared hops.  `FCLK` is lane 0's measurement only; the other
+lanes' lane field is checked by `tools/dqs_param_probe.py --check --lane N`.
 
 Usage:
     tools/dqs_map_check.py            # every entry, then a summary
@@ -214,12 +216,47 @@ def out_dir(name: str) -> str:
 def check_lane(build: str, lane: int) -> int:
     """Lane `lane`'s pairs against the lane-0 map; see the module docstring."""
     import dqs_port_probe as probe
-    import fs_attribute as fa
+    from apycula import chipdb, gowin_unpack, tracing
 
     site = probe.LANES[lane]["site"]
     suffix = lambda path: probe.lane_dir(path.split("/")[0], lane) + "/" + path.split("/", 1)[1]
     pairs = Pairs(build)
     failures = []
+
+    def probe_endpoint():
+        """Ordinary fabric-wire alias of output probe pin Y1's IOB-B input."""
+        io = pairs.dev.pinout["GW5AST-138C"]["PBGA484A"]["Y1"][0]
+        side, row = io[-1], int(io[3:-1]) - 1
+        pin_wire = (row, 0, pairs.dev[row, 0].bels[f"IOB{side}"].portmap["I"])
+        aliases = [wires for _kind, wires in pairs.dev.nodes.values()
+                   if pin_wire in wires]
+        ordinary = [wire for wires in aliases for wire in wires
+                    if not wire[2].startswith(("IOB", "IOLOGIC"))]
+        if len(ordinary) != 1:
+            raise RuntimeError(f"probe pin Y1 has ordinary aliases {ordinary}")
+        return ordinary[0]
+
+    endpoint = probe_endpoint()
+
+    def routed_output_at_site():
+        """Exact `(destination, source)` by tracing target back from Y1."""
+        tilemap = chipdb.tile_bitmap(pairs.dev, pairs.tgt, empty=True)
+        original = tracing.parse_tile_
+        try:
+            # tracing predates parse_tile_'s explicit full-bitmap argument.
+            tracing.parse_tile_ = lambda db, row, col, tile, default=True: original(
+                db, row, col, tile, bm=tilemap, default=default)
+            path = tracing.get_output_path_dict(
+                tilemap, pairs.dev, endpoint, through_bel=())
+        finally:
+            tracing.parse_tile_ = original
+        _bels, wires, _clock = gowin_unpack.parse_tile_(
+            pairs.dev, *site, tilemap[site], bm=tilemap, default=True)
+        connections = {(node[2], wires[node[2]]) for node in path
+                       if node[:2] == site and node[2] in wires}
+        if len(connections) != 1:
+            raise RuntimeError(f"probe route reaches DQS site through {connections}")
+        return connections.pop()
 
     def report(ok: bool, line: str):
         print(f"  {'PASS' if ok else 'FAIL'}  {line}", flush=True)
@@ -230,42 +267,34 @@ def check_lane(build: str, lane: int) -> int:
     for port, (pair, ref, tgt, wire) in INPUTS.items():
         pairs.load(suffix(pair), ref, tgt)
         moved, _ = pairs.moved(site, SITE_INPUTS)
-        report(set(moved) == {wire}, f"{port:10s} -> {wire:5s} moved {sorted(moved) or '-'}")
+        if set(moved) == {wire}:
+            report(True, f"{port:10s} -> {wire:5s} moved {sorted(moved)}")
+            continue
+        tile, before = pairs.tile_state(pairs.ref, site)
+        _, after = pairs.tile_state(pairs.tgt, site)
+        before_source = pairs.selected(tile, wire, before)
+        after_source = pairs.selected(tile, wire, after)
+        converged = (lane == 2 and port == "RESET" and not moved
+                     and before_source == after_source == "W212")
+        report(converged, f"{port:10s} -> {wire:5s} "
+               + (f"shared endpoint {wire}<-{after_source}"
+                  if converged else f"moved {sorted(moved) or '-'}"))
 
     print(f"\nlane {lane}: outputs at tile {site}")
-    first, hops, quiet = {}, {}, set()
-    for name in OUTPUTS:
+    first = {}
+    for name, (want_source, _lane0_dest, _next) in OUTPUTS.items():
         pairs.load(suffix(out_dir(name)), "reference", "target")
-        moved, nchanged = pairs.moved(site)
-        hops[name] = {(tuple(r["tile"]), d["dest"], d["after"])
-                      for r in fa.attribute(pairs.dev, pairs.grid, pairs.ref, pairs.tgt)
-                      for d in r["route"] if d["after"] and d["after"] != d["before"]
-                      and tuple(r["tile"]) != site}
-        if len(moved) == 1:
-            dest, (_, src) = next(iter(moved.items()))
-            first[name] = (dest, src)
-        elif nchanged == 0:
-            quiet.add(name)
-        else:
-            first[name] = (None, f"{len(moved)} destinations moved")
-    for name in quiet:
-        candidates = {first[o][0] for o in first
-                      if first[o][0] and hops[o] & hops[name]}
-        if len(candidates) == 1:
-            dest = candidates.pop()
-            first[name] = (dest, pairs.zero_source(site, dest))
-        else:
-            first[name] = (None, f"next hop shared with {sorted(candidates) or 'no'} destinations")
-    for name, (src, dest, nxt) in OUTPUTS.items():
-        got_dest, got_src = first[name]
-        how = "default" if name in quiet else "selected"
-        report(got_src == src, f"{name:10s} -> {got_src or '-'} via {got_dest or '-'} {how} "
-                               f"(lane 0: {src} via {dest})")
+        got_dest, got_source = routed_output_at_site()
+        first[name] = (got_dest, got_source)
+        report(got_source == want_source,
+               f"{name:10s} -> {got_source} via {got_dest} exact route "
+               f"(lane 0 source: {want_source})")
     sources = [first[n][1] for n in OUTPUTS]
-    report(len(set(sources)) == len(sources), f"output source wires distinct: {' '.join(sorted(map(str, sources)))}")
+    report(len(set(sources)) == len(sources),
+           f"output source wires distinct: {' '.join(sorted(sources))}")
     print(f"\n{len(failures)} check(s) failed.  Hardware was not accessed." if failures
           else f"\nLane {lane} agrees with the lane-0 map: {len(INPUTS)} inputs and {len(OUTPUTS)} outputs, "
-               f"{len(quiet)} outputs by route inference.  Hardware was not accessed.")
+               "every output by its exact configured route.  Hardware was not accessed.")
     return 1 if failures else 0
 
 

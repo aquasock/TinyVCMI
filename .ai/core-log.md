@@ -1000,3 +1000,36 @@ Make `tools/dqs_param_probe.py --check` compare table 58 by key rather than by l
 - User Test: N/A
 
 ---
+
+## 33 COMMIT Unreleased 2026-10-23T20:48:44-07:00
+
+#### Coming From:
+
+Unreleased 2eef22f
+
+#### Purpose:
+
+Close the offline DQS and IOLOGIC measurements for DDR3 lanes 1 to 3 without changing the open-flow models or accessing hardware.
+
+#### Outcome:
+
+Closed every preliminary result from entry 32. `tools/dqs_param_probe.py --check --lane N` now compares table 58 by semantic key and reconstructs each target tile's exact fuse state; all 45 lane-1-to-3 parameter designs pass with the expected HCLK chain and zero unattributed fuses. `tools/dqs_map_check.py --lane N` traces each output backward from the fixed probe pad through the configured route, proving that all three lanes share lane 0's 24-input and 13-output source-wire map without the earlier zero-state inference; lane 2's previously silent `RESET` pair converges at the exact programmed endpoint `LSR0 <- W212`. Gowin EDA 1.9.11.03 then built 99 A-side serializer outcomes on representative pads `AA8`, `R4` and `W2`: 87 accepted designs match lane 0's attributes, HCLK selection and bit order with no unattributed fuse, and the twelve deliberately invalid fabric-driven memory-pin designs are all refused with `CK2060`; six further B-side builds on `AB8`, `T4` and `Y2` confirm the same attributes and one-cell offset. `tools/dq_lane_probe.py` now defaults each lane to its measured A-side pad and output directory, and its lane-argument shadowing bug is fixed. The reference library adds TOOL-012 and the DDR3 document records the completed four-lane evidence. No nextpnr or Apicula model changed, the DDR3-bank guard is unchanged, no image was written, and no hardware was accessed. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated all 33 active entries' six-section ordering, prose, Status values, sequential numbering and active-log capacity.
+
+#### Next Steps:
+
+Propose the four-lane implementation cycle: extend the nextpnr DQS sites, dedicated links and IOLOGIC position lists and the Apicula DQS and serializer site handling from lane 0 to lanes 1 through 3, then accept the change only when all four lane probes place and route and their in-process packer results match the vendor by table key and IOLOGIC fuse state. Keep the DDR3-bank guard, SSTL15 and SSTL15D IOB and BANK comparison, image generation and all Tang access outside that cycle until the user makes the guard decision.
+
+#### Files Modified:
+
+- docs/ddr3-open-flow.md
+- tools/dq_lane_probe.py
+- tools/dqs_map_check.py
+- tools/dqs_param_probe.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: N/A
+- User Test: N/A
+
+---

@@ -129,6 +129,7 @@ Topic IDs are the `record_id` prefix. An entry reserves a namespace; it does not
 | How are the DQ serializers wired and configured? | TOOL | TOOL-009 |
 | What do lane 0's complete pads add? | TOOL | TOOL-010 |
 | Where are DDR3 lanes 1 to 3? | TOOL | TOOL-011 |
+| Do lanes 1 to 3 share lane 0's DQS and IOLOGIC encoding? | TOOL | TOOL-012 |
 | Which sources and licenses constrain reuse? | PROV | PROV-001 |
 
 ---
@@ -163,6 +164,7 @@ TOOL-008: "Every DQS configuration fuse, parameters and FCLK lane, is in longfus
 TOOL-009: "Lane 0's OSER8_MEM and IDES8_MEM sit on IOLOGIC A/B of cells (68..79,0); their memory-mode pins are hard-wired and their configuration is named IOLOGIC attributes"
 TOOL-010: "A complete DQ pad's IOLOGIC is the union of its serializers plus three IODELAY fuses; IO standard touches only IOB and the BANK table"
 TOOL-011: "Lanes 1 to 3 have byte groups (99,0), (90,0) and (63,0) and DQS sites (99,0), (90,0) and (81,6); every site moves lane 0's 24 input wires"
+TOOL-012: "Lanes 1 to 3 share lane 0's 24-input and 13-output DQS map, table-58 keys, memory-serializer attributes and bit order"
 PROV-001: "Reuse source and interface ideas with their original license boundaries and attribution intact"
 ```
 
@@ -476,13 +478,13 @@ PROV-001: "Reuse source and interface ideas with their original license boundari
   status: VERIFIED
   verified_date: 2026-10-23
   statement: "For the DQS beside board pin Y3, Gowin EDA 1.9.11.03 writes every configuration fuse into longfuses table 58 of tile (72,0), type 64, and none into the DQS site tile (81,5). In that tile's coordinates: presence (20,57) (20,58) (20,59) (20,62) (20,63) (20,68) (20,73) (20,91); FIFO_MODE_SEL 1 = (20,36) (20,67); RD_PNTR bit 0 = (20,64), bit 1 = (20,49), bit 2 = (20,52); DQS_MODE X1 = none, X2_DDR2 = (20,79), X2_DDR3 = (20,78), X4 = (20,78) (20,79), X2_DDR3_EXT = (20,78) (20,90); HWL true = (20,103); FCLK on HCLK lane 0 = none, lane 1 = (20,53) (20,56), lane 2 = (20,107) (20,108), lane 3 = all four. Table 58 exists at 24 cells: rows 9, 18, 36, 45, 63, 72, 90 and 99 of both long edges and eight on the bottom edge. Only CLKDIV accepts INS_LOC LEFTSIDE[n] for lane pinning; CLKDIV2 and DHCE are refused with CT2001."
-  consequence: "A packer can write a DQS's whole configuration from this table without naming the table's keys: the presence fuses, the four parameters and the FCLK lane are fuse sets at the byte group's config tile, in the same shape as the DDRDLL's DLL0 features. Lane 0 sets nothing and therefore reads like an unclocked block. Two limits remain: the presence fuses were constant across every design tried, but every design used the same DQS ports, so their dependence on port usage is untested; and the encoding is measured at one byte group only, so the other 23 table-58 cells are not established to share its coordinates. The Apicula fork packs this encoding as get_DQS_fuses."
+  consequence: "A packer can write a DQS's whole configuration from this table without naming physical fuse coordinates: the presence fuses, the four parameters and the FCLK lane are selected by table key at the byte group's config tile, in the same shape as the DDRDLL's DLL0 features. Lane 0 sets nothing and therefore reads like an unclocked block. The presence fuses were constant across every design tried, but every design used the same DQS ports, so their dependence on port usage is untested. TOOL-012 verifies the same semantic keys at all four onboard DDR3 byte groups; the other twenty table-58 cells remain unmeasured. The Apicula fork packs the lane-0 encoding as get_DQS_fuses."
   sources:
     - "TinyVCMI tools/dqs_param_probe.py (designs, --report, --check) and tools/fs_attribute.py"
     - "TinyVCMI docs/ddr3-open-flow.md: DQS configuration: longfuses table 58"
     - "Gowin EDA 1.9.11.03 IDE/simlib/gw5a/prim_sim.v, module DQS parameter list"
     - "Apicula commit 1d43011, apycula/GW5AST-138C.msgpack.xz: tile type 64 longfuses unknown_58 and hclk_pips at (81,0); apycula/chipdb.py P1.T08d LEFTSIDE convention"
-  verification: "Fifteen vendor builds on 2026-10-23 in build/dqs_b1: a base, nine single-parameter variants, a design without the DQS and four pinned-lane designs. tools/fs_attribute.py attributed each variant's full difference from the base with no unattributed fuse, and every change outside routing, global clock and HCLK fell in table 58 at (72,0). tools/dqs_param_probe.py --check asserts the exact table-58 fuse set of all fifteen builds, each lane design's BETA, BUF and ALPHA chain at (81,0), and zero unattributed fuses, and passed. The same attribution showed that the per-port constant bits recorded earlier at (81,5) are routing: the HOLD constant pair's eight bits are the B3 input mux choosing VCC through W240 or GND through X04. No hardware was accessed. Revised 2026-10-23: tools/dqs_pack_check.py ran the Apicula packer in-process on all twelve B1 designs built in the open flow; its table-58 fuses equal this encoding in every case and the vendor build outside the lane field, exactly where the lanes agree, and lanes 1 to 3 were checked through --fclk-lane because the open router always chose lane 0. No image was written, since the packer refuses any bank 6/7 pad outside a declared DDR context. Revised 2026-10-23: with the router keeping the DQS on its CLKDIV's lane, tools/dqs_pack_check.py matched the vendor's lanes 1, 2 and 3 with real routing, without --fclk-lane."
+  verification: "Fifteen vendor builds on 2026-10-23 in build/dqs_b1: a base, nine single-parameter variants, a design without the DQS and four pinned-lane designs. tools/fs_attribute.py attributed each variant's full difference from the base with no unattributed fuse, and every change outside routing, global clock and HCLK fell in table 58 at (72,0). tools/dqs_param_probe.py --check asserts the exact table-58 fuse set of all fifteen builds, each lane design's BETA, BUF and ALPHA chain at (81,0), and zero unattributed fuses, and passed. The same attribution showed that the per-port constant bits recorded earlier at (81,5) are routing: the HOLD constant pair's eight bits are the B3 input mux choosing VCC through W240 or GND through X04. No hardware was accessed. Revised 2026-10-23: tools/dqs_pack_check.py ran the Apicula packer in-process on all twelve B1 designs built in the open flow; its table-58 fuses equal this encoding in every case and the vendor build outside the lane field, exactly where the lanes agree, and lanes 1 to 3 were checked through --fclk-lane because the open router always chose lane 0. No image was written, since the packer refuses any bank 6/7 pad outside a declared DDR context. Revised 2026-10-23: with the router keeping the DQS on its CLKDIV's lane, tools/dqs_pack_check.py matched the vendor's lanes 1, 2 and 3 with real routing, without --fclk-lane. Revised again 2026-10-23: TOOL-012 normalized all fifteen designs by table key at byte groups (99,0), (90,0) and (63,0); every target tile reconstructed exactly with the same keys, its HCLK chain and zero unattributed fuses."
 
 - record_id: TOOL-009
   topic_id: TOOL
@@ -520,12 +522,26 @@ PROV-001: "Reuse source and interface ideas with their original license boundari
   status: VERIFIED
   verified_date: 2026-10-23
   statement: "The proven controller's four lanes are all on the left edge: lane 0 on IO rows 68 to 79, lane 1 on 95 to 106, lane 2 on 82 to 93 and lane 3 on 55 to 66, with DQS pads Y3, V9, W6 and R3. With the strobe pad moved to each lane, Gowin EDA 1.9.11.03 adds configuration only in table 58 of one cell inside the lane's rows -- (72,0) type 64, (99,0) type 257, (90,0) type 259 and (63,0) type 270 -- and the DQS's inputs land at sites (81,5) and (81,6), both type 241, for lanes 0 and 3, and in the byte-group cells (99,0) and (90,0) themselves for lanes 1 and 2. In every lane the DQS moves exactly lane 0's 24 input destinations at its site tile, and each site tile has all 24 as pip destinations."
-  consequence: "Lane 3 can plausibly reuse lane 0's site model in the twin tile (81,6), and lanes 1 and 2 need a DQS bel in an IO-column cell of their own type. That all four sites expose the same 24 input names supports one port map, but each lane's port map, its outputs, the table-58 coordinates in types 257, 259 and 270, and its IOLOGIC positions must still be measured before the model is extended."
+  consequence: "Lane 3 can reuse lane 0's site shape in the twin tile (81,6), while lanes 1 and 2 need a DQS bel in their IO-column byte-group cells. TOOL-012 closes the per-port, table-58 and representative IOLOGIC measurements that this location record originally left open."
   sources:
     - "TinyVCMI tools/dq_lane_locate.py and tools/fs_attribute.py"
     - "TinyVCMI docs/ddr3-open-flow.md: Lanes 1 to 3: where they are"
     - "Tang-PSX gateware/ddr3_vendor/tang_psx_ddr3.cst, ddr_dqs, ddr_dq and ddr_dm pins"
-  verification: "Six vendor builds on 2026-10-23 in build/dq_lanes, a base and a no-DQS control per lane, attributed with no unattributed fuse; the site and byte group of each lane were read from that attribution and the site tiles' input destinations compared with lane 0's. No per-port pairs were built for lanes 1 to 3. No hardware was accessed."
+  verification: "Six vendor builds on 2026-10-23 in build/dq_lanes, a base and a no-DQS control per lane, attributed with no unattributed fuse; the site and byte group of each lane were read from that attribution and the site tiles' input destinations compared with lane 0's. Revised 2026-10-23 after the per-port and IOLOGIC measurements in TOOL-012 closed the remaining qualification work. No hardware was accessed."
+
+- record_id: TOOL-012
+  topic_id: TOOL
+  title: "Measured DQS and IOLOGIC equivalence of DDR3 lanes 1 to 3"
+  status: VERIFIED
+  verified_date: 2026-10-23
+  statement: "Gowin EDA 1.9.11.03 gives lanes 1 to 3 the same DQS port wires as lane 0: 24 inputs on A0-A5, A7, B0-B3, C0-C2, D3-D5, D7, CLK0, CLK2, LSR0, LSR2, CE1 and CE2, and thirteen outputs on Q0, F1, Q1, Q5, F6, Q6, Q7, F2, Q2, F4, F3, Q3 and F5. Lane 2 RESET reaches LSR0 through the already-selected W212 source, so changing its upstream source moves no site fuse. The table-58 cells of types 257, 259 and 270 use the same semantic keys as lane 0's type 64 for presence, FIFO_MODE_SEL, RD_PNTR, DQS_MODE, HWL and all four FCLK lanes, with different physical coordinates. Representative A/B DQ pads AA8/AB8, R4/T4 and W2/Y2 use the same OSER8_MEM and IDES8_MEM attributes, hard-wired pins and data-bit order as lane 0, including the side-B one-cell configuration offset."
+  consequence: "The nextpnr and Apicula models can extend one measured DQS port map, one table-58 key encoding and one memory-serializer encoding across all four byte lanes, changing only each lane's site, byte-group cell, pad positions and dedicated-link endpoints. This does not qualify SSTL15 or SSTL15D IOB and BANK packing, remove the DDR3-bank guard, produce a packable lane image or establish DDR3 operation on hardware."
+  sources:
+    - "TinyVCMI tools/dqs_map_check.py, tools/dqs_param_probe.py and tools/dq_lane_probe.py"
+    - "TinyVCMI docs/ddr3-open-flow.md: Lanes 1 to 3: where they are"
+    - "Tang-PSX commit 61974ca, gateware/ddr3_vendor/tang_psx_ddr3.cst"
+    - "Gowin EDA 1.9.11.03 vendor builds under build/dqs_routed_l1 through build/dqs_b1_l3 and build/dq_lane_l1 through build/dq_lane_b_l3"
+  verification: "For each of lanes 1 to 3, tools/dqs_map_check.py --lane N passed all 24 inputs and thirteen outputs; outputs were traced backward from the fixed probe pad through the exact configured route, removing the earlier zero-state and shared-hop ambiguity. tools/dqs_param_probe.py --check --lane N passed all fifteen designs with exact target-tile fuse reconstruction, the expected HCLK chain and zero unattributed fuses. The A-side serializer suite passed 33 of 33 outcomes per lane, including four expected CK2060 refusals, and the two accepted B-side designs per lane also passed with zero unattributed fuses. No hardware was accessed."
 
 - record_id: PROV-001
   topic_id: PROV

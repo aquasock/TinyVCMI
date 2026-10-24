@@ -58,6 +58,7 @@ set entry; several names share one fuse set, which is why aliases such as
 
 Usage:
     tools/dq_lane_probe.py                      # every design
+    tools/dq_lane_probe.py --lane 2             # lane 2, representative A pad
     tools/dq_lane_probe.py --only ok_ides,fab_iclk
     tools/dq_lane_probe.py --pad AA4 --out build/dq_lane_b --only ok_ides,ok_oser
     tools/dq_lane_probe.py --check [--pad AA4 --out build/dq_lane_b]
@@ -72,6 +73,9 @@ import dqs_param_probe as lane
 import dqs_port_probe as base
 
 PAD = "Y4"     # lane 0 dq[0], IOL78A, cell (77,0)
+#: One measured side-A DQ pad per lane.  Lane 0 keeps its original pad; the
+#: others are the representative positions used by the four-lane regression.
+PADS = {0: PAD, 1: "AA8", 2: "R4", 3: "W2"}
 
 IDES = """\
     wire [7:0] dq_q;
@@ -145,7 +149,7 @@ def expected_attrs(name: str) -> set:
     return out
 
 
-def check(out_dir: str, pad: str, names, lane: int = 0) -> int:
+def check(out_dir: str, pad: str, names, lane_n: int = 0) -> int:
     import fs_attribute as fa
     import fs_site_diff as fsd
     from apycula import attrids
@@ -174,7 +178,7 @@ def check(out_dir: str, pad: str, names, lane: int = 0) -> int:
                 for k in top}
 
     fs = lambda n: os.path.join(out_dir, n, "impl/pnr/probe.fs")
-    base_fs = os.path.join(base.lane_dir(os.path.join(base.ROOT, "build/dqs_b1"), lane),
+    base_fs = os.path.join(base.lane_dir(os.path.join(base.ROOT, "build/dqs_b1"), lane_n),
                            "base/impl/pnr/probe.fs")
     base_m = fsd.load_matrix(base_fs)
     failures = 0
@@ -243,16 +247,20 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--only", help="comma-separated subset of " + ",".join(DESIGNS))
-    ap.add_argument("--out", default=os.path.join(base.ROOT, "build/dq_lane"))
-    ap.add_argument("--pad", default=PAD,
-                    help=f"lane-0 pad for the serializer (default {PAD}, IOLOGIC A; "
-                         "AA4 is dm[0] on IOLOGIC B of the same cell)")
+    ap.add_argument("--out", default=None)
+    ap.add_argument("--pad", default=None,
+                    help="serializer pad; defaults to the measured representative "
+                         "IOLOGIC-A DQ pad for --lane")
     ap.add_argument("--check", action="store_true",
                     help="assert the recorded results on built designs; build nothing")
     ap.add_argument("--lane", type=int, choices=sorted(base.LANES), default=0,
                     help="DDR3 lane whose strobe pin the DQSIN pad takes; --pad must be "
                          "one of that lane's pins")
     args = ap.parse_args()
+    if args.out is None:
+        args.out = base.lane_dir(os.path.join(base.ROOT, "build/dq_lane"), args.lane)
+    if args.pad is None:
+        args.pad = PADS[args.lane]
     if args.check and not args.only:
         args.only = ",".join(n for n in DESIGNS
                              if os.path.isdir(os.path.join(args.out, n)))

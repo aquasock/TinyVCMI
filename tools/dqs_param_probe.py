@@ -220,32 +220,50 @@ def check(out_dir: str, names, lane: int = 0) -> int:
     byte_group = base.LANES[lane]["byte_group"]
     t58 = dev.longfuses[dev.grid[byte_group[0]][byte_group[1]]]["unknown_58"]
     field = set().union(*({tuple(f) for f in v} for v in t58.values()))
+    reference_t58 = dev.longfuses[dev.grid[BYTE_GROUP[0]][BYTE_GROUP[1]]]["unknown_58"]
     hclk = dev.hclk_pips[HCLK_BLOCK]
     fs = lambda n: os.path.join(out_dir, n, "impl/pnr/probe.fs")
     expect = expectations()
     base_m = fsd.load_matrix(fs("base"))
     failures = 0
+
+    def maximal_keys(table, state):
+        """Table keys selected by `state`, excluding keys contained in another."""
+        selected = [(key, {tuple(f) for f in fuses})
+                    for key, fuses in table.items()
+                    if fuses and {tuple(f) for f in fuses} <= state]
+        return {key for key, fuses in selected
+                if not any(fuses < other for _, other in selected)}
+
     for name in names:
         if not os.path.exists(fs(name)):
             print(f"  FAIL  {name}: not built")
             failures += 1
             continue
         m = base_m if name == "base" else fsd.load_matrix(fs(name))
-        want, lane = expect[name]
+        want_reference, fclk_lane = expect[name]
+        want_keys = maximal_keys(reference_t58, want_reference)
+        missing_keys = want_keys - set(t58)
+        want = set().union(*({tuple(f) for f in t58[key]} for key in want_keys)) \
+            if want_keys and not missing_keys else set()
         got = fa.tile_state(dev, grid, m, byte_group) & field
-        ok = got == want
-        line = f"{name:22s} table 58 at {byte_group} {len(got):2d} fuses"
+        got_keys = maximal_keys(t58, got)
+        ok = not missing_keys and got == want and got_keys == want_keys
+        line = (f"{name:22s} table 58 at {byte_group} {len(got):2d} fuses; "
+                f"keys {sorted(got_keys)}")
         if not ok:
-            line += f" extra {sorted(got - want)} missing {sorted(want - got)}"
-        if lane is not None:
+            line += (f"; expected keys {sorted(want_keys)}"
+                     f"; missing table keys {sorted(missing_keys)}"
+                     f"; extra fuses {sorted(got - want)} missing fuses {sorted(want - got)}")
+        if fclk_lane is not None:
             st = fa.tile_state(dev, grid, m, HCLK_BLOCK)
-            n = f"2{lane}"
+            n = f"2{fclk_lane}"
             chain = {f"HCLK_MUX_BETA{n}": f"L2HCLK{n}",
                      f"HCLK_BUF_BI{n}": f"HCLK_MUX_BETA{n}",
                      f"HCLK_MUX_ALPHA{n}": f"HCLK_BUF_BO{n}"}
             lane_ok = all(fa._selected(hclk[d], st) == src for d, src in chain.items())
             ok = ok and lane_ok
-            line += f"; lane {lane} chain {'present' if lane_ok else 'MISSING'}"
+            line += f"; lane {fclk_lane} chain {'present' if lane_ok else 'MISSING'}"
         if name != "base":
             unattr = sum(len(r["unattributed"]) for r in fa.attribute(dev, grid, base_m, m))
             ok = ok and unattr == 0

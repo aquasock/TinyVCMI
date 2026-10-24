@@ -1001,6 +1001,47 @@ their own byte-group cell on the IO column. In all four lanes the `DQS` moves
 exactly lane 0's 24 input destinations at its site tile -- `A0` to `A5`, `A7`,
 `B0` to `B3`, `C0` to `C2`, `D3` to `D5`, `D7`, `CLK0`, `CLK2`, `LSR0`,
 `LSR2`, `CE1`, `CE2` -- and each site tile has all 24 as pip destinations.
-That supports one port map for every lane, but it is not a per-port
-measurement. The output wires, the table-58 coordinates in the three other
-cell types, and the lanes' IOLOGIC have not been measured.
+That location result has now been followed by the full lane-0 measurement set
+on lanes 1 to 3.
+
+`tools/dqs_map_check.py --lane N` checks the 22 routed input pairs, the two
+clock pairs and all thirteen output pairs for each lane. Lanes 1 and 3 move
+the same one destination as lane 0 for every input. Lane 2 does too except
+for `RESET`: both members of that pair select the same already-programmed
+endpoint, `LSR0 <- W212`, so their different upstream routes converge before
+the site and no site fuse moves. Every output was decoded by tracing the
+configured route backward from its fixed probe pad to the first destination
+at the DQS site. That exact route resolves the zero-state outputs and lane
+2's pairs in which unrelated muxes also move; all four sites expose the same
+thirteen source wires:
+
+    DQSR90 Q0      DQSW0 F1       DQSW270 Q1
+    RVALID Q5      RBURST F6      RFLAG Q6       WFLAG Q7
+    RPOINT F2 Q2 F4               WPOINT F3 Q3 F5
+
+The first destinations differ with site geometry, but the port map does not.
+All 24 inputs and all thirteen outputs now have per-port evidence on every
+lane; none of the lane-1-to-3 output names rests on the earlier shared-hop
+inference.
+
+`tools/dqs_param_probe.py --check --lane N` normalizes table 58 through its
+database keys instead of lane 0's physical fuse coordinates. All fifteen
+designs per lane -- base, nine parameter variants, no-DQS and four pinned
+HCLK lanes -- select the same keys as lane 0, reconstruct the exact fuse state
+of types 257, 259 and 270, carry the expected HCLK chain and attribute with no
+unexplained fuse. The three types share one semantic encoding with their own
+coordinate layout, so a packer can use the same table keys at all four byte
+groups.
+
+The serializer sweep was repeated on representative DQ pads `AA8/AB8` in
+lane 1, `R4/T4` in lane 2 and `W2/Y2` in lane 3. The A-side suite contains 33
+designs per lane: the two proven serializers, four illegal fabric-source
+tests, three `OSER8_MEM` parameter variants, both serializers on all four
+HCLK lanes and every data bit separately. All 99 outcomes match lane 0: the
+hard-wired `ICLK`, `WADDR`, `RADDR` and `TCLK`
+substitutions are refused with `CK2060`, the IOLOGIC attributes and bit order
+are identical and every accepted difference attributes with no unexplained
+fuse. The six B-side `ok_ides` and `ok_oser` builds match too, including the
+one-cell configuration offset. `tools/dq_lane_probe.py --lane N` defaults to
+the measured representative A pad and `build/dq_lane_lN`; an explicit B pad
+and output directory reproduce the B-side check.
