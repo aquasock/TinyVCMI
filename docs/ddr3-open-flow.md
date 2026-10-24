@@ -1534,3 +1534,130 @@ All 48 per-lane serializer designs now route with no lane-split warning and
 pack exactly equal to the vendor, the lane field included: four lanes on side
 A of every DDR3 lane, and on side B of lanes 0 and 2. `tools/lane_open_build.py
 --pack` therefore requires an exact match for every `*_lane0..3` design.
+
+## The PHY bring-up image
+
+`fpga/ddr3_phy_bringup` is the first DDR3 image meant for the board: the
+proven controller's whole PHY with nothing behind it, clocked as that
+controller is clocked. Its netlist and bitstream settle how:
+
+- **One `CLKDIV`, not one per lane.** The proven PHY has a single `fclkdiv`
+  at `LEFTSIDE[4]`, `DIV_MODE=4`, and every `DQS`, `OSER8_MEM` and
+  `IDES8_MEM` takes `memory_clk` as `FCLK`. All four byte groups in its
+  bitstream carry an empty table-58 lane field: HCLK lane 0.
+- **`STOP` is the inverse of PLL lock.** The `STOP` driver is a `LUT1` with
+  `INIT=2'h1`, an inverter, so `STOP` is low in normal operation. TOOL-005 had
+  recorded a buffer.
+- **The DLL's control is in the 50 MHz domain.** `dll_rst` and `uddcntln` are
+  flops on the IP's 50 MHz `clk`, preset by its reset.
+
+The image holds a 400 MHz PLL (`PLL_L[0]`), that `CLKDIV`, the `DDRDLL`, the
+four lanes in the pad-set shapes, and bank 7's command serializers.
+`bringup_core.v` sequences it on the board clock (DLL reset, wait for
+`LOCK`, a 16-cycle `UPDNCNTL` pulse, lane release, a `RLOADN`/`WLOADN`
+pulse) and answers TinyTang at 2 Mbaud: core ID `0x56`, and an 18-byte status
+frame carrying the sequencer state, PLL lock, DLL `LOCK`, `STEP`, a 50 MHz
+and a `PCLK` counter, each lane's `DQS` status, and an `IDES8_MEM` parity per
+lane. `AA 00 05 01` restarts the sequence.
+
+The DDR3 device never leaves reset: `ddr_reset_n` and `ddr_cke` are driven
+low from constants, `ddr_cs`, `ddr_ras`, `ddr_cas` and `ddr_we` high,
+`ddr_odt` low and `CK` static. Every DQ, DM and strobe serializer has its
+four `TX` inputs high. Gowin's `OSER8_MEM` model clears its tristate register
+under `RESET` and GSR, so the lane pads drive low -- never high -- from
+configuration until a few `PCLK` cycles after the lanes leave reset (in
+simulation, 176 us after configuration and about 20 ns after the release),
+and again on every restart. The proven controller resets its serializers
+from the same kind of signal, so by its netlist it has the same window at
+every power-up; that is read from the netlist, not measured.
+
+### Gates before a load
+
+`tools/build_ddr3_phy_bringup.sh` writes the two `.bin` files only after:
+
+1. the manifest and the generated sources are current;
+2. `tools/sim_ddr3_phy_bringup.sh` passes: Gowin's own primitive models, with
+   one exception below, show `ddr_reset_n` and `ddr_cke` at 0 throughout,
+   every lane pad high-Z in RUN, bank 7 at its levels, no lane pad ever
+   driven high, and the status frame answered;
+3. the open flow places, routes and packs it with `--ddr3-context`, with no
+   HCLK lane split;
+4. `tools/ddr3_image_check.py --exact-lanes` finds every table equal to the
+   vendor build of the same source (`tools/ddr3_phy_bringup.py --vendor`).
+
+Gowin's `DQS` simulation model is an empty module, ports and parameters with
+no behaviour, so a serializer clocked from it never leaves X. The simulation
+removes that stub from a copy of the library and compiles
+`tb_dqs_standin.v`, which only gives each serializer a running `TCLK`.
+
+`--exact-lanes` compares the `FCLKSEL` entries of bank 6 and the `DQS` lane
+fields exactly. Bank 7's serializers are in HCLK block 0, another block,
+where the vendor picked lane 3 and the open router lane 0; either lane
+carries the memory clock, so those 26 cells are printed as a NOTE.
+
+### What the first comparison found
+
+The first exact comparison failed in two places, and both were real model
+gaps rather than tool noise.
+
+**Reset multiplexers.** Every earlier serializer design tied `RESET` low, and
+the packer wrote both IOLOGIC reset multiplexers at `0`, the constant
+selection. With `RESET` routed, the vendor leaves out the multiplexer of each
+half whose serializer takes the signal, so the absence fuse is set:
+`LSROMUX_0` `(11,1)`/`(0,1)` for an output, `LSRIMUX_0` `(11,7)`/`(0,3)` for an
+input, side A/side B. The Apicula fork now follows that for `OSER8_MEM`,
+`IDES8_MEM`, and `OSER8` under a DDR3 context.
+
+**The DDRDLL's clock source.** The vendor set `DLL0` features 4 and 21 and
+not 5, and so does the proven controller's own bitstream. `tools/ddrdll_port_probe.py`
+isolated it in 19 vendor builds. The ports are not it -- constant, signal or
+inverted `STOP`, `UPDNCNTL` and `RESET`, a clock constrained from 20 to 2.5 ns,
+and a PLL clock at 50, 100 or 400 MHz all keep feature 5, and only an
+inverted `RESET` moves anything (it clears feature 19). A `CLKDIV` on the same
+clock is:
+
+| DLL clock | `DLL0` features | Port tile |
+|---|---|---|
+| no `CLKDIV` on the net | 5 | `GB10 -> CLK0` |
+| `CLKDIV` at `LEFTSIDE[4]` | 21, 4 | no `CLK0` pip |
+| `LEFTSIDE[5]` | 21, 3 | no `CLK0` pip |
+| `LEFTSIDE[6]` | 21, 2 | no `CLK0` pip |
+| `LEFTSIDE[7]` | 21, 1 | no `CLK0` pip |
+
+Feature 5 -- one of the four "vendor defaults" TOOL-016 recorded -- is
+`CLKIN` from the port tile's `CLK0`, and features 21 and `4-n` take it from
+HCLK block-2 lane n. Every DDRDLL image this project had loaded, and every
+one that read `STEP` 0, used `CLK0`. The nextpnr fork now gives the DLL a pin
+wire of its own, `DDRDLL_CLKIN`, reached from `CLK0` and from `HCLK20` to
+`HCLK23`, and offers the lane pips exactly when the clock also feeds a
+`CLKDIV`, as the vendor does; the Apicula fork writes the source the router
+took. A design without a `CLKDIV` routes and packs as before.
+
+With both changes the image equals the vendor build on all 306 tables, bank
+6 lanes exact.
+
+### On the board
+
+Both images were loaded on 2026-10-24, the vendor build of the same source
+first as a control:
+
+| Image | Bytes | SHA-256 |
+|---|---:|---|
+| vendor control | 4,330,802 | `3c011b871a8d5ebbb02166a83d107689ebfcfdf2a780a72abad81e02781e6da3` |
+| open flow | 4,330,782 | `e1f4ecbf22b13cbbc1863e53519f187544a74a369b29101875c0440a3544d3e5` |
+
+Both answered core ID `0x56` and returned the same status in every read,
+before and after a sequence restart: state RUN, PLL lock 1, DLL `LOCK` 1, no
+lock timeout, **`STEP` `0x2c`**, both counters advancing, and every lane
+status and parity byte 0. A typical frame:
+
+```text
+aa 00 04 12 a7 2c 73 1a b6 03 00 00 00 00 00 00 00 00 00 00 00 00
+```
+
+That is the first nonzero tap code this project has read, and the open flow
+reads exactly what the vendor does. 44 taps for a 2.5 ns period; Gowin's
+model would give 25. The lane status bytes read 0 with the device in reset
+and no read issued, which is what they should read; they are not yet
+evidence that the lanes work. The desktop core was loaded again afterwards
+and answered `0x54`.

@@ -1326,3 +1326,44 @@ Design step 2 and bring it to the user for approval together with the first Tang
 - User Test: N/A
 
 ---
+## 43 COMMIT Unreleased 2026-10-24T08:57:29-07:00
+
+#### Coming From:
+
+Unreleased 9daad20
+
+#### Purpose:
+
+Build the first DDR3 image meant for the board, a PHY-only image clocked as the hardware-proven controller is with the DDR3 device held in reset, gate it against its vendor build, and load it on the Tang beside a vendor control.
+
+#### Outcome:
+
+Committed with `0a45d6ba` to the nextpnr fork's `epic/gw5ast138c` and `b556b89` to the Apicula fork's, both pushed to the `aquasock` remotes only. Reading the proven controller's netlist and decoding its bitstream corrected the plan before any build: its PHY has one `CLKDIV`, `fclkdiv` at `LEFTSIDE[4]`, not one per lane, every `DQS` and serializer takes the memory clock on HCLK lane 0, the DLL control flops run on the 50 MHz board clock, and `STOP` is driven through a `LUT1` with `INIT=2'h1`, an inverter, so TOOL-005's buffer reading was wrong and is corrected. `fpga/ddr3_phy_bringup` carries that PHY with a 400 MHz PLL on `PLL_L[0]`, the pad-set lane shapes, bank 7's command serializers and a hand-written sequencer and 2 Mbaud TinyTang responder (`bringup_core.v`), with `ddr_reset_n` and `ddr_cke` low from constants and every lane serializer's `TX` high; `tools/ddr3_phy_bringup.py` generates and vendor-builds it, and `tools/build_ddr3_phy_bringup.sh` writes the two `.bin` files only after the manifest check, a simulation against Gowin's primitive models (`tools/sim_ddr3_phy_bringup.sh`), an open-flow build with no HCLK lane split, and `tools/ddr3_image_check.py --exact-lanes` all pass. Gowin's `DQS` simulation model turned out to be an empty module, so the simulation substitutes `tb_dqs_standin.v`; it shows the lane pads driven low, never high, from configuration until about 20 ns after the lanes leave reset, which is the `OSER8_MEM` model's reset state and a deviation from the approved all-tristate wording that was reported to the user before the load. The first exact comparison failed 67 tables and both causes were model gaps: a serializer on a routed `RESET` has no reset multiplexer on its own half, which Apicula now follows for `OSER8_MEM`, `IDES8_MEM` and DDR-context `OSER8`, and the DLL's clock source is a `DLL0` feature, measured in 19 vendor builds by `tools/ddrdll_port_probe.py --check`: feature 5 is `CLKIN` from the port tile's `CLK0`, and when the clock also drives a `CLKDIV` at `LEFTSIDE[4+n]` the vendor drops `GB10 -> CLK0` and sets features 21 and `4-n`, while port drive, polarity, clock constraint and a PLL source move nothing except an inverted `RESET` clearing feature 19. The nextpnr fork gives the DLL a `DDRDLL_CLKIN` pin wire reached from `CLK0` and from `HCLK20` to `HCLK23`, offers the lane pips exactly when the net also feeds a `CLKDIV`, joins the DLL to the lane its `CLKDIV` holds, and checks HCLK lane splits per block, which removed a false warning for a clock spanning blocks 0 and 2; Apicula writes the source the router took. The image then equalled the vendor build on all 306 tables with bank-6 lanes exact; bank 7's 26 serializers sit on lane 0 of block 0 in the open image and lane 3 in this vendor build, and the proven controller's own bitstream uses lane 0. On the Tang the vendor control, 4,330,802 bytes, SHA-256 `3c011b871a8d5ebbb02166a83d107689ebfcfdf2a780a72abad81e02781e6da3`, and the open-flow image, 4,330,782 bytes, SHA-256 `e1f4ecbf22b13cbbc1863e53519f187544a74a369b29101875c0440a3544d3e5`, were placed on the card and loaded with `tangload` in turn; both answered core ID `0x56` and returned in every read, before and after a sequence restart, state RUN, PLL lock 1, DLL `LOCK` 1 and `STEP` `0x2c` with both counters advancing and every lane status byte 0. That is the first nonzero tap code this project has read, and every earlier image that read zero had clocked its DLL from `CLK0`, which TOOL-004 now records. The desktop core was loaded again and answered `0x54`, and the DDR3 device was never released from reset. `tools/lane_open_build.py --pack` over all four lanes found 246 of 246 designs as expected and 224 of 224 packer checks equal: the first run's 55 packer failures were all `KeyError: 'DDRDLL_CLKIN'` from the agent stashing the Apicula change for a test while the regression was packing, and all 55 passed on a full rerun of lanes 1 and 2 with nothing else running. The DDRDLL liveness and open-flow smoke images rebuild to their earlier digests, the Apicula suite fails the same 58 pre-existing tests by name, its twelve new `tests/test_ddr3_phy_138c.py` tests pass and ten fail on the previous packer, `check_dqs_site.py` passes nine of nine and the preflight six of six. TOOL-003, TOOL-004, TOOL-005 and TOOL-016 were revised and TOOL-018 added. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering and active-log capacity.
+
+#### Next Steps:
+
+Step 3, approved by the user: release the DDR3 device from reset and read the MPR pattern back with no write. Before the design, model the PLL's `ENCLK` inputs so the memory clock can be stopped around the `CLKDIV` and lane reset as the vendor does: matched builds already place `ENCLK0` and `ENCLK2` on wires `B6` and `B4` of tile (27,4), `PllIn` rows 183 and 185 of the vendor `.dat`, with rows 183 to 189 running `B6` to `B0`, and the constant-high case routing VCC into the pin, so the model must route `ENCLK` only when a signal drives it to keep every existing PLL image unchanged. Then add the JEDEC initialization, MPR enable, read commands and a UART-driven sweep of each lane's `READ` timing and `RCLKSEL`, gate it as this cycle was, and load it beside a vendor control. Check why the proven bitstream shows 25 bank-7 cells with a lane selection against this image's 26. The `D108` unused-pin contradiction and the `is_mipi` bug outside the DDR context remain open.
+
+#### Files Modified:
+
+- docs/ddr3-open-flow.md
+- fpga/ddr3_phy_bringup/bringup_core.v
+- fpga/ddr3_phy_bringup/top.v
+- fpga/ddr3_phy_bringup/top.cst
+- fpga/ddr3_phy_bringup/open.sdc
+- fpga/ddr3_phy_bringup/vendor.sdc
+- fpga/ddr3_phy_bringup/tb_bringup.v
+- fpga/ddr3_phy_bringup/tb_dqs_standin.v
+- tools/ddr3_phy_bringup.py
+- tools/build_ddr3_phy_bringup.sh
+- tools/sim_ddr3_phy_bringup.sh
+- tools/ddr3_image_check.py
+- tools/ddrdll_port_probe.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: N/A
+
+---
