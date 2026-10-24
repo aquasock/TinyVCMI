@@ -1098,3 +1098,34 @@ All four lanes are now placed, routed and packed in-process to the vendor's fuse
 - User Test: N/A
 
 ---
+
+## 36 COMMIT Unreleased 2026-10-23T22:29:08-07:00
+
+#### Coming From:
+
+Unreleased 9075a40
+
+#### Purpose:
+
+Compare the open packer's DDR3-bank IOB and BANK fuses with the vendor's without writing any image, which is stage 1 of the approved declared-DDR-context plan.
+
+#### Outcome:
+
+Added `tools/ddr_bank_check.py`, which runs `gowin_pack`'s own stages on an open-flow routed netlist with `ddr_context` set on that one in-memory device and never creates the bitstream object, then compares the `IOBA` or `IOBB` table of all 100 bank 6 and 7 pads, used or not, and both `BANK` tables, each restricted to its own fuses, against the vendor build of the same source. Bank 6 holds the 44 data-lane balls with its `BANK` table at `(90,0)` and bank 7 the 28 address, command and clock balls with its table at `(18,0)`. The first run showed that the packer could not handle SSTL on this die at all: the inherited alias folds `SSTL15` and `SSTL15D` into family codes that have no `logicinfo` entry here and loses the 1.5 V the VCCIO check needs, so packing stopped with `KeyError: 'SSTL'`. Committed `b6ca047` to the Apicula fork's `epic/gw5ast138c` and pushed it to the `aquasock` remote only; it keeps those two names whole on the 138C, and the DDR3-bank refusal is unchanged. With it, the four lane-0 SSTL designs in `build/dq_pad` compare unequal. The SSTL15 input strobe on Y3 and bank 7's `BANK` table match. The DQ IOBUF lacks `TRI_MUX=TMDDR` and `SLEWRATE=FAST`, the DM TBUF two fuses, and the SSTL15D strobe pair four fuses on each side. Every unused pad lacks two fuses the vendor sets. Unused bank-6 pads beside a single-ended SSTL15 pad carry two input-side fuses the vendor leaves clear. Bank 6's `BANK` table lacks three SSTL15 fuses and has one SSTL15D fuse different. The unused-pad difference also appears on 99 of 100 pads of ordinary banks 2 and 3, so it is the packer's unused-pad treatment for every core on this die, and the user approved correcting it only for banks 6 and 7 inside a declared DDR context. Apicula's IO and bank tests pass apart from `test_io2hclk_places_the_vendor_oser4_cell_in_block_one`, the known two-lane chipdb limit, and `test_oracle_smoke_cst_defaults_asserted`, which needs a `GOWINHOME` and fails identically without the change. The results are in `docs/ddr3-open-flow.md` and the new TOOL-013. No image was written and no hardware was accessed. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering, and active-log capacity.
+
+#### Next Steps:
+
+Run the approved stage 1b, still writing no image. Build Gowin EDA SSTL designs for bank 7's address, command and differential clock shapes and for one data pad per lane on lanes 1 to 3. Then correct the used-pad IOB entries, bank 6's `BANK` table and the bank 6 and 7 unused-pad configuration in the Apicula fork, applying the DDR-bank corrections only under `ddr_context` so every other bank and core is unchanged, and accept them only when `tools/ddr_bank_check.py` passes all 102 tables on every SSTL design. Stage 2's narrow declared context, any written image and all Tang access each need separate user approval.
+
+#### Files Modified:
+
+- docs/ddr3-open-flow.md
+- tools/ddr_bank_check.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: N/A
+- User Test: N/A
+
+---

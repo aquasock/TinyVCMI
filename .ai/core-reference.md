@@ -130,6 +130,7 @@ Topic IDs are the `record_id` prefix. An entry reserves a namespace; it does not
 | What do lane 0's complete pads add? | TOOL | TOOL-010 |
 | Where are DDR3 lanes 1 to 3? | TOOL | TOOL-011 |
 | Do lanes 1 to 3 share lane 0's DQS and IOLOGIC encoding? | TOOL | TOOL-012 |
+| Does the open packer write the vendor's DDR3-bank IO configuration? | TOOL | TOOL-013 |
 | Which sources and licenses constrain reuse? | PROV | PROV-001 |
 
 ---
@@ -165,6 +166,7 @@ TOOL-009: "Lane 0's OSER8_MEM and IDES8_MEM sit on IOLOGIC A/B of cells (68..79,
 TOOL-010: "A complete DQ pad's IOLOGIC is the union of its serializers plus three IODELAY fuses; IO standard touches only IOB and the BANK table"
 TOOL-011: "Lanes 1 to 3 have byte groups (99,0), (90,0) and (63,0) and DQS sites (99,0), (90,0) and (81,6); every site moves lane 0's 24 input wires"
 TOOL-012: "Lanes 1 to 3 share lane 0's 24-input and 13-output DQS map, table-58 keys, memory-serializer attributes and bit order"
+TOOL-013: "With SSTL15 kept whole, the open packer's bank 6/7 IOB and BANK fuses still differ from the vendor's on used pads, every unused pad and bank 6's BANK table"
 PROV-001: "Reuse source and interface ideas with their original license boundaries and attribution intact"
 ```
 
@@ -543,6 +545,21 @@ PROV-001: "Reuse source and interface ideas with their original license boundari
     - "Tang-PSX commit 61974ca, gateware/ddr3_vendor/tang_psx_ddr3.cst"
     - "Gowin EDA 1.9.11.03 vendor builds under build/dqs_routed_l1 through build/dqs_b1_l3 and build/dq_lane_l1 through build/dq_lane_b_l3"
   verification: "For each of lanes 1 to 3, tools/dqs_map_check.py --lane N passed all 24 inputs and thirteen outputs; outputs were traced backward from the fixed probe pad through the exact configured route, removing the earlier zero-state and shared-hop ambiguity. tools/dqs_param_probe.py --check --lane N passed all fifteen designs with exact target-tile fuse reconstruction, the expected HCLK chain and zero unattributed fuses. The A-side serializer suite passed 33 of 33 outcomes per lane, including four expected CK2060 refusals, and the two accepted B-side designs per lane also passed with zero unattributed fuses. No hardware was accessed. Revised 2026-10-23: the nextpnr fork applies the shared port map and serializer pins to all four lanes from one lane table, and every lane-1-to-3 vendor design places and routes in the open flow with the DQS on its lane's site and every memory-mode pin on its DQS output's net (tools/lane_open_build.py). Revised again 2026-10-23: Apicula's get_DQS_fuses writes the encoding by table-58 key at each lane's byte group and its serializer handlers accept all forty positions; tools/lane_open_build.py --pack found the packer equal to the vendor by key for all 56 DQS designs and by IOLOGIC fuse state, exactly or outside the lane field, for all 132 serializer designs."
+
+- record_id: TOOL-013
+  topic_id: TOOL
+  title: "Open-packer DDR3-bank IO configuration against the vendor"
+  status: VERIFIED
+  verified_date: 2026-10-23
+  statement: "Banks 6 and 7 of the GW5AST-138C hold every DDR3 ball: bank 6 the 44 data-lane balls on left-edge rows 55 to 108, with its BANK longval table at cell (90,0); bank 7 the 28 address, command and clock balls on rows 0 to 54, with its BANK table at (18,0). Side A's IOB configuration is longval IOBA in the pad's cell and side B's is IOBB in the cell below. This die's IOB tables key IO_TYPE on SSTL15 and SSTL15D themselves, and the family codes SSTL and SSTL_D have no logicinfo entry. Packed in memory against Gowin EDA 1.9.11.03 builds of lane 0's four SSTL pad designs, the open packer's fuses equal the vendor's for the SSTL15 input strobe on Y3 and for bank 7's BANK table. They differ elsewhere. The DQ IOBUF on Y4 lacks TRI_MUX=TMDDR and SLEWRATE=FAST, (8,4) and (10,14). The DM TBUF lacks (1,12) and (5,2). The SSTL15D strobe pair lacks four fuses on each side. Every unused pad lacks two fuses the vendor sets, (1,12) and (9,13) on side A and (1,14) and (4,1) on side B. Unused bank-6 pads beside a single-ended SSTL15 pad carry (2,3) and (2,6), or (3,1) and (3,10), which the vendor leaves clear. Bank 6's BANK table lacks (20,20), (20,50) and (20,52) under SSTL15 and has (20,44) where the vendor has (20,43) under SSTL15D."
+  consequence: "Lifting the DDR3-bank refusal today would write configuration the vendor does not write on every pad of the DDR3 rail, so no declared DDR context may admit an image until these tables match. The unused-pad difference also appears on ordinary banks 2 and 3, 99 of 100 pads, so it is how the packer treats an unused pad on this die for every core; correcting it inside a declared DDR context for banks 6 and 7 only leaves every other core's bitstream unchanged."
+  sources:
+    - "TinyVCMI tools/ddr_bank_check.py"
+    - "TinyVCMI docs/ddr3-open-flow.md: DDR3 banks: IO configuration against the vendor"
+    - "TinyVCMI build/dq_pad/{dq_sstl,dq_nodelay_sstl,dm_sstl,dqs_sstl} vendor builds and build/open/dq_pad routed netlists"
+    - "aquasock/apicula branch epic/gw5ast138c, apycula/gowin_pack.py GW5AST_138C io_type_alias, add_io_to_bank and BankDesc"
+    - "Tang-PSX commit 61974ca, gateware/ddr3_vendor/tang_psx_ddr3.cst, bank and IO_TYPE of every DDR3 ball"
+  verification: "tools/ddr_bank_check.py ran gowin_pack's stages in memory with ddr_context set on one device instance and no bitstream object, and compared all 100 bank 6/7 pad tables and both BANK tables restricted to each table's own fuses on all four designs. The ordinary-bank comparison used the same packed result on banks 2 and 3. Bank 7's used pads and the SSTL pads of lanes 1 to 3 have no vendor builds yet. No image was written and no hardware was accessed."
 
 - record_id: PROV-001
   topic_id: PROV

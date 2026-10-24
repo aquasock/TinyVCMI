@@ -1167,3 +1167,58 @@ All four lanes are now modelled at the same level as lane 0: placed, routed
 and packed in-process to the vendor's fuses. What remains before an open-flow
 lane image is the DDR3-bank guard and the SSTL15 and SSTL15D IOB and BANK
 comparison it would open.
+
+## DDR3 banks: IO configuration against the vendor
+
+Banks 6 and 7 hold every DDR3 ball. Bank 6 carries the four data lanes, 44
+balls on left-edge rows 55 to 108, with its `BANK` table in cell `(90,0)`.
+Bank 7 carries the 28 address, command and clock balls on rows 0 to 54, with
+its `BANK` table in `(18,0)`. Apicula refuses any design that configures a
+pad there outside a declared DDR context, because a wrong pull or drive
+setting on the DDR3 rail is a thermal hazard. Before that refusal is lifted
+for a real image, the fuses the packer would write on those banks have to
+equal the vendor's.
+
+`tools/ddr_bank_check.py` runs `gowin_pack`'s own stages on an open-flow
+routed netlist with `ddr_context` set on that one in-memory device. It never
+creates the bitstream object, so no image exists. Against the vendor build of
+the same source it compares two kinds of table:
+
+- the IOB table of all 100 bank 6/7 pads, used or not: side A's `IOBA` in the
+  pad's cell, side B's `IOBB` in the cell below;
+- both `BANK` tables.
+
+Each comparison is restricted to the table's own fuses.
+
+The first run found that the packer could not handle SSTL at all. The
+inherited alias folds `SSTL15` and `SSTL15D` into the family codes `SSTL` and
+`SSTL_D`. This die's IOB tables have no `logicinfo` entry for those codes:
+they key `IO_TYPE` on the full names, in 710 and 843 entries on the bank-6
+cells. The fold also lost the 1.5 V the bank VCCIO check needs, so packing
+stopped with `KeyError: 'SSTL'`. The Apicula fork now keeps those two names
+whole on the 138C.
+
+With that fixed, the four lane-0 SSTL designs of `build/dq_pad` compare as
+follows:
+
+| Where | Packer against vendor |
+|---|---|
+| Strobe Y3 as an SSTL15 input | equal |
+| DQ IOBUF Y4 | missing `TRI_MUX=TMDDR` and `SLEWRATE=FAST`, `(8,4)` and `(10,14)` |
+| DM TBUF AA4, side B | missing `(1,12)` and `(5,2)` |
+| SSTL15D strobe pair Y3/AA3 | missing four fuses on each side |
+| every unused pad | the vendor sets two fuses the packer never does: `(1,12)` `(9,13)` on side A, `(1,14)` `(4,1)` on side B, and `(9,12)` `(17,13)` on bank 7's `IOL1A` |
+| unused bank-6 pads beside an SSTL15 single-ended pad | the packer also writes `(2,3)` `(2,6)` on side A and `(3,1)` `(3,10)` on side B, input-side entries the vendor leaves clear |
+| bank 6 `BANK` | SSTL15: missing `(20,20)`, `(20,50)`, `(20,52)`; SSTL15D: `(20,44)` where the vendor has `(20,43)` |
+| bank 7 `BANK` | equal |
+
+The unused-pad difference is not specific to the DDR3 banks. On ordinary
+banks 2 and 3 of the same build, 99 of 100 unused pads differ the same way,
+two packer fuses against the vendor's four. It is how the packer treats an
+unused pad on this die for every core that uses the fork. Changing it
+everywhere would change those cores' bitstreams, so the fix belongs inside
+the declared DDR context, for banks 6 and 7 only.
+
+No bank-7 address, command or clock shape and no lane-1-to-3 SSTL pad has
+been built for the vendor yet, so bank 7's used pads and the other lanes'
+pads are unmeasured. The DDR3-bank refusal itself is unchanged.
