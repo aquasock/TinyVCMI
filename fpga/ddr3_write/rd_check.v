@@ -45,6 +45,8 @@ module rd_check #(
     input  wire [6:0]   issue_col,  // its burst within the row
     input  wire [4:0]   lat,        // check offset, in hist's units
     input  wire [2:0]   step,       // expected rotation advance per READ
+    input  wire         slip_enable,
+    input  wire [11:0]  slip,       // one LiteDRAM-style beat slip per lane
 
     output reg          locked = 1'b0,
     output reg  [11:0]  expect_rot = 12'd0,   // per lane, for the next READ
@@ -91,6 +93,19 @@ module rd_check #(
     // The core registers the same word for its own checks; merged, the one
     // register would drive both from wherever it lands, so this copy stays.
     (* syn_preserve = 1, keep = 1 *) reg [255:0] dq_r = 256'd0;
+    reg [255:0] dq_prev = 256'd0;
+    wire [255:0] dq_slipped;
+    genvar gl, gp;
+    generate
+        for (gl = 0; gl < 4; gl = gl + 1) begin: lane_slip
+            for (gp = 0; gp < 8; gp = gp + 1) begin: pin_slip
+                wire [15:0] pair = {dq_q[64*gl + 8*gp +: 8],
+                                    dq_prev[64*gl + 8*gp +: 8]};
+                assign dq_slipped[64*gl + 8*gp +: 8] = pair >> slip[3*gl +: 3];
+            end
+        end
+    endgenerate
+    wire [255:0] dq_selected = slip_enable ? dq_slipped : dq_q;
     reg [255:0] dq_b1 = 256'd0, dq_b2 = 256'd0, dq_b3 = 256'd0;
     reg [3:0]   pins_b1 = 4'd0, pins_b2 = 4'd0, pins_b3 = 4'd0;
     reg [127:0] pmin_b1 = 128'd0;   // lane l, pair i: least of the pair at 32l + 8i
@@ -105,7 +120,8 @@ module rd_check #(
     reg [10:0] e0, e1, e2, e3, q0, q1;
 
     always @(posedge pclk) begin
-        dq_r <= dq_q;
+        dq_prev <= dq_q;
+        dq_r <= dq_selected;
         dq_b1 <= dq_r;
         dq_b2 <= dq_b1;
         dq_b3 <= dq_b2;
@@ -203,17 +219,45 @@ module rd_check #(
     // ------------------------------------------------------------------
     // The check at `lat`
     // ------------------------------------------------------------------
-    // The READ at offset `lat` is selected a cycle ahead, from `lat - 1`:
-    // what is at lat - 1 now is at lat next cycle.
-    reg  [4:0]   lat_m1 = 5'd0;
+    // The READ at offset `lat` is selected two cycles ahead, from `lat - 2`.
+    // The 32-entry mux is split into registered 4-way and 8-way stages;
+    // Gowin otherwise puts the whole select on one PCLK path.
+    reg  [4:0]   lat_m2 = 5'd0;
+    reg  [7:0]   sel_v_block = 8'd0;
+    reg  [63:0]  sel_pat_block = 64'd0;
+    reg  [87:0]  sel_addr_block = 88'd0;
+    reg  [2:0]   sel_low = 3'd0;
     reg          sel_v = 1'b0;
     reg  [7:0]   sel_pat = 8'd0;
     reg  [10:0]  sel_addr = 11'd0;
     always @(posedge pclk) begin
-        lat_m1 <= (lat == 5'd0) ? 5'd0 : lat - 5'd1;
-        sel_v <= !clr && ex_v[lat_m1];
-        sel_pat <= ex_pat[8*lat_m1 +: 8];
-        sel_addr <= ex_addr[11*lat_m1 +: 11];
+        lat_m2 <= (lat < 5'd2) ? 5'd0 : lat - 5'd2;
+        sel_low <= lat_m2[2:0];
+        case (lat_m2[4:3])
+            2'd0: begin
+                sel_v_block <= ex_v[7:0];
+                sel_pat_block <= ex_pat[63:0];
+                sel_addr_block <= ex_addr[87:0];
+            end
+            2'd1: begin
+                sel_v_block <= ex_v[15:8];
+                sel_pat_block <= ex_pat[127:64];
+                sel_addr_block <= ex_addr[175:88];
+            end
+            2'd2: begin
+                sel_v_block <= ex_v[23:16];
+                sel_pat_block <= ex_pat[191:128];
+                sel_addr_block <= ex_addr[263:176];
+            end
+            default: begin
+                sel_v_block <= ex_v[31:24];
+                sel_pat_block <= ex_pat[255:192];
+                sel_addr_block <= ex_addr[351:264];
+            end
+        endcase
+        sel_v <= !clr && sel_v_block[sel_low];
+        sel_pat <= sel_pat_block[8*sel_low +: 8];
+        sel_addr <= sel_addr_block[11*sel_low +: 11];
     end
 
     // first: does each lane hold the READ's pattern
@@ -242,8 +286,14 @@ module rd_check #(
     reg [7:0]   ev_pat = 8'd0;
     reg [10:0]  ev_addr = 11'd0;
     reg [255:0] ev_words = 256'd0;
+    // The move pulse is registered before it counts: the comparison against
+    // the previous rotation, the class check and the count's own zero test
+    // put eleven levels in front of a 32-bit increment on pclk otherwise.
+    reg         ev_move = 1'b0;
     integer el;
     always @(posedge pclk) begin
+        ev_move <= !clr && ev_v && ev_all && (&last_cls) &&
+                   (ev_rot != last_rot) && (total != 32'd0);
         ev_v <= !clr && ck_v;
         ev_all <= &ck_cls;
         ev_cls <= ck_cls;
@@ -277,33 +327,39 @@ module rd_check #(
             fail_addr <= 11'd0;
             fail_rot <= 12'd0;
             fail_words <= 256'd0;
-        end else if (ev_v) begin
-            total <= total + 32'd1;
-            last_rot <= ev_rot;
-            last_cls <= ev_cls;
-            if (ev_all)
-                class_ok <= class_ok + 32'd1;
-            if (ev_all && (&last_cls) && ev_rot != last_rot && total != 32'd0)
-                rot_moves <= rot_moves + 32'd1;
-            if (!locked) begin
-                if (ev_all) begin
-                    locked <= 1'b1;
-                    good <= good + 32'd1;
-                    expect_rot <= add_rot(ev_rot, step);
-                end
-            end else begin
-                expect_rot <= add_rot(expect_rot, step);
-                if (ev_bad == 4'b0000)
-                    good <= good + 32'd1;
-                else if (!fail_seen) begin
-                    fail_seen <= 1'b1;
-                    fail_lanes <= ev_bad;
-                    fail_pat <= ev_pat;
-                    fail_addr <= ev_addr;
-                    fail_rot <= ev_rot;
-                    fail_words <= ev_words;
+        end else begin
+            if (ev_v) begin
+                total <= total + 32'd1;
+                last_rot <= ev_rot;
+                last_cls <= ev_cls;
+                if (ev_all)
+                    class_ok <= class_ok + 32'd1;
+                if (!locked) begin
+                    if (ev_all) begin
+                        locked <= 1'b1;
+                        good <= good + 32'd1;
+                        expect_rot <= add_rot(ev_rot, step);
+                    end
+                end else begin
+                    expect_rot <= add_rot(expect_rot, step);
+                    if (ev_bad == 4'b0000)
+                        good <= good + 32'd1;
+                    else if (!fail_seen) begin
+                        fail_seen <= 1'b1;
+                        fail_lanes <= ev_bad;
+                        fail_pat <= ev_pat;
+                        fail_addr <= ev_addr;
+                        fail_rot <= ev_rot;
+                        fail_words <= ev_words;
+                    end
                 end
             end
+            // counted a cycle after its own response left ev_v, so the
+            // 32-bit increment starts from a flop and the rotation
+            // comparison, the class check and the zero test are not in
+            // front of it
+            if (ev_move)
+                rot_moves <= rot_moves + 32'd1;
         end
     end
 endmodule

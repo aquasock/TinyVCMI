@@ -100,40 +100,54 @@ module rd_align #(
     // "Exactly one" is "any, of a pattern whose rotations are distinct":
     // a periodic pattern's rotations match in twos or more, so pat_ok_r
     // stands in for counting the matches.
-    reg  [3:0]  meas_ok;
+    reg  [3:0]  meas_any;           // w0 is one of the pattern's rotations
+    reg  [3:0]  meas_pins;          // its other pins hold w0 or its inverse
     reg  [11:0] meas_rot;
-    reg  [7:0]  w0, wp;
-    reg         any;
-    reg         pins_ok;
+    reg  [7:0]  match;              // per rotation: w0 equals it
+    reg  [6:0]  pin_bad;            // per pin: it does not hold w0 or ~w0
+    reg  [7:0]  w0;
     integer     ml, mr, mp;
     always @(*) begin
-        meas_ok = 4'b0000;
+        meas_any = 4'b0000;
+        meas_pins = 4'b0000;
         meas_rot = 12'd0;
         for (ml = 0; ml < 4; ml = ml + 1) begin
             w0 = dq_q[64*ml +: 8];
-            any = 1'b0;
+            // The eight compares are written as a vector and reduced
+            // afterwards.  Written as an if-chain over the index, the tool
+            // serializes them through the priority mux that picks the
+            // rotation, which put nine levels of LUT on pclk; as a vector
+            // they sit side by side and only the encode is a chain.
             for (mr = 0; mr < 8; mr = mr + 1)
-                if (w0 == rot_pat_r[8*mr +: 8]) begin
-                    any = 1'b1;
+                match[mr] = (w0 == rot_pat_r[8*mr +: 8]);
+            meas_any[ml] = |match;
+            for (mr = 0; mr < 8; mr = mr + 1)
+                if (match[mr])
                     meas_rot[3*ml +: 3] = mr;
-                end
-            pins_ok = 1'b1;
-            for (mp = 1; mp < 8; mp = mp + 1) begin
-                wp = dq_q[64*ml + 8*mp +: 8];
-                if (wp != ((mp % 2) ? ~w0 : w0))
-                    pins_ok = 1'b0;
-            end
-            meas_ok[ml] = any && pat_ok_r && pins_ok;
+            for (mp = 1; mp < 8; mp = mp + 1)
+                pin_bad[mp-1] = (dq_q[64*ml + 8*mp +: 8] !=
+                                 ((mp % 2) ? ~w0 : w0));
+            meas_pins[ml] = ~|pin_bad;
         end
     end
 
     // The measurement is registered before the lock logic uses it: the
     // pattern's rotations, eight comparisons and a count per lane in one
     // clock, followed by the counter, does not close at 100 MHz otherwise.
+    // meas_ok_r and meas_rot_r describe the same measurement cycle, which
+    // the lock logic relies on, and that latency is one cycle, as the
+    // hardware-proven image has it.
+    //
+    // meas_ok_r carries no reset.  Its only consumers are inside the lock
+    // block's `rst || arm` branch, which clears every register it feeds, so a
+    // stale value during reset is unobservable there, and meas_rot_r, which
+    // is registered beside it and read by the same consumers, has never been
+    // cleared either.  The register and its reset mux were the last path the
+    // Gowin control missed pclk by.
     reg [3:0]  meas_ok_r;
     reg [11:0] meas_rot_r;
     always @(posedge pclk) begin
-        meas_ok_r <= rst ? 4'b0000 : meas_ok;
+        meas_ok_r <= meas_any & meas_pins & {4{pat_ok_r}};
         meas_rot_r <= meas_rot;
     end
 

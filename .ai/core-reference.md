@@ -145,6 +145,7 @@ Topic IDs are the `record_id` prefix. An entry reserves a namespace; it does not
 | Can our open flow build upstream LiteDRAM's GW5 DDR3 design? | TOOL | TOOL-025 |
 | What sets the read word frame's move at a read gap? | TOOL | TOOL-026 |
 | Do single closed-page READs return their burst? | TOOL | TOOL-027 |
+| Does a single read burst straddle two captured words? | TOOL | TOOL-029 |
 | Why did the Gowin control miss PCLK timing? | TOOL | TOOL-028 |
 | Which sources and licenses constrain reuse? | PROV | PROV-001 |
 
@@ -192,11 +193,12 @@ TOOL-020: "The open-flow DDR3 PHY initializes the device and reads its MPR patte
 TOOL-021: "The open-flow DDR3 PHY writes a pattern to the device and reads it back on all 32 DQ at almost every WSTEP without write leveling; per-bit word framing can come up misaligned at first start-up"
 TOOL-022: "Per-bit CALIB, grouped READ gating and signed read-delay sweeps qualify all lanes across 8 banks, 6 rows and 7 patterns; raw whole-byte rotation still needs controller normalization"
 TOOL-023: "With the READ gate at memory-clock offset 0 the read word frame moves once per interruption, uniformly in all four lanes; TOOL-026 shows the move is set by the gate offset"
-TOOL-024: "No valid RBURST edge-rate measurement exists: the earlier counts were misdecoded and wrapped; the image now counts in fixed 2^n-PCLK windows"
+TOOL-024: "RBURST does not mark each burst: over 2^16 PCLK the edges are 0 to 163 per lane against about 8192 expected if every READ marked its burst"
 TOOL-025: "Upstream LiteDRAM GW5A DDR3 uses only primitives the fork supports and synthesises cleanly, but nextpnr rejects its generated clocks, its differential CST form and its OSER8 FCLK routing"
 TOOL-026: "The READ gate's memory-clock offset k sets the frame move per read gap, 2 beats per clock; at read delay 1 with k = 2 or 3 the stream frame never moves"
 TOOL-027: "Single closed-page READs to sixteen pattern rows pass at no gate position; at the stream-stable one the right burst is whole in 12.5% of READs, 7 PCLK after the command"
 TOOL-028: "GowinSynthesis packs two-flop setting synchronizers into counter-addressed LUT-RAM shift registers unless syn_srlstyle = registers, which cost the Gowin control PCLK timing"
+TOOL-029: "A single read burst straddles two captured words: cycle 11 with slips 0,0,0,4 in a raw capture, and a runtime per-lane beat slip lifts the best-position pass rate from 5.5% to 25.4%"
 PROV-001: "Reuse source and interface ideas with their original license boundaries and attribution intact"
 ```
 
@@ -734,16 +736,16 @@ PROV-001: "Reuse source and interface ideas with their original license boundari
 
 - record_id: TOOL-024
   topic_id: TOOL
-  title: "Whether RBURST marks each read burst is unmeasured"
+  title: "RBURST does not mark each read burst"
   status: VERIFIED
   verified_date: 2026-10-24
   statement: "The DQS block's RBURST output is generated in a domain faster than the memory clock: the upstream LiteDRAM GW5 PHY samples it in the fast domain and notes that in X4 mode it can rise and fall between system clock edges. fpga/ddr3_write detects its edges in the memory-clock domain, toggles one bit per edge there and counts the toggles in PCLK. The per-RCLKSEL edge rates first recorded here are invalid: the image's status concatenation was 1020 bits in a 1016-bit wire, so the four per-lane counters were read four bits off, each reported byte holding nibbles of two lanes (lane 0's rates were always multiples of 64 per second), and the 8-bit counters also wrapped within the 250 ms host-timed window, so a rate near one edge per burst could not have been told from a low one. RVALID per RCLKSEL, read from a byte below the misdecoded region, stands: RCLKSEL 3 and 4 held RVALID high on all four lanes. The image now counts for exactly 2^n PCLK per command 0x24 n, saturating at 255, with the status field fixed."
-  consequence: "RBURST is not known to mark or not mark each burst. The windowed count can settle it in one board session, and it matters again because single READs need a burst boundary (TOOL-027). The slip-following aligner of TOOL-023 does not depend on it. Changing RCLKSEL while the read stream runs leaves RVALID low at several settings, so any sweep of RCLKSEL must re-enter read mode per setting."
+  consequence: "RBURST does not frame a burst, so a controller cannot use it to bind read data to the READ command that asked for it and the slip-following aligner of TOOL-023 stays the mechanism; TOOL-027's burst reassembly rests on consecutive words instead (TOOL-029). Changing RCLKSEL while the read stream runs leaves RVALID low at several settings, so any sweep of RCLKSEL must re-enter read mode per setting."
   sources:
     - "TinyVCMI fpga/ddr3_write/top.v (RBURST edge detection in the memory-clock domain), fpga/ddr3_write/wr_core.v (windowed count, status byte 119) and tools/ddr3_write_probe.py burst"
     - "Tang-PSX third_party/litedram/litedram/phy/gw5ddrphy.py, RBURST fast-domain capture comment"
     - "Verilator --lint-only WIDTHTRUNC on the committed wr_core.v status assignment, and an iverilog $bits check reporting 1020 bits"
-  verification: "The first measurement deployed SHA-256 24ed798874de9ee4d5a781e601b788701b09d2f1d622d2d82ad88bb88066a707 and read the counters twice 250 ms apart per RCLKSEL. Revised 2026-10-24: the status width was confirmed by two tools, the decoding of bytes 120 to 126 was reworked from the concatenation, and the rates were withdrawn; no corrected measurement has been made yet."
+  verification: "The first measurement deployed SHA-256 24ed798874de9ee4d5a781e601b788701b09d2f1d622d2d82ad88bb88066a707 and read the counters twice 250 ms apart per RCLKSEL. Revised 2026-10-24: the status width was confirmed by two tools, the decoding of bytes 120 to 126 was reworked from the concatenation, and the rates were withdrawn. Settled 2026-10-24 on the board with the fixed counting: over exactly 2^16 PCLK per lane the edges were 0,0,0,0 at RCLKSEL 0, 161,0,161,0 at 1, 0,0,0,0 at 2 and 3, 162 on all four lanes at 4, 0,163,0,163 at 5, 0,1,0,0 at 6 and 0,0,0,0 at 7 where lane 0's RVALID was low, against about 8,192 expected in that window if every READ marked its burst; each sweep step re-entered read mode. The desktop core was restored afterwards and answered 0x54."
 
 - record_id: TOOL-025
   topic_id: TOOL
@@ -778,13 +780,13 @@ PROV-001: "Reuse source and interface ideas with their original license boundari
   status: VERIFIED
   verified_date: 2026-10-24
   statement: "In fpga/ddr3_write's random mode, an ACTIVATE of one of sixteen rows -- banks 0 to 7, rows 0 and 1, each written across the whole row with its own aperiodic pattern -- then a READ with auto-precharge three PCLK later, one access every 8 PCLK, was checked by rd_check.v, which tests whether all four lanes hold the READ's pattern in any rotation with consistent even/odd pins, at each of 32 offsets after the READ. After every DQ bit was aligned with CALIB in a stream, no offset held the right pattern in at least 98 percent of READs at any of the 32 gate positions, about 2.4 million READs each. At delay 1, k = 2, the stream-stable position of TOOL-026, the right pattern was on all lanes at offset 10 -- the burst on the IDES8_MEM outputs 7 PCLK after the READ left the core -- in 12.5 percent of READs and at no more than 0.8 percent elsewhere. Failing captures kept each lane's pin consistency but carried other patterns, differing between lanes."
-  consequence: "The open-flow PHY is not yet usable by a controller issuing single READs. The likely cause, not yet measured, is that a single burst is not guaranteed to fall inside one captured 8-beat word and can straddle two consecutive words, which streams of one pattern could not reveal; upstream LiteDRAM reassembles each burst from two consecutive words with a per-lane bit-slip. A raw capture around single READs and a slip-capable checker are needed before latency or frame can be claimed for single READs."
+  consequence: "The open-flow PHY is still not usable by a controller issuing single READs, but the straddle is now measured rather than inferred and its fix is in the image: with the two-word reassembler of TOOL-029 the best position reconstructs 25.4% of READs at the expected rotation against 5.5% without it, so a burst genuinely does cross two captured words. What remains is that the burst lands at one of two positions, 8 offsets apart, so a fixed check offset sees only one population; binding each burst to the READ command that asked for it, and so establishing per-command latency, is the controller's work."
   sources:
     - "TinyVCMI fpga/ddr3_write/rd_check.v, tb_check.v and tools/sim_rd_check.sh"
     - "TinyVCMI fpga/ddr3_write/wr_core.v (R_RAND) and tools/ddr3_write_probe.py prewrite and random"
     - "Tang-PSX third_party/litedram/litedram/phy/gw5ddrphy.py, BitSlip on each IDES8_MEM output"
     - "Direct observation on the Tang Console 138K, 2026-10-24"
-  verification: "The checker's unit simulation passes latency, lock, frame-jump, predicted-move and mis-framed-pin cases; the image simulation checks every random READ's bank timing. On the board the same image as TOOL-026 ran random --prewrite --sweep-gate, and a direct run at delay 1, k = 2 recorded the histogram. The straddle explanation is an inference from the failing words and LiteDRAM's design."
+  verification: "The checker's unit simulation passes latency, lock, frame-jump, predicted-move and mis-framed-pin cases; the image simulation checks every random READ's bank timing. On the board the same image ran random --prewrite --sweep-gate, and a direct run at delay 1, k = 2 recorded the histogram. Revised 2026-10-24: the straddle was measured by a raw capture around a single READ (TOOL-029), the reassembler was built and its unit test passes, and the shipped image was measured at the stream-stable position with slips 1,526,697 of 6,013,517 READs, 25.4%, every reconstruction at the expected rotation, against 328,494 of 6,013,518 with the reassembler disabled; offset 19 passes 9.7% and the other 30 positions no more than 8%. The remaining two-position split is a measurement from the same histogram, not yet closed."
 
 - record_id: TOOL-028
   topic_id: TOOL
@@ -797,6 +799,19 @@ PROV-001: "Reuse source and interface ideas with their original license boundari
     - "TinyVCMI tools/build_ddr3_write.sh step 6 and build/ddr3_write/vendor/impl/pnr/probe_tr_content.html"
     - "TinyVCMI fpga/ddr3_write/wr_core.v, rd_align.v and rd_check.v"
   verification: "The committed source was rebuilt with Gowin in a scratch directory for the baseline; each change was followed by a Gowin rebuild and its timing report, and the final control passed the new gate inside tools/build_ddr3_write.sh."
+
+- record_id: TOOL-029
+  topic_id: TOOL
+  title: "A single read burst straddles two captured words, and a per-lane beat slip reassembles it"
+  status: VERIFIED
+  verified_date: 2026-10-24
+  statement: "A raw capture of all four lanes' DQ words for 24 PCLK after one isolated closed-page READ shows the burst not falling inside one IDES8_MEM word: for the first random READ, pattern 0x0d, the earliest capture cycle at which all four lanes reconstruct the pattern is cycle 11, lanes 0 to 2 needing beat slip 0 and lane 3 beat slip 4, which joins the last 8-s beats of the older word to the first s beats of the newer one exactly as upstream LiteDRAM's GW5 PHY BitSlip does. fpga/ddr3_write/rd_check.v implements that as runtime state: it registers the previous DQ word, forms {current, previous} per pin and shifts by a 3-bit per-lane slip, and command 0x2A v sets lane v[4:3] to v[2:0] with v[7] enabling the reassembler; it is disabled out of reset so nothing earlier changes, and tools/ddr3_write_probe.py random defaults to slips 0,0,0,4."
+  consequence: "Single READs can be checked against the pattern their own READ asked for, which a stream could not show because neighbouring bursts carried the same pattern and a straddled word was still one of its rotations. The reassembler is a diagnostic path, not the controller interface: it raises the best-position pass rate by a factor of 4.6 but does not remove the second burst position, so a controller still has to bind a burst to the READ command that asked for it."
+  sources:
+    - "TinyVCMI fpga/ddr3_write/rd_check.v (dq_prev, dq_slipped, slip_enable, slip), fpga/ddr3_write/tb_check.v case 7 and fpga/ddr3_write/wr_core.v command 0x2A"
+    - "TinyVCMI tools/ddr3_write_probe.py (set_slips, --slips) and docs/ddr3-open-flow.md: Reassembling a burst from two words"
+    - "Tang-PSX third_party/litedram/litedram/phy/gw5ddrphy.py, per-IDES8_MEM BitSlip"
+  verification: "The capture that established the cycle-11 and slip-4 result was a temporary 768-bit buffer whose 24-way enable drove the vendor control to 91.772 MHz with 768 failing endpoints; it was removed once read and is not committed, so those numbers stand as a measurement rather than a reproducible tool. The committed reassembler passes tb_check's seven cases, including slips 0,2,4,7 at 300 of 300 simulated READs, and the shipped image passes the image simulation. On the board at delay 1, k = 2, offset 11, 1,526,697 of 6,013,517 READs reconstructed at the expected rotation with slips 0,0,0,4 against 328,494 of 6,013,518 with the reassembler disabled; offset 19 passes 9.7%. The same image trains the read aligner in five of five sessions at read-run 255 and gap 255, presenting 26,000 to 26,201 bursts each in pattern order with err and drift clear, and does not train at read-run 32 and gap 8 while the vendor build of the same source does, which is the CK route difference of TOOL-022."
 
 - record_id: PROV-001
   topic_id: PROV

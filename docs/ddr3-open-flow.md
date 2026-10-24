@@ -2183,3 +2183,102 @@ reassembles bursts accordingly.
 The desktop `tinytang.bin` was restored afterwards and answered `0x54`. The
 images are on the card as `ddr3_rand.bin` and `ddr3_rand_vendor.bin`; the
 vendor control was not loaded.
+
+## Reassembling a burst from two words
+
+### What the raw capture showed
+
+A temporary capture buffer in `rd_check` held every lane's DQ word for 24
+PCLK after one isolated READ, so the burst's position could be seen rather
+than inferred. For the first random READ, pattern `0x0d`, the earliest cycle
+at which all four lanes reconstruct that pattern is capture cycle 11, with
+lanes 0 to 2 at beat slip 0 and lane 3 at beat slip 4 -- two consecutive
+words joined at a per-lane boundary, which is the operation upstream
+LiteDRAM's GW5 PHY applies with its per-lane `BitSlip`.
+
+The buffer was a measurement, not a deliverable: 768 bits of capture and its
+24-way enable cost the vendor control 768 failing endpoints, so it was
+removed once the numbers were read and is not part of the committed image.
+The reading above is all that remains of it.
+
+### The mechanism
+
+`rd_check` keeps the previous DQ word and, per lane, forms the 16-bit pair
+`{current, previous}` for every pin and shifts it by that lane's 3-bit slip,
+so a slip of `s` takes the last `8-s` beats of the older word and the first
+`s` of the newer one. The slip is runtime state, not a build constant:
+command `0x2A v` sets lane `v[4:3]` to `v[2:0]` and `v[7]` enables the
+reassembler once all four lanes have been written. It is disabled out of
+reset, so every earlier diagnostic behaves exactly as before, and
+`tools/ddr3_write_probe.py random` defaults to `--slips 0 0 0 4`, the
+measured vector.
+
+### Closing the vendor control
+
+The vendor control missed PCLK at 91.772 MHz with 768 failing endpoints when
+the capture was present, then 83.492 and 79.884 MHz with the capture removed,
+where the adjustable latency's single 32-way indexed select stood in front of
+the expected pattern and address. Registering that select in 4-way and 8-way
+stages left two endpoints at 96.333 MHz: the rotation measurement in
+`rd_align`, whose eight pattern compares were written as an if-chain over the
+rotation index and so serialized through the priority mux, and the checker's
+move counter, whose 32-bit increment sat behind a 12-bit compare, a class
+check and a zero test.
+
+Both are structural fixes, not relaxed constraints. The compares became a
+`match[7:0]` vector with the encode after it and the pin check a
+`pin_bad[6:0]` reduce; the move counter counts a registered `ev_move` pulse.
+`meas_ok_r` lost its reset, because every consumer of it is inside the lock
+block's own `rst || arm` branch, which clears what it feeds, and `meas_rot_r`
+beside it was never cleared either. The measurement's latency stays at one
+cycle -- a third pipeline stage was tried first and rejected by `tb_align`,
+which asserts training completes in exactly `LOCK_CYCLES`.
+
+With those, the vendor control closes PCLK at 103.145 MHz with `0.000` TNS on
+all three clocks. The open flow closes it at 122.31 MHz after routing, and
+eight deterministic seeds give 112.13 to 127.65 MHz, so seeding was never the
+question. The image equals its vendor build on all 306 tables, lanes exact.
+
+### On the board
+
+The open image answered core `0x56` with `lock 1`, `cke 1`, `reset_n 1` and
+`STEP 0x2c`, and `calibrate` aligned every bit on all four lanes, 24,977 of
+24,977 eligible cycles each. A stream read-back returned 24,989 matches of
+24,988 eligible cycles on every lane at rotation 6, even pins `0x47` and odd
+pins `0xB8`, so the read path itself is healthy.
+
+The aligner does not train at the default read grouping. At read-run 32 and
+gap 8 the open image trains nothing in five sessions (`trained 0000`, no
+relocks), while the vendor build of the same source trains all four lanes in
+five sessions with about 91 relocks. At read-run 255 and gap 255 -- the
+grouping entry 47 trained at -- the open image follows 3,073 relocks a
+session and presents 26,005, 26,201, 26,000, 26,147 and 26,160 bursts, every
+one in pattern order, with `err` and `drift` clear. The frame therefore moves
+at each of the 32/8 group's interruptions, which is the CK route and read-eye
+difference of TOOL-022 rather than a fault in the aligner; the vendor's more
+stable frame absorbs it.
+
+Single closed-page READs improved but do not yet return whole. At delay 1,
+`k = 2`, checked at offset 11, slips `[0,0,0,4]` passed 1,526,697 of
+6,013,517 READs, 25.4%, and every reconstruction also carried the expected
+rotation; the same position with the reassembler disabled passed 328,494 of
+6,013,518, 5.5%. At offset 19 the reassembler passes 9.7%. So the two-word
+straddle is real and worth a factor of 4.6 at one offset, and it is not the
+whole story: the histogram's two populated clusters, 8 offsets apart, are two
+different burst positions, and a fixed check offset can see only one of them.
+Binding each burst to the READ command that asked for it, and so establishing
+per-command read latency, is the controller's work and is what remains.
+
+### RBURST does not mark a burst
+
+The windowed count settles TOOL-024 with counters that neither wrap nor sit
+in a misdecoded byte: over exactly 2^16 PCLK, per lane, the RBURST edges were
+0,0,0,0 at RCLKSEL 0; 161,0,161,0 at 1; 0,0,0,0 at 2 and 3; 162 on all four
+lanes at 4; 0,163,0,163 at 5; 0,1,0,0 at 6; and 0,0,0,0 at 7, where lane 0's
+`RVALID` was low. A read issued every 8 PCLK would produce about 8,192 in that
+window, so `RBURST` does not mark each read burst. The slip-following aligner
+remains the mechanism.
+
+The desktop `tinytang.bin` was restored afterwards and answered `0x54`. The
+open image and its vendor control are on the card as `ddr3_rand.bin` and
+`ddr3_rand_vendor.bin`.

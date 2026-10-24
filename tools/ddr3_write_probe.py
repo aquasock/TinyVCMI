@@ -155,6 +155,12 @@ class Core:
                 "fail_words": [b[93 + 8 * n:101 + 8 * n] for n in range(4)],
                 "fail_rot": rots(u16(125))}
 
+    def set_slips(self, slips: list[int]):
+        if len(slips) != 4 or any(not 0 <= slip <= 7 for slip in slips):
+            raise ValueError("four lane slips in the range 0..7 are required")
+        for lane, slip in enumerate(slips):
+            self.request(0x2A, 0x80 | lane << 3 | slip)
+
     def mode(self, m: int):
         self.request(0x0C, m)
         deadline = time.time() + 2
@@ -585,6 +591,8 @@ def main() -> int:
     rn.add_argument("--seconds", type=float, default=0.5)
     rn.add_argument("--sessions", type=int, default=1)
     rn.add_argument("--sweep-gate", action="store_true")
+    rn.add_argument("--slips", type=int, nargs=4, default=[0, 0, 0, 4],
+                    help="two-word beat slip for lanes 0..3")
     mt = sub.add_parser("memtest")
     mt.add_argument("--banks", type=lambda x: int(x, 0), nargs="+", default=list(range(8)))
     mt.add_argument("--rows", type=lambda x: int(x, 0), nargs="+",
@@ -744,6 +752,7 @@ def main() -> int:
                 align_framing(core, RC_PATTERNS[0])
                 core.mode(0)
             core.address(0, args.row & ~1)
+            core.set_slips(args.slips)
             core.request(0x28, args.step)
             cases = [(d, k) for d in range(8) for k in range(4)] if args.sweep_gate \
                 else [(args.read_delay, args.gate)]

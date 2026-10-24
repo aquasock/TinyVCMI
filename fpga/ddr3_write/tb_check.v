@@ -31,6 +31,8 @@ module tb_check;
     reg  [6:0]   issue_col = 7'd0;
     reg  [4:0]   lat = 5'd10;
     reg  [2:0]   step = 3'd0;
+    reg          slip_enable = 1'b0;
+    reg  [11:0]  slip = 12'd0;
 
     wire         locked, fail_seen;
     wire [11:0]  expect_rot, last_rot, fail_rot;
@@ -45,6 +47,7 @@ module tb_check;
     rd_check dut (
         .pclk(pclk), .rst(rst), .arm(arm), .dq_q(dq_q), .issue(issue),
         .issue_idx(issue_idx), .issue_col(issue_col), .lat(lat), .step(step),
+        .slip_enable(slip_enable), .slip(slip),
         .locked(locked), .expect_rot(expect_rot), .last_rot(last_rot),
         .last_cls(last_cls), .total(total), .good(good), .class_ok(class_ok),
         .rot_moves(rot_moves), .hist_n(hist_n), .hist(hist),
@@ -236,8 +239,21 @@ module tb_check;
         if (good != total || total < 290) fail("latency 5 not good at 8");
         $display("      6: hist from 8, %0d/%0d good", good, total);
 
+        // 7: the two-word reassembler applies one lane-wide beat slip to
+        // every DQ word.  Once both halves hold the new response, every
+        // slip is a rotation of the same aperiodic pattern.
+        rearm;
+        slip <= {3'd7, 3'd4, 3'd2, 3'd0};
+        slip_enable <= 1'b1;
+        lat <= 5'd9;
+        run(300);
+        if (good != total || total < 290 || fail_seen)
+            fail("the configured two-word lane slips did not reassemble every READ");
+        $display("      7: two-word slips 0,2,4,7: %0d/%0d good", good, total);
+        slip_enable <= 1'b0;
+
         if (errors == 0)
-            $display("PASS  latency, lock, jump, predicted move and pin faults as specified");
+            $display("PASS  latency, lock, jump, predicted move, pin faults and lane slips as specified");
         else
             $display("FAIL  %0d error(s)", errors);
         $finish;

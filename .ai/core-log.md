@@ -1602,3 +1602,39 @@ Add a raw capture of all four lanes' words for about 24 PCLK after one isolated 
 - User Test: N/A
 
 ---
+
+## 50 COMMIT Unreleased 2026-10-24T17:04:00-07:00
+
+#### Coming From:
+
+Unreleased 64407e9
+
+#### Purpose:
+
+Make a single DDR3 read burst whole by reassembling it from two consecutive captured words with a per-lane beat slip, and land that in an image whose vendor control meets timing.
+
+#### Outcome:
+
+`fpga/ddr3_write/rd_check.v` now reassembles a lone read burst from two consecutive captured words: it registers the previous DQ word, shifts the per-pin 16-bit pair by a 3-bit per-lane beat slip, and takes that slip from command `0x2A`, disabled out of reset so every earlier diagnostic behaves exactly as before; `tools/ddr3_write_probe.py random` defaults to the measured vector `0 0 0 4`, and `fpga/ddr3_write/tb_check.v` case 7 proves slips 0, 2, 4 and 7 reassemble 300 of 300 simulated READs while the six earlier cases stand. The capture that produced that vector, a temporary 768-bit buffer holding 24 PCLK after one isolated READ, was a measurement and not a deliverable: its 24-way enable cost the vendor control 768 failing endpoints at 91.772 MHz, so it was removed once read, and its result is recorded in `docs/ddr3-open-flow.md` rather than kept as a tool. Closing the vendor control then took three structural changes, none of them a relaxed constraint: the adjustable latency's 32-way indexed select was split into registered 4-way and 8-way stages, `rd_align`'s eight pattern compares became a `match` vector with the encode after it instead of an if-chain that serialized through the priority mux, and `rd_check`'s move counter now counts a registered pulse; `meas_ok_r` also lost its reset, which only the lock block's own `rst || arm` branch had consumed, and the measurement keeps its one-cycle latency because a third pipeline stage was rejected by `tb_align`, which asserts training completes in exactly `LOCK_CYCLES`. The vendor control closes PCLK at 103.145 MHz with `0.000` TNS on all three clocks, the open flow closes it at 122.31 MHz after routing, and eight deterministic seeds give 112.13 to 127.65 MHz, so seeding was never the question. The image, SHA-256 `5d3d1ab1c87ce9ea49d11e57c415a2efb57705393b1da58ee5d4b30fd725344c` as `.fs` and `bdb00f24c056072537484b1fa756311e65bffe04e256451a9bf4df4b8340e1c6` as `.bin`, equals its vendor build, `e039cd586cee4ff569d69cf0b1ff589a96c98d87750e1aaec16fab2aa8df01d5`, on all 306 tables with lanes exact, and `tools/ddr3_write_seed_sweep.sh` reproduces the seed spread offline. On the Tang the open image answered core `0x56` with lock and CKE high and `STEP 0x2c`, `calibrate` aligned all 32 DQ bits on every lane at 24,977 of 24,977 eligible cycles, and a stream read-back matched 24,989 of 24,988 cycles on every lane at rotation 6 with even pins `0x47` and odd pins `0xB8`. The aligner does not train at the default read-run 32 and gap 8, where the vendor build of the same source trains five sessions with about 91 relocks, but at 255/255 it trains all four lanes in five of five sessions and presents 26,000 to 26,201 bursts each in pattern order with err and drift clear, which places the 32/8 failure on the CK route and read eye of TOOL-022 rather than on the aligner. At delay 1 and gate 2, checked at offset 11, slips `0 0 0 4` reconstructed 1,526,697 of 6,013,517 READs at the expected rotation against 328,494 of 6,013,518 with the reassembler disabled, 25.4 percent against 5.5, and offset 19 passes 9.7 percent while no other gate position exceeds 8, so the straddle is real and is not the whole cause: the burst lands at one of two positions 8 offsets apart and a fixed offset sees one of them. The windowed `0x24` count settled TOOL-024 negatively, 0 to 163 RBURST edges per lane per 2^16 PCLK against about 8,192 expected if every READ marked its burst, at every RCLKSEL. The desktop `tinytang.bin` was restored afterwards and answered `0x54`. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering and active-log capacity.
+
+#### Next Steps:
+
+What remains is the controller: bind each burst to the READ command that asked for it and establish per-command read latency, since the burst's two positions are exactly what a fixed check offset cannot cover, then qualify sustained random traffic over the full array before beginning the AE350 port; a sweep of RCLKSEL must still re-enter read mode per setting, the slip vector must be retrained whenever the read delay changes, and the `D108` unused-pin contradiction and the `is_mipi` bug outside the DDR context remain open.
+
+#### Files Modified:
+
+- docs/ddr3-open-flow.md
+- fpga/ddr3_write/rd_align.v
+- fpga/ddr3_write/rd_check.v
+- fpga/ddr3_write/tb_check.v
+- fpga/ddr3_write/wr_core.v
+- tools/ddr3_write_probe.py
+- tools/ddr3_write_seed_sweep.sh
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: N/A
+
+---

@@ -80,6 +80,8 @@
 //   26 n      rd_check's check offset n[4:0]
 //   27        the checker's status
 //   28 s      rd_check's expected rotation advance per READ, s[2:0]
+//   2A v      set lane v[4:3]'s two-word beat slip to v[2:0]; v[7] enables
+//             the reassembler after all four lane values have been written
 //
 // The read data path ends in rd_align, the trained read-valid boundary: it
 // locks each lane's whole-word rotation from the live stream, derotates it,
@@ -309,6 +311,8 @@ module wr_core (
     reg [1:0] gate_req = 2'd0;
     reg [4:0] lat_req = 5'd12;
     reg [2:0] rstep_req = 3'd0;
+    reg [11:0] slip_req = 12'd0;
+    reg slip_en_req = 1'b0;
     reg [4:0] bwin_req = 5'd0;
     reg [3:0] read_pat = 4'b1111;
     reg [7:0] pat_req = 8'h1d;
@@ -332,6 +336,8 @@ module wr_core (
     reg [1:0] gate_p1 = 2'd0, gate_p2 = 2'd0;
     reg [4:0] lat_p1 = 5'd12, lat_p2 = 5'd12;
     reg [2:0] rstep_p1 = 3'd0, rstep_p2 = 3'd0;
+    reg [11:0] slip_p1 = 12'd0, slip_p2 = 12'd0;
+    reg slip_en_p1 = 1'b0, slip_en_p2 = 1'b0;
     reg [4:0] bwin_p1 = 5'd0, bwin_p2 = 5'd0;
     reg [3:0] pat_p1 = 4'b1111, pat_p2 = 4'b1111;
     reg [7:0] dpat_p1 = 8'h1d;
@@ -357,6 +363,8 @@ module wr_core (
         gate_p1 <= gate_req;            gate_p2 <= gate_p1;
         lat_p1 <= lat_req;              lat_p2 <= lat_p1;
         rstep_p1 <= rstep_req;          rstep_p2 <= rstep_p1;
+        slip_p1 <= slip_req;            slip_p2 <= slip_p1;
+        slip_en_p1 <= slip_en_req;      slip_en_p2 <= slip_en_p1;
         bwin_p1 <= bwin_req;            bwin_p2 <= bwin_p1;
         pat_p1 <= read_pat;             pat_p2 <= pat_p1;
         dpat_p1 <= pat_req;             dq_pat <= dpat_p1;
@@ -835,7 +843,7 @@ module wr_core (
     rd_check check (
         .pclk(pclk), .rst(!ready_pc), .arm(rc_arm), .dq_q(dq_q),
         .issue(rc_issue), .issue_idx({acc_rowbit, acc_bank}), .issue_col(acc_col),
-        .lat(lat_p2), .step(rstep_p2),
+        .lat(lat_p2), .step(rstep_p2), .slip_enable(slip_en_p2), .slip(slip_p2),
         .locked(rc_locked), .expect_rot(rc_expect), .last_rot(rc_last_rot),
         .last_cls(rc_last_cls), .total(rc_total), .good(rc_good), .class_ok(rc_class),
         .rot_moves(rc_moves), .hist_n(rc_hist_n), .hist(rc_hist),
@@ -1134,7 +1142,8 @@ module wr_core (
                     (c == 8'h0b) || (c == 8'h0c) || (c == 8'h0d) || (c == 8'h0e) ||
                     (c == 8'h0f) || (c[7:2] == 6'b000100) || (c == 8'h20) ||
                     (c == 8'h21) || (c == 8'h22) || (c == 8'h23) || (c == 8'h24) ||
-                    (c == 8'h25) || (c == 8'h26) || (c == 8'h27) || (c == 8'h28);
+                    (c == 8'h25) || (c == 8'h26) || (c == 8'h27) || (c == 8'h28) ||
+                    (c == 8'h2a);
         end
     endfunction
 
@@ -1206,6 +1215,10 @@ module wr_core (
                             8'h25: gate_req <= rx_data[1:0];
                             8'h26: lat_req <= rx_data[4:0];
                             8'h28: rstep_req <= rx_data[2:0];
+                            8'h2a: begin
+                                slip_req[3 * rx_data[4:3] +: 3] <= rx_data[2:0];
+                                slip_en_req <= rx_data[7];
+                            end
                             default: if (cmd_byte[7:2] == 6'b000100) begin
                                 wstep_req[8 * cmd_byte[1:0] +: 8] <= rx_data;
                                 wload_tog <= ~wload_tog;
