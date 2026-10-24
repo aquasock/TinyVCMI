@@ -1833,3 +1833,78 @@ Two things the run showed, both for the next steps:
   clock skew is small, so leveling is not blocking.
 
 The desktop core was loaded again afterwards and answered `0x54`.
+
+## Read calibration
+
+The calibrated write image makes the read controls observable and separates
+live data from the words the deserializers hold after a read. The PHY start-up
+now requires PLL lock to remain high for 16384 system clocks before releasing
+the DLL reset, then retains the vendor-derived DLL-lock wait and clock-stop
+sync. Every `IDES8_MEM.CALIB` has its own link command. Write leveling asserts
+the lane `READ` inputs while the strobes toggle. Reads run in groups, 32
+consecutive READ commands followed by an 8-`PCLK` gap by default, while a
+free-running scheduler keeps their phase independent of mode changes; the DQS
+`READ` signal is delayed three `PCLK` by default, and data becomes eligible
+after 16 uninterrupted read cycles. The link can select all eight banks and
+15-bit rows.
+
+`tools/ddr3_write_probe.py calibrate` first uses `CALIB` to bring the eight DQ
+words of each lane to the lane's current majority framing. It then explores
+the complete signed `RMOVE` range from -128 through +127, writing alternating
+patterns with disjoint rotation sets at every point so a held word cannot pass,
+and leaves each lane at the midpoint of the passing interval it observed.
+That midpoint is not claimed to be the physical eye center when the upper edge
+lies beyond +127. `memtest` applies the same live check over selectable banks,
+rows and patterns.
+
+The final simulation issued 4876 writes and 3922 reads with 29 refreshes, no
+refresh interval over 7.6 us, and passed. Both place-and-route flows met timing,
+and the open image still equals the Gowin EDA build on all 306 DDR3 tables. The
+open `.fs` is SHA-256
+`e203be212469830d4bd3316a797a912be73ad1f7dd576793bed6b55b5d5b9535`;
+the loadable images were:
+
+| Image | Bytes | SHA-256 |
+|---|---:|---|
+| vendor control | 4,330,802 | `d594feb2f923d65f4b53049f88eb07ff79e504e1cd708d0b86e3f1296b29fda2` |
+| open flow | 4,330,782 | `89f917f6ec0d684331563e51246665473bd3a96fa930066a1f016a2d882dac6f` |
+
+On the board, asserting `READ` made write leveling measurable. In the open
+image each lane's returned level made a repeatable circular transition: lanes
+2 and 3 rose first near `WSTEP` 24, all lanes were high from 32 through 104,
+all were low from 120 through 184, and the second high interval began around
+192 to 208. This is feedback from the device, not a write-data pass/fail
+surrogate.
+
+The live read sweeps found these longest observed pass intervals:
+
+| Image | Lane 0 | Lane 1 | Lane 2 | Lane 3 |
+|---|---|---|---|---|
+| vendor | -4..+127 | -10..+127 | -14..+127 | -16..+127 |
+| open, two runs | -14/-16..+127 | -20/-22..+127 | -22/-24..+127 | -26/-28..+127 |
+
+Thus the open lower edge is 8 to 12 delay steps later than the vendor's; no
+upper edge was reached within the signed range. The corresponding open
+midpoints were +50 through +57. The offset now has a concrete routing
+correlate. `tools/ddr3_image_check.py --exact-lanes` reports that the data-bank
+HCLK20 chain is identical, while the command/clock bank's HCLK00 differs: the
+open router carries the PLL through `L2HCLK00`, `HCLK_MUX_BETA00` and
+`HCLK_BUF_BO00`, whereas the vendor selects `CLKDIV2_O00` at
+`HCLK_MUX_ALPHA00`. Bank 7 carries CK and the commands, so the different CK
+route is the likely source of the read-eye phase shift; this is a strong
+correlation, not a direct delay measurement.
+
+Ten complete controller restarts all returned aligned bits on all four lanes
+with live pattern counts. Explicit `CALIB` pulses also repaired deliberately
+different per-bit framing. Whole-byte rotation is a separate property: it can
+change between snapshots and read epochs, independently by lane, even while
+all eight bits in each lane remain aligned and every live check passes. The
+diagnostic therefore reports rather than rejects those rotations. A real
+controller must use its training/read-valid boundary to normalize byte order;
+this cycle does not claim that raw `IDES8_MEM` words have a fixed rotation.
+
+Finally, `memtest` passed all 336 combinations of eight banks, rows `0`, `1`,
+`2`, `0x155`, `0x2aaa` and `0x7fff`, and patterns `00`, `ff`, `aa`, `55`,
+`1d`, `6b` and `c5`. Each case saw about 25,100 eligible live read cycles and
+matched on all four lanes. The desktop `tinytang.bin` was restored afterwards
+and answered core ID `0x54`.

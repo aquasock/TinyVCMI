@@ -26,6 +26,8 @@ The rest of the MPR image's description holds:
   HCLK lane;
 * every `DQS` with `HOLD`, `READ`, `RCLKSEL`, `RLOADN`, `RMOVE` and `RDIR`
   from the core and `WLOADN` with `RLOADN`;
+* every `IDES8_MEM.CALIB` independently controlled by the core so framing can
+  be measured and corrected per DQ bit;
 * every DQ, DM and strobe serializer with its four `TX` inputs high, so the
   lane pads stay in tristate -- reads only; every `IDES8_MEM` output into the
   core;
@@ -79,6 +81,7 @@ CORE = """\
     wire [7:0] step;
     wire [2:0] rclksel;
     wire [3:0] read_en;
+    wire [31:0] calib;
     wire ddr_rst_n, cke, cs_n, ras_n, cas_n, we_n;
     wire [2:0] ba;
     wire [15:0] addr;
@@ -109,7 +112,7 @@ DQ = """\
     IODELAY #(.C_STATIC_DLY(5), .DYN_DLY_EN("FALSE"), .ADAPT_EN("FALSE")) dq{i}_delay (
         .DI(dq{i}_i), .SDTAP(1'b0), .VALUE(1'b0), .DLYSTEP(8'h00), .DO(dq{i}_d), .DF());
     IDES8_MEM dq{i}_des (.D(dq{i}_d), .ICLK(r90_{l}), .PCLK(pclk), .FCLK(mclk),
-        .RESET(phy_rst), .CALIB(1'b0), .WADDR(wp_{l}), .RADDR(rp_{l}),
+        .RESET(phy_rst), .CALIB(calib[{i}]), .WADDR(wp_{l}), .RADDR(rp_{l}),
         .Q0(dq_q[{b}]), .Q1(dq_q[{b1}]), .Q2(dq_q[{b2}]), .Q3(dq_q[{b3}]),
         .Q4(dq_q[{b4}]), .Q5(dq_q[{b5}]), .Q6(dq_q[{b6}]), .Q7(dq_q[{b7}]));
 """
@@ -189,7 +192,7 @@ def render() -> str:
         .pll_lock(pll_lock), .pll_en(pll_en), .dll_rst(dll_rst), .updncntl(updncntl),
         .hold(hold), .phy_rst(phy_rst), .dll_lock(dll_lock), .step(step),
         .pclk(pclk), .rclksel(rclksel), .rloadn(rloadn), .rmove(rmove), .rdir(rdir),
-        .read_en(read_en), .wloadn(wloadn), .wstep(wstep),
+        .read_en(read_en), .calib(calib), .wloadn(wloadn), .wstep(wstep),
         .rvalid(rvalid), .rburst(rburst), .rflag(rflag), .wflag(wflag),
         .rpoint(rpoint), .wpoint(wpoint), .dq_q(dq_q),
         .dq_pat(dq_pat), .dq_drive(dq_drive), .dqs_drive(dqs_drive), .odt(odt),

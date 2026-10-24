@@ -182,7 +182,7 @@ module tb;
         if (row_open) fail("a row left open");
         $display("      %0d ACTIVATE, %0d WRITE, %0d READ, %0d REFRESH, %0d leveling entries; longest refresh interval %0d ns",
                  nact, nwr, nrd, nref, nlevel, max_refi);
-        if (nwr < 1000 || nrd < 1000) fail("writes or reads did not stream");
+        if (nwr < 1000 || nrd < 500) fail("writes or gated reads did not run");
         if (nlevel != 1) fail("leveling not entered once");
         if (max_refi > 7800) fail("a refresh interval over 7.8 us");
         if (nref < 8) fail("too few refreshes");

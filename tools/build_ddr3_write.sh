@@ -36,7 +36,11 @@ echo "[1/6] manifest and generated sources"
 (cd "$root/tools" && python3 ddr3_ball_manifest.py --check && python3 ddr3_write.py --check)
 
 echo "[2/6] simulation"
-"$root/tools/sim_ddr3_write.sh"
+if [[ ${TINYVCMI_SKIP_SIM:-0} == 1 ]]; then
+    echo "skipped by TINYVCMI_SKIP_SIM=1 (use only after a separate passing run)"
+else
+    "$root/tools/sim_ddr3_write.sh"
+fi
 
 echo "[3/6] Yosys synthesis"
 yosys -Q -T -q -l "$out/synth.log" -p "

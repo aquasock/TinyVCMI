@@ -18,7 +18,8 @@ configures, decoded from the files themselves:
   lane in both builds, the lane field and the bank-6 `FCLKSEL` entries as
   well.  Bank 7's serializers are in another HCLK block, where either lane
   carrying the clock is correct and the two tools need not agree, so their
-  `FCLKSEL` entries are reported as a NOTE naming both builds' fuses;
+  `FCLKSEL` entries are reported as a NOTE naming both builds' fuses.  Any
+  different device-level HCLK mux selections are also reported as notes;
 * `DDRDLL`: the `DLL0` table of the bottom-left corner cell, exactly.
 
 It reports every table that differs and writes nothing.  It does not touch
@@ -134,6 +135,14 @@ def main() -> int:
 
     for (side, a, b), n in sorted(collections.Counter(notes).items()):
         print(f"  NOTE  IOLOGIC{side} FCLKSEL on {n} bank-7 cell(s): image {list(a)}, vendor {list(b)}")
+    if args.exact_lanes:
+        for cell, table in sorted(dev.hclk_pips.items()):
+            image_state, vendor_state = tile(open_m, cell), tile(vendor_m, cell)
+            for dest, sources in sorted(table.items()):
+                image_sel = fa._selected(sources, image_state)
+                vendor_sel = fa._selected(sources, vendor_state)
+                if image_sel != vendor_sel:
+                    print(f"  NOTE  HCLK {cell} {dest}: image {image_sel}, vendor {vendor_sel}")
     for line in failures:
         print(line)
     for kind, (n, bad) in counts.items():

@@ -1449,3 +1449,40 @@ Bring to the user for approval the read-calibration cycle: make the start-up wai
 - User Test: N/A
 
 ---
+
+## 46 COMMIT Unreleased 2026-10-24T10:58:40-07:00
+
+#### Coming From:
+
+Unreleased ef690f4
+
+#### Purpose:
+
+Calibrate live DDR3 reads across all four lanes, make write leveling observable, explain the vendor/open read-eye offset, and widen the hardware data test across banks, rows and patterns.
+
+#### Outcome:
+
+`fpga/ddr3_write` now waits for stable PLL lock before the vendor-derived PHY sync, exposes per-bit `IDES8_MEM.CALIB`, asserts `READ` during write leveling, issues configurable grouped reads through a delayed DQS `READ` pipeline, and selects all banks and 15-bit rows; its host tool aligns per-bit framing, alternates disjoint patterns through a signed 256-step live eye sweep, verifies repeated read sessions and tests configurable address/pattern sets. The final simulation passed with 4876 writes, 3922 reads and 29 refreshes, both flows met timing, and the open image equalled its vendor build on all 306 DDR3 tables; `tools/ddr3_image_check.py` now also reports the four non-failing HCLK mux differences. On the Tang, per-bit calibration worked, write leveling produced circular transitions on every lane, two open eye sweeps placed the lower edges 8 to 12 steps after the vendor's with no upper edge by +127, ten complete restarts retained aligned bits, and all 336 combinations of eight banks, six rows and seven patterns passed at about 25100 live cycles per case on every lane. The raw whole-byte rotation still changes by lane and read epoch and must be normalized by a controller. The differing bank-7 HCLK00 selection, direct global/HCLK routing in the open image versus vendor `CLKDIV2_O00`, is the likely source of the eye offset, though not a direct delay measurement. The deployed open image was SHA-256 `89f917f6ec0d684331563e51246665473bd3a96fa930066a1f016a2d882dac6f`; the desktop image was restored and answered `0x54`. `docs/ddr3-open-flow.md` and TOOL-022 record the durable evidence. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering and active-log capacity.
+
+#### Next Steps:
+
+Build the controller-facing read-data aligner around a trained read-valid boundary so each lane's changing raw byte rotation becomes fixed logical data, then integrate the PHY with a controller, most likely LiteDRAM's control layer, and qualify sustained random traffic and the full array before beginning the AE350 port; the `D108` unused-pin contradiction and the `is_mipi` bug outside the DDR context remain open.
+
+#### Files Modified:
+
+- docs/ddr3-open-flow.md
+- fpga/ddr3_write/tb_wr.v
+- fpga/ddr3_write/top.v
+- fpga/ddr3_write/wr_core.v
+- tools/build_ddr3_write.sh
+- tools/ddr3_image_check.py
+- tools/ddr3_write.py
+- tools/ddr3_write_probe.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: N/A
+
+---
