@@ -125,6 +125,30 @@ INS_LOC "dll" DDRDLLM_BL;
 
 SDC = "create_clock -name clk -period 20.000 [get_ports {clk}]\n"
 
+#: The four DDR3 lanes of the hardware-proven controller (Tang-PSX
+#: `tang_psx_ddr3.cst`) as located by TinyVCMI TOOL-011: the strobe pin, the
+#: `DQS` site tile and the byte group's table-58 cell, both as (row, col).
+LANES = {
+    0: {"pin": "Y3", "site": (81, 5), "byte_group": (72, 0)},
+    1: {"pin": "V9", "site": (99, 0), "byte_group": (99, 0)},
+    2: {"pin": "W6", "site": (90, 0), "byte_group": (90, 0)},
+    3: {"pin": "R3", "site": (81, 6), "byte_group": (63, 0)},
+}
+
+
+def lane_cst(lane: int, cst: str = None) -> str:
+    """`cst` (default `CST`) with the strobe pad moved to `lane`'s pin."""
+    cst = CST if cst is None else cst
+    out = cst.replace('IO_LOC "dqsi" Y3;', f'IO_LOC "dqsi" {LANES[lane]["pin"]};')
+    if out == cst and lane != 0:
+        raise SystemExit("constraints changed: dqsi pin not found")
+    return out
+
+
+def lane_dir(path: str, lane: int) -> str:
+    """Lane 0 keeps the original build directories; lane n gets `_l<n>`."""
+    return path if lane == 0 else f"{path}_l{lane}"
+
 
 def _bus(name: str, n: int) -> str:
     """`{@READ3@, @READ2@, ...}`, most significant bit first."""
@@ -196,14 +220,14 @@ def render(port: str, source: str) -> str:
     return source_text
 
 
-def write_pair(outdir: str, port: str, mode: str):
+def write_pair(outdir: str, port: str, mode: str, lane: int = 0):
     """Write the two members of one matched pair; return their directories."""
     first, first_source, second, second_source = MODES[mode]
     dirs = []
     for name, source in ((first, first_source), (second, second_source)):
         d = os.path.join(outdir, name)
         os.makedirs(d, exist_ok=True)
-        for fn, body in (("top.v", render(port, source)), ("top.cst", CST),
+        for fn, body in (("top.v", render(port, source)), ("top.cst", lane_cst(lane)),
                          ("top.sdc", SDC), ("run.tcl", TCL)):
             with open(os.path.join(d, fn), "w") as f:
                 f.write(body)
@@ -231,6 +255,9 @@ def main() -> int:
     ap.add_argument("--out", default=None,
                     help="defaults to build/dqs_ports in const mode and "
                          "build/dqs_routed in routed mode")
+    ap.add_argument("--lane", type=int, choices=sorted(LANES), default=0,
+                    help="DDR3 lane whose strobe pin the DQSIN pad takes; lane n > 0 "
+                         "builds into the default directory with an `_l<n>` suffix")
     args = ap.parse_args()
 
     default_ports = CONTROL_PORTS if args.mode == "const" else PROBES
@@ -240,11 +267,11 @@ def main() -> int:
         print(f"unknown port(s): {unknown}; known: {PROBES}", file=sys.stderr)
         return 2
 
-    out = args.out or os.path.join(
+    out = args.out or lane_dir(os.path.join(
         ROOT, {"const": "build/dqs_ports",
                "routed": "build/dqs_routed",
                "swap": "build/dqs_swap",
-               "clock": "build/dqs_clock"}[args.mode])
+               "clock": "build/dqs_clock"}[args.mode]), args.lane)
     if not os.path.isdir(os.path.join(GOWIN, "IDE")):
         print(f"missing Gowin EDA at {GOWIN}", file=sys.stderr)
         return 2
@@ -253,7 +280,7 @@ def main() -> int:
         outdir = os.path.join(out, port.replace("[", "_").replace("]", ""))
         if os.path.isdir(outdir):
             shutil.rmtree(outdir)
-        pair = write_pair(outdir, port, args.mode)
+        pair = write_pair(outdir, port, args.mode, args.lane)
         ok = all(build(d) for d in pair)
         print(f"{port}: {'built' if ok else 'FAILED'}")
         if not ok:

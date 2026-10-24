@@ -40,9 +40,19 @@ table 58 of the byte group's config tile `(72,0)` holds exactly that lane's
 select fuses.  Those pairs come from `tools/dqs_port_probe.py --mode routed`
 and `--mode clock` built under `build/fclk_rebuild/`.
 
+`--lane N` checks lane N (1 to 3) against the same lane-0 map, from the
+pairs built with `--lane N` into the `_l<N>` directories, at that lane's
+site (TOOL-011).  The inputs are checked exactly as for lane 0.  The default
+outputs' next hops are lane-specific, so instead of recorded hops the check
+infers them: an output whose pair changes nothing in the site takes the
+zero-state source of the destination used by the measured sibling it shares a
+downstream hop with.  `FCLK` is lane 0's measurement only; the other lanes'
+lane field is checked by `tools/dqs_param_probe.py --check --lane N`.
+
 Usage:
     tools/dqs_map_check.py            # every entry, then a summary
     tools/dqs_map_check.py --build DIR
+    tools/dqs_map_check.py --lane 2
 
 Run it with the open-flow environment sourced (`tools/openflow_env.sh`).  It
 reads local build artifacts only and does not access hardware.
@@ -201,11 +211,72 @@ def out_dir(name: str) -> str:
     return "dqs_outputs/" + name.replace("[", "_").replace("]", "")
 
 
+def check_lane(build: str, lane: int) -> int:
+    """Lane `lane`'s pairs against the lane-0 map; see the module docstring."""
+    import dqs_port_probe as probe
+    import fs_attribute as fa
+
+    site = probe.LANES[lane]["site"]
+    suffix = lambda path: probe.lane_dir(path.split("/")[0], lane) + "/" + path.split("/", 1)[1]
+    pairs = Pairs(build)
+    failures = []
+
+    def report(ok: bool, line: str):
+        print(f"  {'PASS' if ok else 'FAIL'}  {line}", flush=True)
+        if not ok:
+            failures.append(line)
+
+    print(f"lane {lane}: inputs at tile {site}")
+    for port, (pair, ref, tgt, wire) in INPUTS.items():
+        pairs.load(suffix(pair), ref, tgt)
+        moved, _ = pairs.moved(site, SITE_INPUTS)
+        report(set(moved) == {wire}, f"{port:10s} -> {wire:5s} moved {sorted(moved) or '-'}")
+
+    print(f"\nlane {lane}: outputs at tile {site}")
+    first, hops, quiet = {}, {}, set()
+    for name in OUTPUTS:
+        pairs.load(suffix(out_dir(name)), "reference", "target")
+        moved, nchanged = pairs.moved(site)
+        hops[name] = {(tuple(r["tile"]), d["dest"], d["after"])
+                      for r in fa.attribute(pairs.dev, pairs.grid, pairs.ref, pairs.tgt)
+                      for d in r["route"] if d["after"] and d["after"] != d["before"]
+                      and tuple(r["tile"]) != site}
+        if len(moved) == 1:
+            dest, (_, src) = next(iter(moved.items()))
+            first[name] = (dest, src)
+        elif nchanged == 0:
+            quiet.add(name)
+        else:
+            first[name] = (None, f"{len(moved)} destinations moved")
+    for name in quiet:
+        candidates = {first[o][0] for o in first
+                      if first[o][0] and hops[o] & hops[name]}
+        if len(candidates) == 1:
+            dest = candidates.pop()
+            first[name] = (dest, pairs.zero_source(site, dest))
+        else:
+            first[name] = (None, f"next hop shared with {sorted(candidates) or 'no'} destinations")
+    for name, (src, dest, nxt) in OUTPUTS.items():
+        got_dest, got_src = first[name]
+        how = "default" if name in quiet else "selected"
+        report(got_src == src, f"{name:10s} -> {got_src or '-'} via {got_dest or '-'} {how} "
+                               f"(lane 0: {src} via {dest})")
+    sources = [first[n][1] for n in OUTPUTS]
+    report(len(set(sources)) == len(sources), f"output source wires distinct: {' '.join(sorted(map(str, sources)))}")
+    print(f"\n{len(failures)} check(s) failed.  Hardware was not accessed." if failures
+          else f"\nLane {lane} agrees with the lane-0 map: {len(INPUTS)} inputs and {len(OUTPUTS)} outputs, "
+               f"{len(quiet)} outputs by route inference.  Hardware was not accessed.")
+    return 1 if failures else 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--build", default=os.path.join(ROOT, "build"))
+    ap.add_argument("--lane", type=int, choices=range(4), default=0)
     args = ap.parse_args()
+    if args.lane:
+        return check_lane(args.build, args.lane)
 
     pairs = Pairs(args.build)
     failures = []

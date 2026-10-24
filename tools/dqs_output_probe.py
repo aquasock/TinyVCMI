@@ -71,7 +71,7 @@ def render(source: str, anchor: str) -> str:
     return text
 
 
-def write_pair(root: str, output: str):
+def write_pair(root: str, output: str, lane: int = 0):
     # Keep the DQS live through an output other than the one being measured,
     # so the target output has no route at all in the reference member.
     anchor = "r90" if output == "DQSW0" else "w0"
@@ -80,7 +80,8 @@ def write_pair(root: str, output: str):
                          ("reference", "dqsi")):
         directory = os.path.join(root, name)
         os.makedirs(directory, exist_ok=True)
-        for filename, body in (("top.v", render(source, anchor)), ("top.cst", CST),
+        for filename, body in (("top.v", render(source, anchor)),
+                               ("top.cst", base.lane_cst(lane, CST)),
                                ("top.sdc", base.SDC), ("run.tcl", base.TCL)):
             with open(os.path.join(directory, filename), "w") as stream:
                 stream.write(body)
@@ -91,9 +92,12 @@ def write_pair(root: str, output: str):
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--outputs", help="comma-separated; defaults to all")
-    parser.add_argument("--out", default=os.path.join(base.ROOT,
-                                                       "build/dqs_outputs"))
+    parser.add_argument("--out", default=None)
+    parser.add_argument("--lane", type=int, choices=sorted(base.LANES), default=0,
+                        help="DDR3 lane whose strobe pin the DQSIN pad takes")
     args = parser.parse_args()
+    if args.out is None:
+        args.out = base.lane_dir(os.path.join(base.ROOT, "build/dqs_outputs"), args.lane)
 
     outputs = [name for name in (args.outputs or ",".join(OUTPUTS)).split(",")
                if name]
@@ -110,7 +114,7 @@ def main() -> int:
                             output.replace("[", "_").replace("]", ""))
         if os.path.isdir(root):
             shutil.rmtree(root)
-        ok = all(base.build(directory) for directory in write_pair(root, output))
+        ok = all(base.build(directory) for directory in write_pair(root, output, args.lane))
         print(f"{output}: {'built' if ok else 'FAILED'}")
         if not ok:
             return 1

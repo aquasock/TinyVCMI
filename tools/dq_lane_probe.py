@@ -145,17 +145,20 @@ def expected_attrs(name: str) -> set:
     return out
 
 
-def check(out_dir: str, pad: str, names) -> int:
+def check(out_dir: str, pad: str, names, lane: int = 0) -> int:
     import fs_attribute as fa
     import fs_site_diff as fsd
     from apycula import attrids
 
-    side = {"Y4": "A", "AA4": "B"}.get(pad)
-    if side is None:
-        print(f"--check knows the IOLOGIC side of Y4 and AA4 only, not {pad}", file=sys.stderr)
-        return 2
-    cell = (77, 0) if side == "A" else (78, 0)
     dev = fsd.chipdb.load_chipdb(fsd.DB)
+    io = dev.pinout["GW5AST-138C"]["PBGA484A"][pad][0]
+    if not (io.startswith("IOL") and io[-1] in "AB"):
+        print(f"--check knows left-edge pads only, not {pad} ({io})", file=sys.stderr)
+        return 2
+    side, row = io[-1], int(io[3:-1]) - 1
+    # side A is configured in the pad's cell, side B in the cell below
+    # (the packer's IOLOGICB `fuse_cell_offset`), as lane 0 measured
+    cell = (row, 0) if side == "A" else (row + 1, 0)
     grid = fsd.Grid(dev)
     ids = {v: k for k, v in attrids.iologic_attrids.items()}
     vals = {v: k for k, v in attrids.iologic_attrvals.items()}
@@ -171,7 +174,8 @@ def check(out_dir: str, pad: str, names) -> int:
                 for k in top}
 
     fs = lambda n: os.path.join(out_dir, n, "impl/pnr/probe.fs")
-    base_fs = os.path.join(base.ROOT, "build/dqs_b1/base/impl/pnr/probe.fs")
+    base_fs = os.path.join(base.lane_dir(os.path.join(base.ROOT, "build/dqs_b1"), lane),
+                           "base/impl/pnr/probe.fs")
     base_m = fsd.load_matrix(base_fs)
     failures = 0
     for name in names:
@@ -245,6 +249,9 @@ def main() -> int:
                          "AA4 is dm[0] on IOLOGIC B of the same cell)")
     ap.add_argument("--check", action="store_true",
                     help="assert the recorded results on built designs; build nothing")
+    ap.add_argument("--lane", type=int, choices=sorted(base.LANES), default=0,
+                    help="DDR3 lane whose strobe pin the DQSIN pad takes; --pad must be "
+                         "one of that lane's pins")
     args = ap.parse_args()
     if args.check and not args.only:
         args.only = ",".join(n for n in DESIGNS
@@ -255,12 +262,12 @@ def main() -> int:
         print(f"unknown design(s): {unknown}", file=sys.stderr)
         return 2
     if args.check:
-        return check(args.out, args.pad, names)
+        return check(args.out, args.pad, names, args.lane)
     if not os.path.isdir(os.path.join(base.GOWIN, "IDE")):
         print(f"missing Gowin EDA at {base.GOWIN}", file=sys.stderr)
         return 2
 
-    cst = base.CST + (f'IO_LOC "dq_pad" {args.pad};\n'
+    cst = base.lane_cst(args.lane) + (f'IO_LOC "dq_pad" {args.pad};\n'
                       'IO_PORT "dq_pad" IO_TYPE=LVCMOS33 PULL_MODE=NONE;\n')
     for name in names:
         kind, overrides, fclk_lane = DESIGNS[name]

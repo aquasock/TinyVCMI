@@ -211,13 +211,14 @@ def report(out_dir: str, names) -> int:
     return 0
 
 
-def check(out_dir: str, names) -> int:
+def check(out_dir: str, names, lane: int = 0) -> int:
     import fs_attribute as fa
     import fs_site_diff as fsd
 
     dev = fsd.chipdb.load_chipdb(fsd.DB)
     grid = fsd.Grid(dev)
-    t58 = dev.longfuses[dev.grid[BYTE_GROUP[0]][BYTE_GROUP[1]]]["unknown_58"]
+    byte_group = base.LANES[lane]["byte_group"]
+    t58 = dev.longfuses[dev.grid[byte_group[0]][byte_group[1]]]["unknown_58"]
     field = set().union(*({tuple(f) for f in v} for v in t58.values()))
     hclk = dev.hclk_pips[HCLK_BLOCK]
     fs = lambda n: os.path.join(out_dir, n, "impl/pnr/probe.fs")
@@ -231,9 +232,9 @@ def check(out_dir: str, names) -> int:
             continue
         m = base_m if name == "base" else fsd.load_matrix(fs(name))
         want, lane = expect[name]
-        got = fa.tile_state(dev, grid, m, BYTE_GROUP) & field
+        got = fa.tile_state(dev, grid, m, byte_group) & field
         ok = got == want
-        line = f"{name:22s} table 58 {len(got):2d} fuses"
+        line = f"{name:22s} table 58 at {byte_group} {len(got):2d} fuses"
         if not ok:
             line += f" extra {sorted(got - want)} missing {sorted(want - got)}"
         if lane is not None:
@@ -263,12 +264,17 @@ def main() -> int:
     ap.add_argument("--groups", default=",".join(GROUPS),
                     help="comma-separated subset of " + ",".join(GROUPS))
     ap.add_argument("--only", help="comma-separated design names; overrides --groups")
-    ap.add_argument("--out", default=os.path.join(base.ROOT, "build/dqs_b1"))
+    ap.add_argument("--out", default=None)
+    ap.add_argument("--lane", type=int, choices=sorted(base.LANES), default=0,
+                    help="DDR3 lane whose strobe pin the DQSIN pad takes; --check reads "
+                         "that lane's byte group")
     ap.add_argument("--report", action="store_true",
                     help="attribute built designs against base; build nothing")
     ap.add_argument("--check", action="store_true",
                     help="assert the recorded encoding on built designs; build nothing")
     args = ap.parse_args()
+    if args.out is None:
+        args.out = base.lane_dir(os.path.join(base.ROOT, "build/dqs_b1"), args.lane)
 
     all_designs = designs()
     if args.only:
@@ -284,7 +290,7 @@ def main() -> int:
     if args.report:
         return report(args.out, names)
     if args.check:
-        return check(args.out, names)
+        return check(args.out, names, args.lane)
     if not os.path.isdir(os.path.join(base.GOWIN, "IDE")):
         print(f"missing Gowin EDA at {base.GOWIN}", file=sys.stderr)
         return 2
@@ -296,7 +302,7 @@ def main() -> int:
         if os.path.isdir(d):
             shutil.rmtree(d)
         os.makedirs(d)
-        for fn, body in (("top.v", verilog), ("top.cst", base.CST + cst_extra),
+        for fn, body in (("top.v", verilog), ("top.cst", base.lane_cst(args.lane) + cst_extra),
                          ("top.sdc", base.SDC), ("run.tcl", base.TCL)):
             with open(os.path.join(d, fn), "w") as f:
                 f.write(body)

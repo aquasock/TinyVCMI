@@ -966,3 +966,37 @@ Propose the lane 1 to 3 measurement and model plan for approval. Per lane it cov
 - User Test: N/A
 
 ---
+
+## 32 COMMIT Unreleased 2026-10-23T19:43:37-07:00
+
+#### Coming From:
+
+Unreleased b685d40
+
+#### Purpose:
+
+Run lane 0's full DQS measurement set on DDR3 lanes 1 to 3 and hand the results off, stopped by the user for an agent handoff before the IOLOGIC measurements or any model change.
+
+#### Outcome:
+
+Gave the lane-0 tools a `--lane N` option. `tools/dqs_port_probe.py` now holds the lane table of TOOL-011 (`LANES`, `lane_cst`, `lane_dir`), and `tools/dqs_output_probe.py`, `tools/dqs_param_probe.py` and `tools/dq_lane_probe.py` use it, building into `_l<N>` directories with lane 0's unchanged. `tools/dq_lane_probe.py --check` now derives a pad's IOLOGIC cell from the chipdb pinout, and `tools/dqs_map_check.py --lane N` checks a lane against lane 0's map, inferring the zero-state outputs from shared downstream hops instead of recorded ones. All 156 Gowin EDA 1.9.11.03 builds for lanes 1 to 3 succeeded under `build/dqs_{routed,clock,outputs,b1}_l{1,2,3}`: 22 input pairs, 2 clock pairs, 13 output pairs and the 15 B1 designs per lane, three lanes in parallel at about 1.8 GB each. The results are preliminary and are not yet in core-reference. Inputs match lane 0's 24-wire map in lanes 1 and 3; lane 2 matches 23, and `RESET` moved nothing at its site `(90,0)`. Outputs match lane 0's wires for 11 of 13 in lane 1 and 10 of 13 in lane 3; the rest are the zero-state outputs, which the inference left ambiguous because their next hop is shared with several siblings. In lane 2, six outputs move two or three destinations at the bank-6 site, so the one-destination decode cannot read them there. Table 58 sets the same number of fuses as lane 0 in every one of the 15 designs in all three lanes, but at other coordinates. Those coordinates are identical across the byte-group types 257, 259 and 270 and differ only from lane 0's type 64, so the check, which compares lane 0's coordinates, fails 14 of 15 in each lane. The IOLOGIC designs for lanes 1 to 3 were not built, and no nextpnr or Apicula change was made. No hardware was accessed and the DDR3-bank guard is unchanged. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering, and active-log capacity.
+
+#### Next Steps:
+
+Make `tools/dqs_param_probe.py --check` compare table 58 by key rather than by lane 0's coordinates, and confirm that lanes 1 to 3 light the same keys as lane 0, which would give one encoding with a second coordinate layout for types 257, 259 and 270. Investigate lane 2's `RESET` with a clock-mode pair read at cells around `(90,0)`, and decode lane 2's multi-destination outputs and every lane's ambiguous zero-state outputs by exact first-hop selection, as lane 0's were. Then build each lane's IOLOGIC designs with `tools/dq_lane_probe.py --lane N` on an A and a B pad from TOOL-011's pin map, record TOOL-012 for lanes 1 to 3, and only then propose extending the nextpnr sites, links and lane-0 IOLOGIC list and the Apicula site and position refusals from one lane to four. The DDR3-bank guard decision remains the user's. Do not touch the Tang unless the user explicitly changes that instruction.
+
+#### Files Modified:
+
+- tools/dq_lane_probe.py
+- tools/dqs_map_check.py
+- tools/dqs_output_probe.py
+- tools/dqs_param_probe.py
+- tools/dqs_port_probe.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: N/A
+- User Test: N/A
+
+---
