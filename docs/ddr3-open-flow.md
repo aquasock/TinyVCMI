@@ -893,5 +893,28 @@ refuses what Gowin refuses: the `fab_*` designs fail routing at the `DQS`
 output wire the link starts from, and `TCLK_SOURCE="DQSW90"` fails in the
 packer. The preflight's serializer probes are now lane-0 designs with their
 own constraint files, and `tools/ddr3_openflow_preflight.sh` reports all six
-primitives PASS, with no place-and-route gap. Nothing here packs a serializer
-yet; the Apicula side is the next increment.
+primitives PASS, with no place-and-route gap.
+
+### Packing
+
+Apicula's `get_OSER8_MEM_fuses` and `get_IDES8_MEM_fuses` (aquasock/apicula
+`epic/gw5ast138c`) write the measured attributes through the existing IOLOGIC
+path and refuse any position outside the ten. Matching the vendor took two
+corrections that only the fuse comparison showed. First, both reset muxes
+must be emitted at `0`: the value costs nothing, but leaving it out sets each
+table's absence entry, one fuse apiece the vendor leaves clear. Second, the
+input's lane selection is its own. The GW5A input handler emits nothing for
+`MIDDRX4`, and its four-attribute lane spelling cannot be used here because
+`FCLKSEL7` has no `HCLK0_` row on this die. So `IDES8_MEM` writes the
+measured fuses: `FCLKSEL5=HCLK0` and `FCLKSEL3=HCLK0` on lane 0, and nothing on
+lane 2. The output reuses the lane selection `OSER8` already has.
+
+`tools/dq_pack_check.py` runs the packer in-process, as `tools/dqs_pack_check.py`
+does, so no image is written. It compares the serializer side's IOLOGIC table
+fuses with the vendor build of the same source. They are equal on both sides
+on lane 0, and on lane 2 when `--fclk-lane` rewrites the serializer's `FCLK`
+pip and its `IOLOGIC_FCLK` attribute, which is what the packer reads. For the
+`TCLK_SOURCE`, `TXCLK_POL` and `HWL` variants, whose vendor builds rode lane 3,
+they are equal outside the lane field. A lane-1 rewrite stops at routing,
+because the chipdb has no `FCLKA <- HCLK21` pip, and a serializer moved off the
+lane is refused by name.

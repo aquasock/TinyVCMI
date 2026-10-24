@@ -842,3 +842,34 @@ Implement C2b in the Apicula fork: `get_OSER8_MEM_fuses` and `get_IDES8_MEM_fuse
 - User Test: N/A
 
 ---
+
+## 28 COMMIT Unreleased 2026-10-23T18:17:04-07:00
+
+#### Coming From:
+
+Unreleased b9f18bf
+
+#### Purpose:
+
+Pack lane 0's `OSER8_MEM` and `IDES8_MEM` in the open flow and accept them against the vendor's fuses, which is C2b of the approved serializer implementation.
+
+#### Outcome:
+
+Committed `9de5557` to the Apicula fork's `epic/gw5ast138c` and pushed it to the `aquasock` remote only. `get_OSER8_MEM_fuses` and `get_IDES8_MEM_fuses` write the TOOL-009 attributes through the existing IOLOGIC path and refuse any position outside the ten lane-0 sites, which was exercised. The new `tools/dq_pack_check.py` runs the packer in-process, writes no image, and compares the serializer side's IOLOGIC table fuses with the vendor build of the same source. Two corrections came out of that comparison. Both reset multiplexers have to be emitted at `0`, because leaving them out sets each table's absence entry, one fuse apiece the vendor leaves clear. And the input's lane selection had to be written from the measurement, `FCLKSEL5=HCLK0` and `FCLKSEL3=HCLK0` on lane 0 and nothing on lane 2, because the GW5A input handler emits nothing for `MIDDRX4` and its `FCLKSEL7=HCLK0_` has no row on this die. With those, the packer's fuses equal the vendor's on both sides on lane 0. They equal the vendor's on lane 2 when `--fclk-lane` rewrites the serializer's `FCLK` pip and its `IOLOGIC_FCLK` attribute, which is what the packer actually reads. For the `TCLK_SOURCE`, `TXCLK_POL` and `HWL` variants, whose vendor builds rode lane 3, they are equal outside the lane field. A lane-1 rewrite stops at routing because the chipdb has no `FCLKA <- HCLK21` pip. No image containing a serializer exists and the DDR3-bank guard is unchanged. No hardware was accessed. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering, and active-log capacity.
+
+#### Next Steps:
+
+The lane-0 primitives are now modelled and packed offline: the `DDRDLL`, the `DQS`, and one each of `OSER8_MEM` and `IDES8_MEM` on either side. What remains before a full lane is bidirectional DQ, with an `OSER8_MEM` and an `IDES8_MEM` on one pad through an IOBUF and `Q1` on its tristate, and the strobe pad's differential output, both of which need their own vendor measurements first. After that comes the user's decision on the DDR3-bank guard, which still blocks every lane image, and then the other three lanes. Do not touch the Tang unless the user explicitly changes that instruction.
+
+#### Files Modified:
+
+- docs/ddr3-open-flow.md
+- tools/dq_pack_check.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: N/A
+- User Test: N/A
+
+---
