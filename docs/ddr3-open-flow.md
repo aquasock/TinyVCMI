@@ -1999,3 +1999,61 @@ derotation of the same sample instead of trusting one read. Write leveling
 still counts zero because `READ` is held low outside read mode. The `D108`
 unused-pin contradiction and the `is_mipi` bug outside the DDR context remain
 open.
+
+## The burst marker, and the upstream design
+
+Two questions were open after the alignment cycle: whether `RBURST` can frame
+a burst, and whether the upstream LiteDRAM GW5A DDR3 design could replace
+this hand-written one. Both are now measured, and both answers are no.
+
+### RBURST does not mark a burst
+
+`RBURST` is generated faster than the memory clock -- upstream LiteDRAM
+captures its edge in the fast domain and warns that in X4 mode it can rise
+and fall between system clock edges -- so sampling it once per `PCLK` reads
+zero even when it is alive. `top.v` now detects the edge in the memory-clock
+domain, toggles one bit per edge there and counts the toggles in `PCLK`,
+because a counter in that domain put a wide incrementer on the 400 MHz path
+and closed it at 394.94 MHz; the toggle version closes at 476.64 MHz.
+
+With read-run/gap 255/255, delay 3 and pattern `1d`, and a 250 ms window per
+setting:
+
+| RCLKSEL | RVALID | RBURST edges per second, lanes 0..3 |
+|---|---|---|
+| 0, 2, 6, 7 | mixed or low | 0, 0, 0, 0 |
+| 1 | low | 0, 384, 432, 48 |
+| 3 | high | 0, 0, 0, 0 |
+| 4 | high | 576, 332, 364, 620 |
+| 5 | mixed | 384, 12, 0, 384 |
+
+Reading issues a burst every `PCLK`, so a per-burst marker would count near
+100,000 edges per second. The best observed rate is 620, two orders of
+magnitude short, and at `RCLKSEL` 3 -- with every lane live -- there are none
+at all. `RBURST` is therefore not a framing source in this configuration, and
+the slip-following aligner remains the mechanism. Changing `RCLKSEL` while
+the stream runs also leaves `RVALID` low at several settings, so any future
+sweep must re-enter read mode per setting.
+
+### The upstream design is primitive-compatible, not flow-compatible
+
+LiteX's own apicula backend refuses GW5 devices outright, so the upstream
+Tang Console DDR3 design has never been placed by an open toolchain.
+`tools/litex_ddr3_gate.sh` answers whether it could be. Generated for
+GW5AST-138C with DDR3 at 1:4 and no CPU, the design uses only primitives this
+project already places and packs -- 26 `IODELAY`, 20 `OSER8_MEM`, 16
+`IDES8_MEM`, 16 `IOBUF`, 2 `DQS`, 2 `ELVDS_IOBUF`, 1 `DDRDLL`, 1 `CLKDIV`, 1
+`PLL`, 1 `ELVDS_OBUF` -- and Yosys synthesises all of it with the open-flow
+library.
+
+Placement then stops at three gaps: nextpnr rejects `create_generated_clock`,
+it does not treat a differential `IO_LOC "x" p,n;` as constraining both pads,
+and it rejects the PLL's `sys4x_clk` driving `OSER8.FCLK` as an invalid sink.
+The same netlist also fails the vendor flow, but on an unrelated bank-5 VCCIO
+conflict from the platform's `fan_en` pin. The upstream platform additionally
+wires only one of the board's two x16 devices, 16 of the 32 DQ pins used
+here.
+
+So the PHY is not the obstacle; the constraint and clock-routing interchange
+is. Until that changes, `fpga/ddr3_write` remains the only hardware-proven
+DDR3 path on this board.

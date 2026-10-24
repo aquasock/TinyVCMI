@@ -62,6 +62,7 @@
 //   21 v      active row[14:8] = v[6:0]
 //   22 n      delay DQS READ gating n[2:0] PCLK after each READ command
 //   23        re-arm rd_align: discard every lane's locked rotation
+//   24        clear the RBURST counters
 //
 // The read data path ends in rd_align, the trained read-valid boundary: it
 // locks each lane's whole-word rotation from the live stream, derotates it,
@@ -100,6 +101,8 @@
 //   117      {2'b0, lane 3 step, lane 2 step}
 //   118-119  the live rotation: 118 low, 119 {phase_ok[3:0], phase[11:8]}
 //   120-121  uniform slips rd_align followed since the last arm
+//   122      {4'b0, burst_seen[3:0]}  an RBURST edge was counted on that lane
+//   123-126  per-lane RBURST edge count, free-running since command 0x24
 module wr_core (
     input  wire         sys_clk,
     input  wire         uart_rx,
@@ -113,6 +116,7 @@ module wr_core (
     output wire         phy_rst,
     input  wire         dll_lock,
     input  wire [7:0]   step,
+    input  wire [3:0]   burst_tog,
 
     input  wire         pclk,
     output reg  [2:0]   rclksel = 3'd0,
@@ -272,11 +276,11 @@ module wr_core (
     reg [2:0] bank_req = 3'd0;
     reg [14:0] row_req = 15'd0;
     reg rmove_tog = 1'b0, rload_tog = 1'b0, snap_tog = 1'b0, wload_tog = 1'b0,
-        calib_tog = 1'b0;
+        calib_tog = 1'b0, bclr_tog = 1'b0;
 
     reg [1:0] ready_p = 2'b00;
     reg [2:0] rmove_p = 3'b000, rload_p = 3'b000, snap_p = 3'b000,
-              wload_p = 3'b000, calib_p = 3'b000;
+              wload_p = 3'b000, calib_p = 3'b000, bclr_p = 3'b000;
     reg [1:0] mode_p1 = 2'd0, mode_p = 2'd0;
     reg [3:0] pat_p1 = 4'b1111, pat_p2 = 4'b1111;
     reg [7:0] dpat_p1 = 8'h1d;
@@ -297,6 +301,7 @@ module wr_core (
         snap_p <= {snap_p[1:0], snap_tog};
         wload_p <= {wload_p[1:0], wload_tog};
         calib_p <= {calib_p[1:0], calib_tog};
+        bclr_p <= {bclr_p[1:0], bclr_tog};
         mode_p1 <= mode_req;            mode_p <= mode_p1;
         pat_p1 <= read_pat;             pat_p2 <= pat_p1;
         dpat_p1 <= pat_req;             dq_pat <= dpat_p1;
@@ -317,6 +322,12 @@ module wr_core (
     wire snap_pulse = snap_p[2] ^ snap_p[1];
     wire wload_pulse = wload_p[2] ^ wload_p[1];
     wire calib_pulse = calib_p[2] ^ calib_p[1];
+    wire bclr_tog_pulse = bclr_p[2] ^ bclr_p[1];
+    // the clear is seen in PCLK, where the counters live
+    reg bclr_d = 1'b0;
+    wire bclr_pulse = bclr_tog_pulse || bclr_d;
+    always @(posedge pclk)
+        bclr_d <= bclr_tog_pulse;
 
     // ------------------------------------------------------------------
     // DDR3 initialization and the four modes, PCLK
@@ -788,6 +799,31 @@ module wr_core (
         relocks_s1 <= ra_relocks;       relocks_s2 <= relocks_s1;
     end
 
+    // The memory clock toggles one bit per RBURST edge; counting happens
+    // here, where a wide incrementer costs a fifth of the clock rate.
+    reg [3:0]  btog_1 = 4'd0, btog_2 = 4'd0;
+    reg [31:0] bcnt = 32'd0;            // per lane, 8 bits, free-running
+    integer    bl;
+    always @(posedge pclk) begin
+        btog_1 <= burst_tog;
+        btog_2 <= btog_1;
+        if (bclr_pulse)
+            bcnt <= 32'd0;
+        else
+            for (bl = 0; bl < 4; bl = bl + 1)
+                if (btog_2[bl] != btog_1[bl])
+                    bcnt[8*bl +: 8] <= bcnt[8*bl +: 8] + 8'd1;
+    end
+
+    reg [3:0]  bseen_s1 = 4'd0, bseen_s2 = 4'd0;
+    reg [31:0] bcnt_s1 = 32'd0, bcnt_s2 = 32'd0;
+    always @(posedge sys_clk) begin
+        bseen_s1 <= {bcnt[7:0] != 8'd0, bcnt[15:8] != 8'd0,
+                     bcnt[23:16] != 8'd0, bcnt[31:24] != 8'd0};
+        bseen_s2 <= bseen_s1;
+        bcnt_s1 <= bcnt;   bcnt_s2 <= bcnt_s1;
+    end
+
     reg [15:0] free_cnt = 16'd0;
     reg [31:0] moves = 32'd0;           // lane n's net RMOVE steps at [8n +: 8]
     always @(posedge sys_clk)
@@ -806,7 +842,12 @@ module wr_core (
         end
     endfunction
 
-    wire [975:0] status = {
+    wire [1015:0] status = {
+        bcnt_s2[31:24],                                         // 126
+        bcnt_s2[23:16],                                         // 125
+        bcnt_s2[15:8],                                          // 124
+        bcnt_s2[7:0],                                           // 123
+        {4'b0000, bseen_s2},                                    // 122
         relocks_s2,                                             // 120..121
         {4'b0000, ra_phase_ok_s2, ra_phase_s2[11:8]},           // 119
         ra_phase_s2[7:0],                                       // 118
@@ -854,8 +895,8 @@ module wr_core (
     reg [7:0] cmd_byte = 8'h00;
     reg response_active = 1'b0;
     reg response_is_status = 1'b0;
-    reg [6:0] response_index = 7'd0;
-    reg [975:0] frame = 976'd0;
+    reg [7:0] response_index = 8'd0;
+    reg [1015:0] frame = 1016'd0;
 
     function known;
         input [7:0] c;
@@ -865,7 +906,7 @@ module wr_core (
                     (c == 8'h0a) ||
                     (c == 8'h0b) || (c == 8'h0c) || (c == 8'h0d) || (c == 8'h0e) ||
                     (c == 8'h0f) || (c[7:2] == 6'b000100) || (c == 8'h20) ||
-                    (c == 8'h21) || (c == 8'h22) || (c == 8'h23);
+                    (c == 8'h21) || (c == 8'h22) || (c == 8'h23) || (c == 8'h24);
         end
     endfunction
 
@@ -892,7 +933,7 @@ module wr_core (
                     if (!response_active) begin
                         response_active <= 1'b1;
                         response_is_status <= (cmd_byte == 8'h03);
-                        response_index <= 7'd0;
+                        response_index <= 8'd0;
                         frame <= status;
                         case (cmd_byte)
                             8'h04: snap_tog <= ~snap_tog;
@@ -929,6 +970,7 @@ module wr_core (
                             8'h21: row_req[14:8] <= rx_data[6:0];
                             8'h22: read_delay_req <= rx_data[2:0];
                             8'h23: arm_tog <= ~arm_tog;
+                            8'h24: bclr_tog <= ~bclr_tog;
                             default: if (cmd_byte[7:2] == 6'b000100) begin
                                 wstep_req[8 * cmd_byte[1:0] +: 8] <= rx_data;
                                 wload_tog <= ~wload_tog;
@@ -942,10 +984,10 @@ module wr_core (
         if (response_active && tx_ready && !tx_send) begin
             if (response_is_status) begin
                 case (response_index)
-                    7'd0: tx_data <= 8'haa;
-                    7'd1: tx_data <= 8'h00;
-                    7'd2: tx_data <= 8'h04;
-                    7'd3: tx_data <= 8'h7a;    // 122 payload bytes
+                    8'd0: tx_data <= 8'haa;
+                    8'd1: tx_data <= 8'h00;
+                    8'd2: tx_data <= 8'h04;
+                    8'd3: tx_data <= 8'h7f;    // 127 payload bytes
                     default: begin
                         tx_data <= frame[7:0];
                         frame <= frame >> 8;
@@ -953,18 +995,18 @@ module wr_core (
                 endcase
             end else begin
                 case (response_index)
-                    7'd0: tx_data <= 8'haa;
-                    7'd1: tx_data <= 8'h00;
-                    7'd2: tx_data <= 8'h02;
-                    7'd3: tx_data <= 8'h01;
+                    8'd0: tx_data <= 8'haa;
+                    8'd1: tx_data <= 8'h00;
+                    8'd2: tx_data <= 8'h02;
+                    8'd3: tx_data <= 8'h01;
                     default: tx_data <= 8'h56; // "V" for TinyVCMI.
                 endcase
             end
             tx_send <= 1'b1;
-            if (response_index == (response_is_status ? 7'd125 : 7'd4))
+            if (response_index == (response_is_status ? 8'd130 : 8'd4))
                 response_active <= 1'b0;
             else
-                response_index <= response_index + 7'd1;
+                response_index <= response_index + 8'd1;
         end
     end
 endmodule

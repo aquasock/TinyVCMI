@@ -85,6 +85,11 @@ CORE = """\
     wire ddr_rst_n, cke, cs_n, ras_n, cas_n, we_n;
     wire [2:0] ba;
     wire [15:0] addr;
+    // RBURST can rise and fall between PCLK edges in X4 mode.  The memory
+    // clock sees it, so it toggles one bit per edge there and PCLK does the
+    // counting: a counter in this domain would put a wide incrementer on the
+    // 400 MHz path.
+    wire [3:0] burst_tog;
     CLKDIV #(.DIV_MODE("4")) fdiv (.HCLKIN(mclk), .RESETN(!phy_rst), .CALIB(1'b0), .CLKOUT(pclk));
     DDRDLL #(.DLL_FORCE("FALSE"), .CODESCAL("111"), .SCAL_EN("FALSE"), .DIV_SEL(1'b0)) dll (
         .CLKIN(mclk), .STOP(!pll_lock), .UPDNCNTL(updncntl), .RESET(dll_rst),
@@ -104,6 +109,16 @@ LANE = """\
         .RVALID(rvalid[{l}]), .RBURST(rburst[{l}]), .RFLAG(rflag[{l}]), .WFLAG(wflag[{l}]));
     assign rpoint[{l3}+:3] = rp_{l};
     assign wpoint[{l3}+:3] = wp_{l};
+
+    reg rb{l}_1, rb{l}_2, rb{l}_3, rb{l}_tog;
+    always @(posedge mclk) begin
+        rb{l}_1 <= rburst[{l}];
+        rb{l}_2 <= rb{l}_1;
+        rb{l}_3 <= rb{l}_2;
+        if (rb{l}_2 && !rb{l}_3)
+            rb{l}_tog <= ~rb{l}_tog;
+    end
+    assign burst_tog[{l}] = rb{l}_tog;
 """
 
 DQ = """\
@@ -197,7 +212,8 @@ def render() -> str:
         .rpoint(rpoint), .wpoint(wpoint), .dq_q(dq_q),
         .dq_pat(dq_pat), .dq_drive(dq_drive), .dqs_drive(dqs_drive), .odt(odt),
         .ddr_reset_n(ddr_rst_n), .cke(cke), .cs_n(cs_n), .ras_n(ras_n), .cas_n(cas_n),
-        .we_n(we_n), .ba(ba), .addr(addr));""")
+        .we_n(we_n), .ba(ba), .addr(addr),
+        .burst_tog(burst_tog));""")
     out.append("endmodule")
     out.append("`default_nettype wire")
     return "\n".join(out) + "\n"

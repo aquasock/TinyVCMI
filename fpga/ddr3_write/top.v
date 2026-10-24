@@ -72,6 +72,11 @@ module top (
     wire ddr_rst_n, cke, cs_n, ras_n, cas_n, we_n;
     wire [2:0] ba;
     wire [15:0] addr;
+    // RBURST can rise and fall between PCLK edges in X4 mode.  The memory
+    // clock sees it, so it toggles one bit per edge there and PCLK does the
+    // counting: a counter in this domain would put a wide incrementer on the
+    // 400 MHz path.
+    wire [3:0] burst_tog;
     CLKDIV #(.DIV_MODE("4")) fdiv (.HCLKIN(mclk), .RESETN(!phy_rst), .CALIB(1'b0), .CLKOUT(pclk));
     DDRDLL #(.DLL_FORCE("FALSE"), .CODESCAL("111"), .SCAL_EN("FALSE"), .DIV_SEL(1'b0)) dll (
         .CLKIN(mclk), .STOP(!pll_lock), .UPDNCNTL(updncntl), .RESET(dll_rst),
@@ -97,6 +102,16 @@ module top (
         .RVALID(rvalid[0]), .RBURST(rburst[0]), .RFLAG(rflag[0]), .WFLAG(wflag[0]));
     assign rpoint[0+:3] = rp_0;
     assign wpoint[0+:3] = wp_0;
+
+    reg rb0_1, rb0_2, rb0_3, rb0_tog;
+    always @(posedge mclk) begin
+        rb0_1 <= rburst[0];
+        rb0_2 <= rb0_1;
+        rb0_3 <= rb0_2;
+        if (rb0_2 && !rb0_3)
+            rb0_tog <= ~rb0_tog;
+    end
+    assign burst_tog[0] = rb0_tog;
 
     wire st0_o, st0_t;
     OSER8_MEM #(.HWL("false"), .TCLK_SOURCE("DQSW270"), .TXCLK_POL(1'b0)) st0_ser (
@@ -265,6 +280,16 @@ module top (
     assign rpoint[3+:3] = rp_1;
     assign wpoint[3+:3] = wp_1;
 
+    reg rb1_1, rb1_2, rb1_3, rb1_tog;
+    always @(posedge mclk) begin
+        rb1_1 <= rburst[1];
+        rb1_2 <= rb1_1;
+        rb1_3 <= rb1_2;
+        if (rb1_2 && !rb1_3)
+            rb1_tog <= ~rb1_tog;
+    end
+    assign burst_tog[1] = rb1_tog;
+
     wire st1_o, st1_t;
     OSER8_MEM #(.HWL("false"), .TCLK_SOURCE("DQSW270"), .TXCLK_POL(1'b0)) st1_ser (
         .D0(dqs_d[0]), .D1(dqs_d[1]), .D2(dqs_d[2]), .D3(dqs_d[3]),
@@ -432,6 +457,16 @@ module top (
     assign rpoint[6+:3] = rp_2;
     assign wpoint[6+:3] = wp_2;
 
+    reg rb2_1, rb2_2, rb2_3, rb2_tog;
+    always @(posedge mclk) begin
+        rb2_1 <= rburst[2];
+        rb2_2 <= rb2_1;
+        rb2_3 <= rb2_2;
+        if (rb2_2 && !rb2_3)
+            rb2_tog <= ~rb2_tog;
+    end
+    assign burst_tog[2] = rb2_tog;
+
     wire st2_o, st2_t;
     OSER8_MEM #(.HWL("false"), .TCLK_SOURCE("DQSW270"), .TXCLK_POL(1'b0)) st2_ser (
         .D0(dqs_d[0]), .D1(dqs_d[1]), .D2(dqs_d[2]), .D3(dqs_d[3]),
@@ -598,6 +633,16 @@ module top (
         .RVALID(rvalid[3]), .RBURST(rburst[3]), .RFLAG(rflag[3]), .WFLAG(wflag[3]));
     assign rpoint[9+:3] = rp_3;
     assign wpoint[9+:3] = wp_3;
+
+    reg rb3_1, rb3_2, rb3_3, rb3_tog;
+    always @(posedge mclk) begin
+        rb3_1 <= rburst[3];
+        rb3_2 <= rb3_1;
+        rb3_3 <= rb3_2;
+        if (rb3_2 && !rb3_3)
+            rb3_tog <= ~rb3_tog;
+    end
+    assign burst_tog[3] = rb3_tog;
 
     wire st3_o, st3_t;
     OSER8_MEM #(.HWL("false"), .TCLK_SOURCE("DQSW270"), .TXCLK_POL(1'b0)) st3_ser (
@@ -946,6 +991,7 @@ module top (
         .rpoint(rpoint), .wpoint(wpoint), .dq_q(dq_q),
         .dq_pat(dq_pat), .dq_drive(dq_drive), .dqs_drive(dqs_drive), .odt(odt),
         .ddr_reset_n(ddr_rst_n), .cke(cke), .cs_n(cs_n), .ras_n(ras_n), .cas_n(cas_n),
-        .we_n(we_n), .ba(ba), .addr(addr));
+        .we_n(we_n), .ba(ba), .addr(addr),
+        .burst_tog(burst_tog));
 endmodule
 `default_nettype wire

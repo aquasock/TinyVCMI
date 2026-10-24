@@ -50,7 +50,7 @@ import time
 import serial
 
 MODES = ["idle", "level", "write", "read"]
-PAYLOAD = 122
+PAYLOAD = 127
 TOTAL = 4 + PAYLOAD
 
 
@@ -113,6 +113,8 @@ class Core:
         s["phase"] = [(b[118] | (b[119] << 8)) >> (3 * n) & 7 for n in range(4)]
         s["phase_ok"] = b[119] >> 4 & 15
         s["relocks"] = int.from_bytes(b[120:122], "little")
+        s["burst_seen"] = b[122] & 15
+        s["burst_count"] = [b[123 + n] for n in range(4)]
         return s
 
     def mode(self, m: int):
@@ -467,6 +469,13 @@ def main() -> int:
     ph.add_argument("--write-ms", type=float, default=20)
     ph.add_argument("--samples", type=int, default=8)
     ph.add_argument("--interval-ms", type=float, default=20.0)
+    bu = sub.add_parser("burst")
+    bu.add_argument("--pattern", type=lambda x: int(x, 0), default=0x1D)
+    bu.add_argument("--read-run", type=int, default=255)
+    bu.add_argument("--read-gap", type=int, default=255)
+    bu.add_argument("--read-delay", type=int, default=3)
+    bu.add_argument("--samples", type=int, default=5)
+    bu.add_argument("--interval-ms", type=float, default=20.0)
     mt = sub.add_parser("memtest")
     mt.add_argument("--banks", type=lambda x: int(x, 0), nargs="+", default=list(range(8)))
     mt.add_argument("--rows", type=lambda x: int(x, 0), nargs="+",
@@ -541,6 +550,30 @@ def main() -> int:
             if args.sessions:
                 write_address(core, 0, 0, args.pattern, args.write_ms / 1000)
                 verify_sessions(core, args.pattern, args.sessions, args.pass_ratio)
+        elif args.cmd == "burst":
+            if not trainable(args.pattern):
+                raise ValueError("a pattern needs eight distinct rotations")
+            core.request(0x0E, args.pattern)
+            write_address(core, 0, 0, args.pattern, 0.02)
+            core.mode(3)
+            time.sleep(0.05)                            # let the read stream start
+            print("RCLKSEL  rvalid          RBURST seen   counts 0..3     edges/s")
+            for sel in range(8):
+                core.request(0x06, sel)
+                time.sleep(0.02)
+                core.request(0x24)                      # clear the counters
+                time.sleep(0.02)
+                a = core.status()
+                time.sleep(0.25)                        # measure over 250 ms
+                b = core.status()
+                spans = [(b["burst_count"][n] - a["burst_count"][n]) & 0xFF
+                         for n in range(4)]
+                rate = [int(v / 0.25) for v in spans]
+                print(f"{sel:7d}  {[l['rv'] for l in b['lanes']]}  "
+                      f"{b['burst_seen']:04b}          {b['burst_count']}  {rate}")
+                time.sleep(args.interval_ms / 1000)
+            core.request(0x06, 0)
+            core.mode(0)
         elif args.cmd == "phase":
             if not trainable(args.pattern):
                 raise ValueError("a pattern needs eight distinct rotations")

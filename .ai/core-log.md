@@ -1525,3 +1525,38 @@ Train the aligner once at start-up and hold its locks through ordinary traffic, 
 - User Test: N/A
 
 ---
+
+## 48 COMMIT Unreleased 2026-10-24T13:44:36-07:00
+
+#### Coming From:
+
+Unreleased 3dbcba5
+
+#### Purpose:
+
+Settle whether the DQS block's RBURST output frames a read burst, and whether the upstream LiteDRAM GW5A DDR3 design could replace the hand-written open-flow one.
+
+#### Outcome:
+
+`top.v` now detects RBURST edges in the memory-clock domain -- one toggle bit per lane, counted in PCLK, cleared by a new command `0x24` -- because a counter in that domain put a wide incrementer on the 400 MHz path and closed it at 394.94 MHz against a 400 MHz constraint, while the toggle version closes at 476.64 MHz with PCLK at 117.34. A corrected status frame was needed first: the payload had grown past what the seven-bit response index could count, so `7'd130` wrapped and the reply stopped after three bytes, and the index is now eight bits. On the Tang the image, SHA-256 `24ed798874de9ee4d5a781e601b788701b09d2f1d622d2d82ad88bb88066a707` and equal to its Gowin build on all 306 DDR3 tables, counted RBURST edges over 250 ms at each RCLKSEL with read-run/gap 255/255 and delay 3: none at RCLKSEL 0, 2, 3, 6 or 7; 384, 432 and 48 per second on lanes 1 to 3 at 1; 576 to 620 per second on all four lanes at 4; and 384, 12, 0 and 384 at 5, with RCLKSEL 3 and 4 the settings where every lane held RVALID high. Since a burst is issued every PCLK while reading, a per-burst marker would count near 100,000 per second, so RBURST does not frame a burst here and the slip-following aligner stays the mechanism; TOOL-024 records the measurement and the RBURST sentence in TOOL-023 was narrowed to match. The second question was answered by `tools/litex_ddr3_gate.sh`, which regenerates the upstream LiteX Tang Console design for GW5AST-138C with DDR3 at 1:4 and no CPU, rewrites its constraints into forms nextpnr accepts and builds it with the open flow: the design uses only primitives this project already packs (26 IODELAY, 20 OSER8_MEM, 16 IDES8_MEM, 16 IOBUF, 2 DQS, 2 ELVDS_IOBUF, 1 DDRDLL, 1 CLKDIV, 1 PLL, 1 ELVDS_OBUF) and synthesises cleanly, but placement stops at three gaps -- nextpnr rejects `create_generated_clock`, does not treat a differential `IO_LOC` pair as constraining both pads, and rejects `sys4x_clk` driving `OSER8.FCLK` as an invalid sink -- while the same netlist fails the vendor flow on an unrelated bank-5 VCCIO conflict and its platform wires only 16 of this board's 32 DQ pins, so LiteDRAM is not a drop-in and TOOL-025 records the gate. The desktop `tinytang.bin` was restored and answered `0x54`. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering and active-log capacity.
+
+#### Next Steps:
+
+Build the controller that binds a burst to the READ command that asked for it and establishes read latency, most likely LiteDRAM's control layer adapted to this PHY rather than its PHY adopted wholesale, then qualify sustained random traffic over the full array and begin the AE350 port; a sweep of RCLKSEL must re-enter read mode per setting, the diagnostic still presents nothing below about twenty reads per group, and the `D108` unused-pin contradiction and the `is_mipi` bug outside the DDR context remain open.
+
+#### Files Modified:
+
+- docs/ddr3-open-flow.md
+- fpga/ddr3_write/top.v
+- fpga/ddr3_write/wr_core.v
+- tools/ddr3_write.py
+- tools/ddr3_write_probe.py
+- tools/litex_ddr3_gate.sh
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: N/A
+
+---
