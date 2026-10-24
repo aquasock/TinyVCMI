@@ -1295,3 +1295,34 @@ The configuration path is complete offline, so the next work is what makes an im
 - User Test: N/A
 
 ---
+
+## 42 COMMIT Unreleased 2026-10-24T03:01:52-07:00
+
+#### Coming From:
+
+Unreleased a4eeefe
+
+#### Purpose:
+
+Extend the IOLOGIC fast-clock model from HCLK lanes 0 and 2 to all four so a DDR3 lane's serializers can follow its `DQS` and `CLKDIV` onto any lane, which is step 1 of the approved path to a loadable image.
+
+#### Outcome:
+
+Committed `92836ee4` to the nextpnr fork's `epic/gw5ast138c` and `a7033be` to the Apicula fork's, both pushed to the `aquasock` remotes only. The lanes-0-and-2 limit turned out to be Apicula's own `FCLKSEL1`/`FCLKSEL2` spelling, which has no odd-lane rows, not the silicon. `tools/dq_lane_probe.py`'s per-lane designs were added on side B, on AA4 for lane 0 and T6 for lane 2, beside the side-A sets every lane already had, and decoding the vendor builds gave one `FCLKSEL` encoding per primitive, side and lane, identical on every DDR3 lane. An exhaustive search over the IOLOGIC table's `FCLKSEL` attributes found the spellings that reproduce each exactly on both sides: `OSER8_MEM` lane 1 is `FCLKSEL0` and `FCLKSEL4` at `HCLK1` and lane 3 `FCLKSEL0=HCLK1`, and `IDES8_MEM` lane 1 is `FCLKSEL4`, `FCLKSEL5` and `FCLKSEL6` at `HCLK1` with `FCLKSEL7=HCLK1_`, lane 3 the same without `FCLKSEL4`. The nextpnr generator's new `extend_dq_lane_fclk` gives the 40 DDR3 lane positions' `FCLKA` and `FCLKB` fuse-free pips from `HCLK21` and `HCLK23` and adds those cells to the two lane nodes, leaving every other IO cell at lanes 0 and 2, and the Apicula packer keeps those pips out of its pip lookup and writes the measured sets. All 48 per-lane serializer designs now route with no lane-split warning and pack equal to the vendor including the lane field, so `tools/lane_open_build.py --pack` now requires an exact match for every `*_lane0..3` design, and the full run behaved as expected on 246 of 246 designs and passed 224 of 224 packer checks. `check_dqs_site.py` gained a check for the new pips and passes eight of eight, the generator stays deterministic, the preflight passes all six primitives, six non-DDR netlists pack to unchanged fuse digests, the fork suite fails the same 58 pre-existing tests, and the written pad-set image is unchanged, digest `4c24096e`, equal to the vendor on all 306 tables. Side B of lanes 1 and 3 is inferred from the lane-independent encoding, not built. The results are in `docs/ddr3-open-flow.md` and the new TOOL-017. No hardware was accessed. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering, and active-log capacity.
+
+#### Next Steps:
+
+Design step 2 and bring it to the user for approval together with the first Tang load since entry 10: a PHY-only image clocked as the proven controller is, the memory PLL at 400 MHz feeding one `CLKDIV` per lane and the four `DQS` blocks, the `DDRDLL` running against that clock, a TinyTang readout of `LOCK` and each lane's status outputs, every DQ, DM and strobe output held in tristate and the DDR3 device held in reset with `ddr_reset_n` low and `ddr_cke` low, built with `--ddr3-context` and checked by `tools/ddr3_image_check.py` against its vendor build before any load. The `D108` unused-pin contradiction and the `is_mipi` bug outside the DDR context remain open.
+
+#### Files Modified:
+
+- docs/ddr3-open-flow.md
+- tools/lane_open_build.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: N/A
+- User Test: N/A
+
+---

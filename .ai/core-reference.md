@@ -134,6 +134,7 @@ Topic IDs are the `record_id` prefix. An entry reserves a namespace; it does not
 | How much IOLOGIC does a plain OSER8 take, and does the whole pad set match? | TOOL | TOOL-014 |
 | How does a design declare a DDR3 context, and what does the packer admit in it? | TOOL | TOOL-015 |
 | Does a written open-flow DDR3 image equal the vendor's? | TOOL | TOOL-016 |
+| Which HCLK lanes can a DDR3 lane serializer use, and how are they encoded? | TOOL | TOOL-017 |
 | Which sources and licenses constrain reuse? | PROV | PROV-001 |
 
 ---
@@ -173,6 +174,7 @@ TOOL-013: "Under ddr_context the open packer's bank 6/7 IOB and BANK fuses now e
 TOOL-014: "A plain OSER8 configures only its own IOLOGIC side on this die; with that modelled, the whole controller's pad set packs to the vendor's fuses in DQS, IOLOGIC, IOB and BANK"
 TOOL-015: "A DDR3 context is declared only by gowin_pack --ddr3-context with a 72-ball manifest; each bank 6/7 pad must be a listed ball at SSTL15/SSTL15D, BANK_VCCIO=1.5, PULL_MODE=NONE, DRIVE=8 on outputs, nothing else"
 TOOL-016: "The open-flow image of the whole DDR3 pad set, written with --ddr3-context, equals the vendor build on all 306 DDR3 tables, the DDRDLL's four unattributed vendor defaults included"
+TOOL-017: "DDR3 lane serializers take FCLK from all four HCLK lanes; lanes 1 and 3 are FCLKSEL0/4/5/6/7 sets the open model now writes, with lane-1/3 FCLK pips on the lane cells"
 PROV-001: "Reuse source and interface ideas with their original license boundaries and attribution intact"
 ```
 
@@ -611,6 +613,20 @@ PROV-001: "Reuse source and interface ideas with their original license boundari
     - "TinyVCMI docs/ddr3-open-flow.md: The first written DDR3 image"
     - "aquasock/apicula branch epic/gw5ast138c, apycula/gowin_pack.py get_DDRDLL_fuses"
   verification: "The image was written twice into different directories with the same digest, and tools/ddr3_image_check.py found every compared table equal; before the DDRDLL change the DLL0 table was the only difference. Without the flag the two DDRDLL probe designs pack to unchanged fuse digests, and the fork's full suite fails the same 58 pre-existing tests. The image was not converted to a loadable .bin and no hardware was accessed."
+
+- record_id: TOOL-017
+  topic_id: TOOL
+  title: "DDR3 lane serializer FCLK on all four HCLK lanes"
+  status: VERIFIED
+  verified_date: 2026-10-24
+  statement: "Gowin EDA 1.9.11.03 clocks an OSER8_MEM or IDES8_MEM at a DDR3 lane position from any of the four HCLK lanes of block 2, selecting the lane by IOLOGIC FCLKSEL fuses that are the same on every lane. OSER8_MEM side A: lane 0 (3,4) (7,3) (8,14), lane 1 (7,1) (8,13), lane 2 (3,4), lane 3 (7,1); side B (5,1) (6,13) (10,2), (5,3) (6,14), (10,2), (6,14). IDES8_MEM side A: lane 0 (0,1) (8,14), lane 1 (0,3) (5,13) (8,13), lane 2 none, lane 3 (0,3) (5,13); side B (5,1) (11,1), (5,3) (8,10) (11,7), none, (8,10) (11,7). In attribute form, fuse-equal on both sides: lane 1 OSER8_MEM FCLKSEL0=HCLK1 and FCLKSEL4=HCLK1, lane 3 FCLKSEL0=HCLK1; lane 1 IDES8_MEM FCLKSEL4, FCLKSEL5 and FCLKSEL6 =HCLK1 with FCLKSEL7=HCLK1_, lane 3 the same without FCLKSEL4. The Apicula chipdb offers IOLOGIC FCLK pips from lanes 0 and 2 only, because its FCLKSEL1/FCLKSEL2 spelling has no odd-lane rows."
+  consequence: "A DDR3 lane's serializers can follow their DQS and CLKDIV onto any HCLK lane, which a controller clocking each lane through its own CLKDIV needs. The nextpnr fork models this for the 40 DDR3 lane positions only, with fuse-free lane-1/3 FCLK pips and lane-node membership, and the Apicula fork writes the measured sets; every other IO cell keeps lanes 0 and 2, and the Apicula database itself is unchanged, so its own lane-count test still fails as before."
+  sources:
+    - "TinyVCMI tools/dq_lane_probe.py oser_lane0..3 and ides_lane0..3 in build/dq_lane, build/dq_lane_l1..l3, build/dq_lane_b and build/dq_lane_b_l2"
+    - "TinyVCMI docs/ddr3-open-flow.md: IOLOGIC clock lanes 1 and 3"
+    - "aquasock/nextpnr branch epic/gw5ast138c, himbaechel/uarch/gowin/gowin_arch_gen.py extend_dq_lane_fclk and tests/check_dqs_site.py"
+    - "aquasock/apicula branch epic/gw5ast138c, apycula/gowin_pack.py _DQ_IN_FCLK, _DQ_OUT_FCLK and get_all_pips_fuses; apycula/chipdb.py _gw5a_iologic_fclk_lanes"
+  verification: "Vendor fuses were decoded per lane on side A of all four DDR3 lanes and side B of lanes 0 and 2, and an exhaustive search over the IOLOGIC table's FCLKSEL attributes found the sets above to reproduce each exactly. After the change all 48 per-lane serializer designs route with no lane-split warning and tools/dq_pack_check.py finds them equal to the vendor including the lane field; check_dqs_site.py passes eight of eight. Side B of lanes 1 and 3 is inferred from the lane-independent encoding, not built. No hardware was accessed."
 
 - record_id: PROV-001
   topic_id: PROV

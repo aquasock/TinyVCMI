@@ -1491,3 +1491,46 @@ configure is still unattributed. The two raw corner bits recorded with them
 in TOOL-003, `(1,12)` and `(9,13)`, are the unused-pin drive of the corner
 cell's own bank-6 pad. Without the flag, the DDRDLL designs pack exactly as
 before.
+
+## IOLOGIC clock lanes 1 and 3
+
+The model could clock a lane serializer from HCLK lanes 0 and 2 only. The
+limit came from Apicula's own spelling, `FCLKSEL1=HCLK<n>` with
+`FCLKSEL2=HCLK<n>_`, which has no odd-lane rows, not from the silicon. Gowin
+EDA 1.9.11.03 clocks a lane's serializers from all four lanes.
+
+The per-lane designs of `tools/dq_lane_probe.py` measure that encoding. They
+already existed on side A of every lane, and `oser_lane0..3` and
+`ides_lane0..3` are now built on side B too, on AA4 (lane 0, `build/dq_lane_b`)
+and T6 (lane 2, `build/dq_lane_b_l2`). The `FCLKSEL` fuses, decoded from the
+vendor builds, are the same on every DDR3 lane:
+
+| HCLK lane | `OSER8_MEM`, side A | side B | `IDES8_MEM`, side A | side B |
+|---|---|---|---|---|
+| 0 | `(3,4)` `(7,3)` `(8,14)` | `(5,1)` `(6,13)` `(10,2)` | `(0,1)` `(8,14)` | `(5,1)` `(11,1)` |
+| 1 | `(7,1)` `(8,13)` | `(5,3)` `(6,14)` | `(0,3)` `(5,13)` `(8,13)` | `(5,3)` `(8,10)` `(11,7)` |
+| 2 | `(3,4)` | `(10,2)` | none | none |
+| 3 | `(7,1)` | `(6,14)` | `(0,3)` `(5,13)` | `(8,10)` `(11,7)` |
+
+A search over the IOLOGIC table found one attribute spelling per cell that
+gives exactly these fuses on both sides. Several equal spellings exist per
+lane, and the table names lane 3 with `HCLK1` too:
+
+| Lane | `OSER8_MEM` | `IDES8_MEM` |
+|---|---|---|
+| 1 | `FCLKSEL0` and `FCLKSEL4` at `HCLK1` | `FCLKSEL4`, `FCLKSEL5`, `FCLKSEL6` at `HCLK1` and `FCLKSEL7=HCLK1_` |
+| 3 | `FCLKSEL0=HCLK1` | the same without `FCLKSEL4` |
+
+The model changes on both sides:
+
+- The nextpnr generator (`extend_dq_lane_fclk`) gives the DDR3 lane cells'
+  `FCLKA` and `FCLKB` fuse-free pips from `HCLK21` and `HCLK23` and adds those
+  cells to the lane-1 and lane-3 nodes. Every other IO cell keeps lanes 0
+  and 2.
+- The Apicula fork treats those pips as fuse-free and writes the measured
+  sets for lanes 1 and 3.
+
+All 48 per-lane serializer designs now route with no lane-split warning and
+pack exactly equal to the vendor, the lane field included: four lanes on side
+A of every DDR3 lane, and on side B of lanes 0 and 2. `tools/lane_open_build.py
+--pack` therefore requires an exact match for every `*_lane0..3` design.

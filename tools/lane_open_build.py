@@ -28,10 +28,10 @@ against its own vendor bitstream: `tools/dqs_pack_check.py` for every design
 with a `DQS`, by table-58 key at each lane's byte group, and
 `tools/dq_pack_check.py` for every design with a lane serializer or a plain
 `OSER8`.  A serializer
-design whose clock both routers can carry on one lane -- `*_lane0` and
-`*_lane2`, the IOLOGIC lanes the model spells -- must match exactly; any
-other is compared outside the lane field, since the vendor carried its clock
-on a lane the open model does not offer an IOLOGIC.  Each check holds one
+design pinned to one HCLK lane -- `*_lane0` to `*_lane3` -- must match
+exactly, since both routers then carry its clock on that lane; any other is
+compared outside the lane field, because the probes' board clock may ride a
+different lane in each router.  Each check holds one
 vendor bitstream, about 1.5 GB, so `--pack-jobs` stays small.
 
 Output goes to `build/open/<vendor directory>/<design>/`, for example
@@ -209,7 +209,7 @@ def pack_one(job):
             cmd += ["--lane", str(lane)]
         checks.append((cmd, f"{types.count('DQS')} DQS by table key"))
     if set(types) & set(SERIALIZERS) or "OSER8" in types:
-        exact = re.search(r"_lane[02]$", name) is not None
+        exact = re.search(r"_lane[0-3]$", name) is not None
         cmd = [os.path.join(here, "dq_pack_check.py"), routed, "--vendor", vendor]
         if not exact:
             cmd.append("--outside-lane")
