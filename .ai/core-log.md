@@ -1164,3 +1164,34 @@ Implement the stage-1b corrections in the Apicula fork, each applied only to ban
 - User Test: N/A
 
 ---
+
+## 38 COMMIT Unreleased 2026-10-23T23:32:30-07:00
+
+#### Coming From:
+
+Unreleased bce6123
+
+#### Purpose:
+
+Make the open packer write the vendor's DDR3-bank IO configuration on banks 6 and 7 under a declared DDR context, which is the corrective part of the approved stage 1b with the user's option (b) for unused pins.
+
+#### Outcome:
+
+Committed `7a82e4a` to the Apicula fork's `epic/gw5ast138c` and `7a77226c` to the nextpnr fork's, both pushed to the `aquasock` remotes only. Every Apicula change applies only to banks 6 and 7 with `ddr_context` set: unused pins get `DRIVE=8` and `DRIVE_LEVEL=8` under the unused default standard instead of the bank's SSTL15, through a new `get_unused_io_type` hook; a differential N half takes its P half's `IO_TYPE` and `IOLOGIC_IOB`, which corrects the 2.5 V VCCIO the uncalled `is_mipi` gave it; outputs are `SLEWRATE=FAST`, serializer-tristated pads `TRI_MUX=TMDDR`, the SSTL15D clock drops the desktop TMDS `DRIVE_LEVEL` and `PADDI`, and the strobe is `IOB_UNKNOWN51=TRIMUX` with the design's `PULLMODE`; and a bank with a single-ended SSTL15 input is `VREF=INTERNAL` while one with only SSTL15D pairs is `IO_TYPE=SSTL15D`. Each rule was found by measurement, not assumed: the `VREF` trigger was settled by a new `lane_sstl` design in `tools/dq_pad_probe.py`, the real lane's strobe pair, DQ and DM pads together, which showed a DQ `IOBUF` alone turns the reference on. That design could not be placed on lane 0, where `dq[0]` and `dm[0]` share cell 77, because nextpnr's `check_iologic_placement` made `OSER8_MEM` and `IDES8_MEM` claim their cell's other IOB; the nextpnr change exempts the two lane serializers, after which `lane_sstl` places on all four lanes and `tools/dq_pack_check.py` finds its IOLOGIC fuses equal to the vendor's on both sides of the shared cell, while plain `OSER8` keeps the check and `cmd_full_sstl` stays unplaced. `tools/ddr_bank_check.py` now finds all 102 bank 6/7 tables equal to the vendor on all 21 SSTL designs that place, five per lane on four lanes plus `cmd_min_sstl`. With `ddr_context` off, seven non-DDR netlists pack to fuse digests identical to the committed `b6ca047` packer's and the guard still refuses a bank-6 design; the full Apicula suite fails the same 58 tests before and after, all predating it; `tools/lane_open_build.py` behaves as expected on 227 of 228 designs, the exception being `cmd_full_sstl`, and its `--pack` passes 22 of 22 pad checks; the preflight passes all six primitives and `check_dqs_site.py` all seven checks. The nextpnr binary was rebuilt with the previous one kept in the session scratchpad. No image was written and no hardware was accessed. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering, and active-log capacity.
+
+#### Next Steps:
+
+Two comparisons remain before stage 2 can be proposed. Make plain `OSER8` occupy only its own IOLOGIC side where the vendor does, measured first by vendor builds of a cell with `OSER8` on one side and on both, so the full 28-ball bank 7 places and `cmd_full_sstl` can be compared; then build and compare one whole-controller pad set, all four lanes and bank 7 in one design. After those pass, propose stage 2's narrow declared DDR context for user approval. Writing any image and all Tang access each need separate approval, and the unused-pin contradiction with the fork's `D108` corpus stays open until that corpus or the macOS install can be compared.
+
+#### Files Modified:
+
+- docs/ddr3-open-flow.md
+- tools/dq_pad_probe.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: N/A
+- User Test: N/A
+
+---

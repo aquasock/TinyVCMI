@@ -19,6 +19,10 @@ the B1 `base` lane of `tools/dqs_param_probe.py`:
 `dm_*`
     `dm[0]` on AA4: a `TBUF` driven by an `OSER8_MEM`.
 
+`lane_*`
+    All three together, as the proven controller puts them on one lane: the
+    shape whose bank has SSTL15 inputs only through the DQ `IOBUF`.
+
 The DQ and DM shapes are built with `LVCMOS33`, comparable with the earlier
 lane measurements, and with the proven `SSTL15` at `BANK_VCCIO=1.5`; in the
 SSTL designs the DQS pad is SSTL too, because one bank takes one VCCIO.  The
@@ -108,10 +112,19 @@ def render(shape: str, delay: bool = True) -> str:
     elif shape == "dm":
         ports = ", output wire dm_pad"
         body = oser("dm") + "    TBUF dm_buf (.I(dm_o), .OEN(dm_t), .O(dm_pad));\n"
+    elif shape == "lane":
+        # the real lane's pad set together: strobe pair, one DQ, one DM
+        ports = ", inout wire dqs_p, inout wire dqs_n, inout wire dq_pad, output wire dm_pad"
+        body = (oser("st", strobe=True)
+                + "    ELVDS_IOBUF dqs_buf (.I(st_o), .OEN(st_t), .IO(dqs_p), .IOB(dqs_n), .O(dqsi_buf));\n"
+                + oser("dq") + "    wire dq_i;\n    IOBUF dq_buf (.I(dq_o), .OEN(dq_t), .IO(dq_pad), .O(dq_i));\n"
+                + (DELAY + IDES.replace("@D@", "dq_dly") if delay else IDES.replace("@D@", "dq_i"))
+                + oser("dm") + "    TBUF dm_buf (.I(dm_o), .OEN(dm_t), .O(dm_pad));\n")
+        extra_q = " ^ ^dq_q"
     else:
         raise SystemExit(f"unknown shape {shape}")
 
-    if shape == "dqs":
+    if shape in ("dqs", "lane"):
         # the strobe pad replaces the plain DQSIN input of the base lane
         text = text.replace(HEAD, f"module top (input wire clk, output wire q{ports});")
         text = text.replace("    wire [7:0] step;", "    wire [7:0] step;\n    wire dqsi_buf;")
@@ -144,14 +157,14 @@ def cst(shape: str, sstl: bool, lane_n: int = 0) -> str:
              'IO_LOC "q" F18;', 'IO_PORT "q" IO_TYPE=LVCMOS33 PULL_MODE=NONE;',
              'INS_LOC "dll" DDRDLLM_BL;']
     pads = LANE_PADS[lane_n]
-    if shape == "dqs":
+    if shape in ("dqs", "lane"):
         lines += [f'IO_LOC "dqs_p" {pads["dqs"][0]},{pads["dqs"][1]};',
                   f'IO_PORT "dqs_p" {diff};']
     else:
         lines += [f'IO_LOC "dqsi" {pads["dqs"][0]};', f'IO_PORT "dqsi" {single_in};']
-    if shape == "dq":
+    if shape in ("dq", "lane"):
         lines += [f'IO_LOC "dq_pad" {pads["dq"]};', f'IO_PORT "dq_pad" {single};']
-    if shape == "dm":
+    if shape in ("dm", "lane"):
         lines += [f'IO_LOC "dm_pad" {pads["dm"]};', f'IO_PORT "dm_pad" {single};']
     return "\n".join(lines) + "\n"
 
@@ -164,6 +177,7 @@ DESIGNS = {
     "dqs_sstl": ("dqs", True, True),
     "dm_lvcmos": ("dm", True, False),
     "dm_sstl": ("dm", True, True),
+    "lane_sstl": ("lane", True, True),
 }
 
 

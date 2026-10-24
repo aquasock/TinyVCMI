@@ -1283,3 +1283,53 @@ can be examined here, so the platform and the corpus itself remain the
 untested explanations. The user chose to follow these measurements for banks
 6 and 7 inside a declared DDR context only, leaving the fork's rule in place
 for every other bank and core.
+
+### The vendor's configuration under a declared DDR context
+
+The Apicula fork now writes the vendor's bank 6/7 IO configuration, but only
+with `ddr_context` set. The refusal is unchanged, and with `ddr_context` off,
+seven non-DDR netlists pack to the same fuses as before. The corrections:
+
+- **Unused pins** get the GW5A set with `DRIVE=8` and `DRIVE_LEVEL=8`, under
+  the device's unused default standard rather than the bank's SSTL15, through
+  a new `get_unused_io_type` hook. Every LVCMOS standard from 1.2 V to 3.3 V
+  gives the same fuses here.
+- **A differential N half** takes its P half's `IO_TYPE` and `IOLOGIC_IOB`
+  mark, which corrects the 2.5 V VCCIO from the uncalled `is_mipi` and gives
+  both halves `TRI_MUX`.
+- **Every output** is `SLEWRATE=FAST`. **A pad whose tristate a serializer
+  drives** is `TRI_MUX=TMDDR`. **The SSTL15D clock's `ELVDS_OBUF`** drops the
+  desktop TMDS additions `DRIVE_LEVEL` and `PADDI` but keeps
+  `IOB_UNKNOWN51=TRIMUX`. **The strobe's `ELVDS_IOBUF`** is
+  `IOB_UNKNOWN51=TRIMUX` with the design's `PULLMODE`.
+- **A bank with a single-ended SSTL15 input** has `VREF=INTERNAL`. A DQ
+  `IOBUF` alone is enough, as `lane_sstl` showed. **A bank whose only
+  standards are SSTL15D pairs** takes `IO_TYPE=SSTL15D`. Bank 7, with outputs
+  only, gets neither.
+
+`lane_sstl` (`tools/dq_pad_probe.py`) puts a lane's strobe pair, a DQ pad and
+its DM pad in one design, as the proven controller does. On lane 0 the DQ and
+DM pads share cell 77, and nextpnr refused to place it. Its
+`check_iologic_placement` made `OSER8_MEM` and `IDES8_MEM` claim their cell's
+other IOB. The fork now exempts the two lane serializers. The design then
+places on all four lanes, and its IOLOGIC fuses equal the vendor's on both
+sides of the shared cell. Plain `OSER8` keeps the check, so `cmd_full_sstl`
+still cannot be placed.
+
+With the corrections, `tools/ddr_bank_check.py` finds all 102 bank 6/7
+tables equal to the vendor on every SSTL design that places: lane 0's five
+and lanes 1 to 3's five each, 20 lane designs, plus `cmd_min_sstl`. The
+other checks run on this change:
+
+- `tools/lane_open_build.py` behaves as expected on 227 of 228 designs; the
+  exception is `cmd_full_sstl`.
+- `--pack` passes all 22 pad-design packer checks.
+- The preflight passes all six primitives.
+- `check_dqs_site.py` passes all seven checks.
+- The full Apicula suite fails the same 58 tests with and without the change,
+  all predating it.
+
+Not compared yet: the full bank 7, which waits on `OSER8` pairing, and a
+whole-controller pad set. This makes the bank fuses match. It is not stage 2:
+no declared context exists outside this check, no image has been written,
+and nothing has been loaded onto the board.
