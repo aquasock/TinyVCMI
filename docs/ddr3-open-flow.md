@@ -956,3 +956,25 @@ IOLOGIC fuses equal to the vendor's outside the lane field for all of them.
 That needed one packer addition: the IODELAY-fed `IDES8_MEM`'s attribute
 133=118, which `attrids` cannot name and which is therefore added by its
 `logicinfo` index. Only side A was built with an `IODELAY`.
+
+## One clock, one HCLK lane
+
+In every vendor lane design the fast clock reaches its `CLKDIV` and every
+`FCLK` sink -- the `DQS`'s and the serializers' -- on one HCLK lane, so the
+`PCLK` the `CLKDIV` divides off stays in phase with `FCLK`. The open router
+did not. Its global router routes each sink independently from the source,
+so the `FCLK` sinks took the first equal-length lane, lane 0, while a pinned
+`CLKDIV` held another, and the block was entered twice.
+
+The nextpnr fork now treats nets that feed a `DQS` `FCLK` differently, and
+only those. It routes their `CLKDIV` sinks first, since a `CLKDIV`'s lane is
+fixed by its placement, and it lets each later sink's backward search end at
+an `HCLK_MUX_ALPHA` lane wire the net already owns. With the `CLKDIV` pinned to
+each lane, the `DQS` follows it on lanes 0 to 3, and a serializer joins it on
+lane 2. The DQS and serializer packers then match the lane-matched vendor
+builds with real routing, with no `--fclk-lane` rewrite: the `DQS` on lanes 1,
+2 and 3, and `OSER8_MEM` and `IDES8_MEM` on lane 2. A `CLKDIV` pinned to lane 1
+or 3 cannot be joined by an IOLOGIC `FCLK`, which the database offers lanes 0
+and 2 only. The router then still splits the net, and it warns that it has.
+Every other net is routed exactly as before, and the preflight still passes
+all six primitives.

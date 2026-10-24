@@ -905,3 +905,33 @@ Lane 0 is now modelled at IOLOGIC level for every primitive and pad the proven c
 - User Test: N/A
 
 ---
+
+## 30 COMMIT Unreleased 2026-10-23T18:44:05-07:00
+
+#### Coming From:
+
+Unreleased 59da608
+
+#### Purpose:
+
+Make the open router keep a DDR3 lane's clock on one HCLK lane, as the vendor does, so the divided `PCLK` and the `FCLK` sinks stay in phase.
+
+#### Outcome:
+
+Committed `40869abe` to the nextpnr fork's `epic/gw5ast138c` and pushed it to the `aquasock` remote only. The cause was that the global router routes each sink of a clock net independently from the source, so the `FCLK` sinks took lane 0, the first equal-length lane, while a `CLKDIV` pinned to another lane held that one, and the block was entered twice. For nets that feed a `DQS` `FCLK`, and only those, `route_direct_net` now routes the `CLKDIV` sinks first and lets each later sink's backward search end at an `HCLK_MUX_ALPHA` lane wire the net already owns. With the `CLKDIV` pinned to each lane, the `DQS` now follows it on lanes 0 to 3 and a serializer joins it on lane 2. The packer checks then match the lane-matched vendor builds with real routing and no rewrite: `tools/dqs_pack_check.py` on lanes 1, 2 and 3, and `tools/dq_pack_check.py` for `OSER8_MEM` and `IDES8_MEM` on lane 2. A `CLKDIV` on lane 1 or 3 still splits a net that also feeds an IOLOGIC `FCLK`, because the database offers IOLOGIC lanes 0 and 2 only, and the router now warns when that happens; the warning was confirmed to fire on that case and not on lane 2. Every other net follows the same code path as before. The preflight passes all six primitives, `check_dqs_site.py`, `check_arch_gen_deterministic.py`, `check_hclk_to_fclk_138c.py` and `check_postroute_refusal.py` pass, and `check_hclk_6block.py` fails only the constid-ordering check it failed before this change. The binary and chipdb were rebuilt, the latter because a `DQS` constid was appended. Nothing was tested against the other cores that use this fork, beyond the argument that their nets do not feed a `DQS`. No hardware was accessed. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering, and active-log capacity.
+
+#### Next Steps:
+
+Continue offline with lanes 1 to 3: measure each lane's `DQS` site, byte-group cell and IOLOGIC positions the way lane 0 was measured, starting by locating their sites and table-58 cells from the proven pin map, and extend the model only where the measurements support it. The DDR3-bank guard decision remains the user's and still blocks any lane image. Do not touch the Tang unless the user explicitly changes that instruction.
+
+#### Files Modified:
+
+- docs/ddr3-open-flow.md
+
+#### Status:
+
+- Build: PASS
+- Deployment: N/A
+- User Test: N/A
+
+---
