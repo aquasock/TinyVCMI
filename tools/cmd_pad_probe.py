@@ -20,7 +20,10 @@ bank.  `cmd_min_sstl` carries only `ddr_addr[0]` on M1 (IOL35A) and
 plus the clock pair and `reset_n`.  The open flow's `OSER8` takes both IOLOGIC
 halves of a cell, so it cannot yet place the full bank, whose address balls
 share cells (M1/L1, J5/H5, ...); `cmd_min_sstl` is the bank-7 design it can
-route, and so the one whose pad configuration can be compared.  The designs exist to be compared, fuse for fuse, against
+route, and so the one whose pad configuration can be compared.
+`cmd_m1_sstl`, `cmd_l1_sstl` and `cmd_pair_sstl` put the serializer on side A
+(M1), side B (L1) and both sides of the one cell IOL35, to measure what each
+side's `OSER8` configures.  The designs exist to be compared, fuse for fuse, against
 the open packer by `tools/ddr_bank_check.py`.  They are built offline by
 Gowin EDA and are never loaded onto the board.
 
@@ -55,6 +58,10 @@ RESET = ("ddr_reset_n", "L6")
 DESIGNS = {
     "cmd_full_sstl": [p for p, _ in CMD_BALLS],
     "cmd_min_sstl": ["ddr_addr_0", "ddr_addr_9"],
+    # one cell, IOL35: the serializer on side A, on side B, and on both
+    "cmd_m1_sstl": ["ddr_addr_0"],
+    "cmd_l1_sstl": ["ddr_addr_10"],
+    "cmd_pair_sstl": ["ddr_addr_0", "ddr_addr_10"],
 }
 
 OSER8 = """\

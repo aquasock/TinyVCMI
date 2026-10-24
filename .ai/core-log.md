@@ -1195,3 +1195,38 @@ Two comparisons remain before stage 2 can be proposed. Make plain `OSER8` occupy
 - User Test: N/A
 
 ---
+
+## 39 COMMIT Unreleased 2026-10-24T00:28:39-07:00
+
+#### Coming From:
+
+Unreleased 58cabdb
+
+#### Purpose:
+
+Make plain `OSER8` occupy only the IOLOGIC side the vendor uses so the full bank 7 can be compared, and compare the whole DDR3 controller's pad set against the vendor, the two comparisons entry 38 left before stage 2.
+
+#### Outcome:
+
+Committed `9ee733c6` to the nextpnr fork's `epic/gw5ast138c` and pushed it to the `aquasock` remote only; the Apicula fork is unchanged. `tools/cmd_pad_probe.py` gained three single-cell designs on bank-7 cell IOL35 (M1/L1), and Gowin EDA 1.9.11.03 configures a plain `OSER8` on its own IOLOGIC side only, six fuses there and none on the other side, with the two-sided design exactly the union. The open flow's aux `IOLOGIC_DUMMY` wrote nothing there and its own side already matched outside the HCLK lane field, so the nextpnr change gives a plain `OSER8` on the GW5AST-138C neither an aux cell nor the other side's IOB, leaving other devices and every existing bitstream unchanged. All five bank-7 designs now place, `cmd_full_sstl` with all 28 balls included, and `tools/dq_pack_check.py`, now covering plain `OSER8`, and `tools/ddr_bank_check.py` find their IOLOGIC equal outside the lane field and all 102 IOB and `BANK` tables equal. The new `tools/ddr3_pad_set_probe.py` builds the whole controller's pad set on the proven pins as one design: one `DDRDLL`, four lanes each with its `DQS`, SSTL15D strobe pair, eight DQ `IOBUF`s with `OSER8_MEM`, `IODELAY` and `IDES8_MEM` and a DM `TBUF`, and bank 7's 28 balls. Its strobe ports are scalar, because nextpnr leaves the N half of a bused differential port unconstrained. In the open flow each `DQS` lands on its own lane site and every memory-mode pin on its lane's `DQS` output. `tools/dqs_pack_check.py`, which now checks every `DQS` of a design at its own lane's byte group, finds all four equal by table key, `tools/dq_pack_check.py` all 130 serializers equal outside the lane field, and `tools/ddr_bank_check.py` all 102 tables equal. `tools/lane_open_build.py --pack` now runs every applicable check per design, which added `DQS` checks to every lane and pad design, and the full run behaved as expected on 232 of 232 designs and passed 210 of 210 packer checks. The preflight passes all six primitives and the fork's `check_dqs_site.py`, `check_postroute_refusal.py`, `check_hclk_to_fclk_138c.py` and `check_iodelay_gw5a.py` pass. The probe clocks every `PCLK` and `FCLK` from the board pin, which the router splits across HCLK lanes because IOLOGIC reaches lanes 0 and 2 only, so the lane fields stay compared apart. The results are in `docs/ddr3-open-flow.md` and the new TOOL-014. No image was written and no hardware was accessed. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering, and active-log capacity.
+
+#### Next Steps:
+
+The open flow now places, routes and packs the whole DDR3 pad set to the vendor's fuses in-process, so the next step is to propose stage 2 for user approval: a narrow declared DDR context that a design must request explicitly, admitting only the proven DDR3 balls at SSTL15 or SSTL15D with `BANK_VCCIO=1.5`, `PULL_MODE=NONE` and `DRIVE=8` and refusing everything else on banks 6 and 7, so that an image could be written. Writing any image and all Tang access each need separate approval. Open alongside: the IOLOGIC `FCLK` model reaches HCLK lanes 0 and 2 only, the unused-pin contradiction with the fork's `D108` corpus is unresolved, and the `is_mipi` bug outside the DDR context still touches other cores.
+
+#### Files Modified:
+
+- docs/ddr3-open-flow.md
+- tools/cmd_pad_probe.py
+- tools/ddr3_pad_set_probe.py
+- tools/dq_pack_check.py
+- tools/dqs_pack_check.py
+- tools/lane_open_build.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: N/A
+- User Test: N/A
+
+---

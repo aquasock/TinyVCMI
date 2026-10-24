@@ -1333,3 +1333,60 @@ Not compared yet: the full bank 7, which waits on `OSER8` pairing, and a
 whole-controller pad set. This makes the bank fuses match. It is not stage 2:
 no declared context exists outside this check, no image has been written,
 and nothing has been loaded onto the board.
+
+## Bank 7 in full, and the whole controller's pad set
+
+The open flow's plain `OSER8` took both IOLOGIC halves of a cell: an aux
+`IOLOGIC_DUMMY` on the other side, and a check that the other side's IOB was
+free. That kept the full 28-ball bank 7 from placing. `tools/cmd_pad_probe.py`
+measured one bank-7 cell, IOL35 (M1/L1), three ways: `cmd_m1_sstl` with the
+serializer on side A, `cmd_l1_sstl` on side B, and `cmd_pair_sstl` on both.
+Gowin EDA 1.9.11.03 configures only the serializer's own side, six IOLOGIC
+fuses, and nothing on the other side; the pair is exactly the union. The open
+packer's aux cell wrote nothing either. The packer's own side already matched
+outside the HCLK lane field, which differed only because the vendor put the
+board clock on lane 1 or 3 and the open router on lane 0.
+
+The nextpnr fork therefore stops giving a plain `OSER8` on the GW5AST-138C an
+aux cell or the other side's IOB. On other devices nothing changes, and since
+the aux cell wrote no fuse here, no existing design's bitstream changes
+either.
+
+| Bank-7 design | Places | IOLOGIC | IOB and BANK |
+|---|---|---|---|
+| `cmd_m1_sstl`, `cmd_l1_sstl`, `cmd_pair_sstl`, `cmd_min_sstl` | yes | equal outside the lane field | 102 of 102 |
+| `cmd_full_sstl`, all 28 balls, 26 `OSER8` | yes | equal outside the lane field | 102 of 102 |
+
+`tools/dq_pack_check.py` now checks plain `OSER8` as well as the lane
+serializers.
+
+`tools/ddr3_pad_set_probe.py` builds the whole controller's pad set as one
+design, on the proven pin map:
+
+- one `DDRDLL`;
+- per lane, the `DQS` with its SSTL15D `ELVDS_IOBUF` strobe and strobe
+  `OSER8_MEM`, eight SSTL15 DQ `IOBUF`s each with an `OSER8_MEM`, a static
+  `IODELAY` and an `IDES8_MEM`, and the DM `TBUF` with its `OSER8_MEM`;
+- bank 7's 28 balls in `cmd_full_sstl`'s shapes.
+
+Its strobe ports are scalar, because nextpnr leaves the N half of a bused
+differential port unconstrained. In the open flow every `DQS` lands on its
+own lane's site and every memory-mode pin on its lane's `DQS` output, and the
+in-process packer checks agree with the vendor build:
+
+| Check | Result |
+|---|---|
+| `tools/dqs_pack_check.py` | all four DQS equal by table-58 key at their byte groups |
+| `tools/dq_pack_check.py` | all 130 serializers' IOLOGIC equal outside the lane field |
+| `tools/ddr_bank_check.py` | all 102 bank 6/7 IOB and BANK tables equal |
+
+`tools/dqs_pack_check.py` now checks every `DQS` in a design at the byte
+group of the lane whose site it occupies, with `--lane` as an assertion.
+`tools/lane_open_build.py --pack` runs every check that applies to a design.
+
+The board clock on every `PCLK` and `FCLK` is a probe simplification. The
+router warns that it splits that net across HCLK lanes, because the database
+offers IOLOGIC lanes 0 and 2 only, and the lane fields are compared apart for
+that reason. A real controller clocks the lanes from its memory PLL through
+`CLKDIV`s. No image has been written, and nothing has been loaded onto the
+board.

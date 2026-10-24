@@ -131,6 +131,7 @@ Topic IDs are the `record_id` prefix. An entry reserves a namespace; it does not
 | Where are DDR3 lanes 1 to 3? | TOOL | TOOL-011 |
 | Do lanes 1 to 3 share lane 0's DQS and IOLOGIC encoding? | TOOL | TOOL-012 |
 | Does the open packer write the vendor's DDR3-bank IO configuration? | TOOL | TOOL-013 |
+| How much IOLOGIC does a plain OSER8 take, and does the whole pad set match? | TOOL | TOOL-014 |
 | Which sources and licenses constrain reuse? | PROV | PROV-001 |
 
 ---
@@ -167,6 +168,7 @@ TOOL-010: "A complete DQ pad's IOLOGIC is the union of its serializers plus thre
 TOOL-011: "Lanes 1 to 3 have byte groups (99,0), (90,0) and (63,0) and DQS sites (99,0), (90,0) and (81,6); every site moves lane 0's 24 input wires"
 TOOL-012: "Lanes 1 to 3 share lane 0's 24-input and 13-output DQS map, table-58 keys, memory-serializer attributes and bit order"
 TOOL-013: "Under ddr_context the open packer's bank 6/7 IOB and BANK fuses now equal the vendor's on every measured SSTL lane and bank-7 shape, including unused-pin DRIVE=8 against the fork's D108 rule and an is_mipi call bug corrected; the full bank 7 is unplaced"
+TOOL-014: "A plain OSER8 configures only its own IOLOGIC side on this die; with that modelled, the whole controller's pad set packs to the vendor's fuses in DQS, IOLOGIC, IOB and BANK"
 PROV-001: "Reuse source and interface ideas with their original license boundaries and attribution intact"
 ```
 
@@ -564,6 +566,21 @@ PROV-001: "Reuse source and interface ideas with their original license boundari
     - "aquasock/apicula branch epic/gw5ast138c, apycula/gowin_pack.py BankDesc.add_io_bel and GW5AST_138C.get_unused_io_attrvals, get_unused_io_type, set_io_attrvals, check_io_banks and _ddr_n_half_io_type"
     - "aquasock/nextpnr branch epic/gw5ast138c, himbaechel/uarch/gowin/pack_iologic.cc check_iologic_placement"
   verification: "tools/ddr_bank_check.py ran gowin_pack's stages in memory with ddr_context set on one device instance and no bitstream object, and compared all 100 bank 6/7 pad tables and both BANK tables restricted to each table's own fuses on all four designs. The ordinary-bank comparison used the same packed result on banks 2 and 3. Bank 7's used pads and the SSTL pads of lanes 1 to 3 have no vendor builds yet. No image was written and no hardware was accessed. Revised 2026-10-23: lanes 1 to 3 (tools/dq_pad_probe.py --lane N) show exactly lane 0's signatures, and the used-pad pair TRI_MUX=TMDDR and SLEWRATE=FAST follows the pad's side. Bank 7 (tools/cmd_pad_probe.py) exposed two further gaps. The open flow's plain OSER8 takes both IOLOGIC halves of a cell, so the full 28-ball bank cannot be placed. BankDesc.add_io_bel tests bel.is_mipi without calling it, so a differential output's N half with no IO_TYPE sets the bank's LVDS VCCIO to 2.5 V, which programs bank 6 for 2.5 V under an SSTL15D strobe and is the (20,44)/(20,43) difference; the line is on upstream master. The unused-pin difference is DRIVE=8 and DRIVE_LEVEL=8: tools/unused_pin_probe.py found the GW5A base set equal to Gowin EDA 1.9.11.03 on Linux on 199 of 199 unused left- and right-edge pins and the fork's no-drive rule on none, under both this project's and the fork harness's build recipe and constraint conventions. That contradicts the fork's P3.T26/D108 corpus, which is on another host and was built with the harness's macOS default install; the platform and the corpus remain untested explanations. The user chose to follow these measurements for banks 6 and 7 inside a declared DDR context only. Revised again 2026-10-23: the Apicula fork now writes the vendor's configuration with ddr_context set and only on banks 6 and 7. Unused pins carry DRIVE=8 and DRIVE_LEVEL=8 under the unused default standard. A differential N half takes its P half's IO_TYPE and IOLOGIC_IOB. Outputs are SLEWRATE=FAST, serializer-tristated pads TRI_MUX=TMDDR, the SSTL15D clock drops DRIVE_LEVEL and PADDI, and the strobe is IOB_UNKNOWN51=TRIMUX with the design's PULLMODE. A bank with a single-ended SSTL15 input, a DQ IOBUF alone included, is VREF=INTERNAL, and a bank with only SSTL15D pairs is IO_TYPE=SSTL15D. tools/ddr_bank_check.py then finds all 102 tables equal on all 21 SSTL designs that place: four lanes of lane_sstl, dq_sstl, dq_nodelay_sstl, dqs_sstl and dm_sstl, plus cmd_min_sstl. With ddr_context off, seven non-DDR netlists pack to unchanged fuses. The nextpnr fork's check_iologic_placement no longer makes OSER8_MEM and IDES8_MEM claim their cell's other IOB, which lane 0's shared dq[0]/dm[0] cell needs; plain OSER8 still does, so the full 28-ball bank 7 remains unplaced and uncompared."
+
+- record_id: TOOL-014
+  topic_id: TOOL
+  title: "Plain OSER8 side use and the whole DDR3 pad set"
+  status: VERIFIED
+  verified_date: 2026-10-24
+  statement: "On the GW5AST-138C, Gowin EDA 1.9.11.03 configures a plain OSER8 on its own IOLOGIC side only: on bank-7 cell IOL35 (M1/L1) a serializer on side A sets six IOLOGIC fuses at (34,0) and none at (35,0), one on side B six at (35,0) and none at (34,0), and one on each side exactly the union. The proven controller places OSER8s on both sides of bank-7 cells. One design carrying the controller's whole pad set on its proven pins -- one DDRDLL, four DQS with SSTL15D strobe pairs, 32 DQ IOBUFs with OSER8_MEM, IODELAY and IDES8_MEM, four DM TBUFs, and bank 7's 25 address and command OSER8s, OSER8-driven SSTL15D clock pair and reset_n -- builds in the vendor tool."
+  consequence: "The open model gives a plain OSER8 on this die neither the other side's IOB nor an aux cell, which wrote no fuse, so the full bank 7 places and existing designs' bitstreams do not change. With that and the lane and bank corrections of TOOL-012 and TOOL-013, the whole pad set places, routes and packs in-process to the vendor's fuses: four DQS by table key, 130 serializers' IOLOGIC outside the HCLK lane field, and all 102 bank 6/7 IOB and BANK tables. The lane fields remain compared apart because the probe clocks everything from the board pin and the IOLOGIC model offers lanes 0 and 2 only. This is fuse equivalence for the pad set, not a written image, a declared DDR context or a hardware result."
+  sources:
+    - "TinyVCMI tools/cmd_pad_probe.py (cmd_m1_sstl, cmd_l1_sstl, cmd_pair_sstl, cmd_full_sstl) and tools/ddr3_pad_set_probe.py"
+    - "TinyVCMI tools/dq_pack_check.py, tools/dqs_pack_check.py, tools/ddr_bank_check.py and tools/lane_open_build.py"
+    - "TinyVCMI docs/ddr3-open-flow.md: Bank 7 in full, and the whole controller's pad set"
+    - "aquasock/nextpnr branch epic/gw5ast138c, himbaechel/uarch/gowin/pack_iologic.cc oser8_one_side"
+    - "Tang-PSX build/ddr3-vendor/ip/ddr3_memory_interface/ddr3_memory_interface.vo, u_ddr_phy_cmd_lane OSER8 instances; gateware/ddr3_vendor/tang_psx_ddr3.cst"
+  verification: "Three single-cell vendor builds decoded at both IOLOGIC configuration cells, and the open flow's single-side builds compared fuse for fuse, equal outside the lane field with nothing on the other side. After the nextpnr change all five bank-7 designs and the pad set place and route; tools/dq_pack_check.py, tools/dqs_pack_check.py and tools/ddr_bank_check.py pass on each against its vendor build. No image was written and no hardware was accessed."
 
 - record_id: PROV-001
   topic_id: PROV

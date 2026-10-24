@@ -24,9 +24,10 @@ that a net feeding a DQS `FCLK` was split across lanes.  It writes no image,
 so the packer's DDR3-bank guard is not involved, and it needs no board.
 
 `--pack` then runs the in-process packer checks on every routed design
-against its own vendor bitstream: `tools/dqs_pack_check.py --lane N` for the
-`dqs_b1` designs, by table-58 key at the lane's byte group, and
-`tools/dq_pack_check.py` for every design with a serializer.  A serializer
+against its own vendor bitstream: `tools/dqs_pack_check.py` for every design
+with a `DQS`, by table-58 key at each lane's byte group, and
+`tools/dq_pack_check.py` for every design with a lane serializer or a plain
+`OSER8`.  A serializer
 design whose clock both routers can carry on one lane -- `*_lane0` and
 `*_lane2`, the IOLOGIC lanes the model spells -- must match exactly; any
 other is compared outside the lane field, since the vendor carried its clock
@@ -56,9 +57,10 @@ import sys
 import dqs_port_probe as base
 
 #: vendor build sets, each a directory per lane through `base.lane_dir`;
-#: `cmd_pad`, bank 7's address and command pads, belongs to no lane and is
-#: read as lane 0's
-SETS = ("dqs_b1", "dq_lane", "dq_lane_b", "dq_pad", "cmd_pad")
+#: `cmd_pad`, bank 7's address and command pads, and `ddr3_pads`, the whole
+#: controller's pad set with all four DQS (`tools/ddr3_pad_set_probe.py`),
+#: belong to no lane and are read as lane 0's
+SETS = ("dqs_b1", "dq_lane", "dq_lane_b", "dq_pad", "cmd_pad", "ddr3_pads")
 
 #: memory-mode pin -> the DQS output it is hard-wired from (TOOL-009)
 MEM_LINKS = {"TCLK_DQSW0": "DQSW0", "TCLK_DQSW270": "DQSW270", "ICLK": "DQSR90",
@@ -122,13 +124,18 @@ def check_routed(routed: str, lane: int) -> list:
     problems = []
 
     dqs = [n for n, c in cells.items() if c["type"] == "DQS"]
-    if len(dqs) > 1:
-        problems.append(f"{len(dqs)} DQS cells")
-    want = site_bel(lane)
-    for n in dqs:
-        if bel[n] != want:
-            problems.append(f"DQS {n} on {bel[n]!r}, not {want}")
-    dqs_bits = port_bits(cells[dqs[0]]) if dqs else {}
+    if len(dqs) == 1:
+        want = site_bel(lane)
+        if bel[dqs[0]] != want:
+            problems.append(f"DQS {dqs[0]} on {bel[dqs[0]]!r}, not {want}")
+    elif dqs:
+        # a whole controller: one DQS on each lane site
+        sites = {site_bel(n) for n in base.LANES}
+        placed = [bel[n] for n in dqs]
+        if len(set(placed)) != len(placed) or not set(placed) <= sites:
+            problems.append(f"DQS cells on {sorted(placed)}, not one per lane site")
+    # every DQS output bit -> the output it is
+    dqs_out = {b: port for n in dqs for port, b in port_bits(cells[n]).items()}
 
     # the packer disconnects a serializer from its pad, whose path is
     # dedicated, so the pad is found by position: the IOB of the same side
@@ -150,8 +157,7 @@ def check_routed(routed: str, lane: int) -> list:
             if src is None:
                 continue
             linked += 1
-            want_bit = dqs_bits.get(src + (m.group(2) or ""))
-            if want_bit != b:
+            if dqs_out.get(b) != src + (m.group(2) or ""):
                 problems.append(f"{c['type']} {n}.{pin} is not on DQS.{src}{m.group(2) or ''}")
         if linked == 0:
             problems.append(f"{c['type']} {n} has no memory-mode pin")
@@ -184,36 +190,42 @@ def run_one(job):
 
 
 def pack_one(job):
-    """Run the in-process packer check that applies to one routed design."""
+    """Run every in-process packer check that applies to one routed design."""
     lane, src, out, name = job
     routed = os.path.join(out, "routed.json")
     vendor = os.path.join(src, "impl/pnr/probe.fs")
     with open(routed) as f:
-        types = {c["type"] for c in json.load(f)["modules"]["top"]["cells"].values()}
+        types = [c["type"] for c in json.load(f)["modules"]["top"]["cells"].values()]
     here = os.path.dirname(os.path.abspath(__file__))
     tag = out.replace(base.ROOT + "/", "")
     if not os.path.exists(vendor):
         # Gowin refused the design, for a reason outside the lane model:
         # dq_pad's dqs_lvcmos asks for LVCMOS33D on an ELVDS_IOBUF (CT1109)
         return True, f"skip  {tag}: no vendor bitstream to compare against"
-    if os.path.basename(os.path.dirname(out)).startswith("dqs_b1"):
-        if "DQS" not in types:
-            return True, f"skip  {tag}: no DQS"
-        cmd, mode = [os.path.join(here, "dqs_pack_check.py"), routed, "--vendor", vendor,
-                     "--lane", str(lane)], "by table key"
-    elif types & set(SERIALIZERS):
+    checks = []
+    if "DQS" in types:
+        cmd = [os.path.join(here, "dqs_pack_check.py"), routed, "--vendor", vendor]
+        if types.count("DQS") == 1:
+            cmd += ["--lane", str(lane)]
+        checks.append((cmd, f"{types.count('DQS')} DQS by table key"))
+    if set(types) & set(SERIALIZERS) or "OSER8" in types:
         exact = re.search(r"_lane[02]$", name) is not None
         cmd = [os.path.join(here, "dq_pack_check.py"), routed, "--vendor", vendor]
         if not exact:
             cmd.append("--outside-lane")
-        mode = "exactly" if exact else "outside the lane field"
-    else:
+        checks.append((cmd, "serializers " + ("exactly" if exact else "outside the lane field")))
+    if not checks:
         return True, f"skip  {tag}: nothing to pack"
-    r = subprocess.run([sys.executable] + cmd, capture_output=True, text=True)
-    if r.returncode == 0:
-        return True, f"PASS  {tag}: packer equals vendor {mode}"
-    fails = [l.strip() for l in r.stdout.splitlines() if l.strip().startswith("FAIL")]
-    return False, f"FAIL  {tag}: {mode}; " + " | ".join(fails or [r.stderr.strip()[-300:]])
+    done, fails = [], []
+    for cmd, mode in checks:
+        r = subprocess.run([sys.executable] + cmd, capture_output=True, text=True)
+        done.append(mode)
+        if r.returncode != 0:
+            fails += [f"{mode}: " + l.strip() for l in r.stdout.splitlines()
+                      if l.strip().startswith("FAIL")] or [f"{mode}: {r.stderr.strip()[-300:]}"]
+    if not fails:
+        return True, f"PASS  {tag}: packer equals vendor, " + "; ".join(done)
+    return False, f"FAIL  {tag}: " + " | ".join(fails)
 
 
 def main() -> int:

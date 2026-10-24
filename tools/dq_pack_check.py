@@ -2,7 +2,8 @@
 """Check the open packer's lane-serializer fuses against the vendor's.
 
 Apicula's `get_OSER8_MEM_fuses` and `get_IDES8_MEM_fuses` write the TOOL-009
-attributes through the existing IOLOGIC path.  A pad may carry one of each on
+attributes through the existing IOLOGIC path, and the plain `OSER8` of bank 7's
+address and command balls is checked the same way.  A pad may carry one of each on
 the same IOLOGIC side, with an `IODELAY` folded into the `IDES8_MEM` by
 nextpnr, so the fuses are compared per side.  Like `tools/dqs_pack_check.py`
 this runs the packer on an open-flow routed netlist exactly as `gowin_pack`
@@ -43,8 +44,13 @@ import fs_attribute as fa
 import fs_site_diff as fsd
 
 
+#: the lane serializers, and the plain `OSER8` bank 7's address and command
+#: balls use (`tools/cmd_pad_probe.py`)
+SERIALIZERS = ("OSER8_MEM", "IDES8_MEM", "OSER8")
+
+
 def packer_serializer_fuses(routed: str):
-    """(cell, x, y, side, {(x, y): fuses}) for every lane serializer."""
+    """(cell, x, y, side, {(x, y): fuses}) for every lane or command serializer."""
     from apycula import gowin_pack as gp
     import os
 
@@ -60,7 +66,7 @@ def packer_serializer_fuses(routed: str):
     gp.Pack(cli, pnr, device).route()
     found = []
     for bel in pnr.get_bels():
-        if bel.cell.typ not in ("OSER8_MEM", "IDES8_MEM"):
+        if bel.cell.typ not in SERIALIZERS:
             continue
         cells = {}
         for cfb in getattr(device, f"get_{bel.cell.typ}_fuses")(bel):
