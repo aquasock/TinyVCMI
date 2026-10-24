@@ -1768,3 +1768,68 @@ every compared table is equal. The likeliest difference is the memory
 clock's route from the PLL into the HCLK lane, which each tool picks
 itself; it is not yet measured. The desktop core was loaded again
 afterwards and answered `0x54`.
+
+## Writes
+
+`fpga/ddr3_write` adds the write side: write leveling, streamed writes of a
+fixed pattern across row 0 of bank 0, and reads back, with refresh every 7
+us. The proven controller's netlist sets how the write timing is driven: one
+absolute 8-bit `WSTEP` per lane loaded by a shared `WLOADN`, with `WMOVE`
+and `WDIR` low. The core streams a WRITE every `PCLK` with the strobes
+toggling and the DQ carrying an 8-beat pattern `P` on even DQ and `~P` on
+odd DQ for the whole of write mode, so every burst the device takes is whole
+whatever the write latency, which only rotates the pattern. The read check
+counts the cycles of an unbroken read stream in which each lane's eight DQ
+words are one rotation of `P` and its inverse. `tools/ddr3_write_probe.py`
+drives it.
+
+The gates were those of the MPR image. The simulation (`tools/sim_ddr3_write.sh`)
+decodes every command and asserts row discipline, tRCD, tRP, tRFC, a
+refresh within 7.8 us, the leveling entry and exit, ODT and the bus; it
+caught the core declaring write mode over a few nanoseconds before the
+serializers had released the bus, which is now ordered the other way. The
+first open-flow build missed `PCLK` by 0.02 percent through the read check,
+which now takes two stages; nextpnr closes at 165.8 MHz and Gowin at
+123.9 MHz, and the image equals its Gowin build on all 306 tables.
+
+### On the board
+
+Both images were loaded on 2026-10-24, vendor control first:
+
+| Image | Bytes | SHA-256 |
+|---|---:|---|
+| vendor control | 4,330,802 | `447b41ad5ce197df254dcfa6fe22111e0fc241a3bbe67caa3d5f15a787397887` |
+| open flow | 4,330,782 | `58ceeb3d9a3738a29700ef4679122ba518b503a6576a4c276174c9d5b73db3af` |
+
+**Writes work through the open flow.** Writing `P` and reading it back, the
+open-flow image matched on all four lanes in every eligible cycle (about
+59,100 of 65,535 per window; the rest are refresh gaps) at almost every
+`WSTEP` from 0 to 248 in steps of 8, with no write leveling at all. The
+exceptions are single settings -- 104, 112 and 248 in the open-flow image,
+72, 80 and 248 in the vendor control -- which look like a crossing boundary
+in the write path rather than the edge of an eye. A control shows the data
+is the image's own: with `P` changed to `0x6B` and nothing written, every
+lane reads 0; writing `0x6B` brings every lane to the full count, and the
+same with `0xC5`.
+
+Two things the run showed, both for the next steps:
+
+- **Word alignment at the first start-up.** On the vendor control's first
+  start after loading, lanes 0 and 2 read individual DQ bits one or two
+  clocks off their neighbours, the same at every `WSTEP`, `RCLKSEL` and read
+  delay; after a restart of the core's own sequence all four lanes were
+  aligned in four of four restarts. The open-flow image was aligned from its
+  first start. Each `IDES8_MEM` frames its words from when it leaves reset,
+  and `CALIB` re-frames one step per pulse; the first start evidently ran
+  the clock-stop sync before the static PLL had settled, where the vendor's
+  own top waits for `PLL_INIT`. The MPR pattern could not have shown this,
+  because `0101` is the same after a whole-clock shift. Each lane's
+  whole-word rotation also changes between read sessions.
+- **Write leveling did not measure.** The level count read 0 on every lane
+  at every `WSTEP`, with `RVALID` 0 and the FIFO pointers frozen: the core
+  holds `READ` low outside read mode, so the `DQS` block never passes the
+  looped-back strobe into the read FIFO. That is this design, not the
+  device. Writes landing at almost every setting say the board's strobe-to-
+  clock skew is small, so leveling is not blocking.
+
+The desktop core was loaded again afterwards and answered `0x54`.

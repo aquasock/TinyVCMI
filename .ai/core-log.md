@@ -1410,3 +1410,42 @@ Step 4, approved by the user: write leveling, writes and read-back. The image `f
 - User Test: N/A
 
 ---
+## 45 COMMIT Unreleased 2026-10-24T10:12:57-07:00
+
+#### Coming From:
+
+Unreleased 5f0d4be
+
+#### Purpose:
+
+Write data to the DDR3 device through the open-flow PHY and read it back, with write leveling, as step 4 of the approved path to working DDR3.
+
+#### Outcome:
+
+No fork changed in this cycle. The proven controller's netlist shows the write timing driven as one absolute 8-bit `WSTEP` per lane loaded by a shared `WLOADN` with `WMOVE` and `WDIR` low, and `fpga/ddr3_write` follows it, adding to the MPR image's PHY four link-selected modes: idle with refresh every 7 us, write leveling, writes streamed across row 0 of bank 0 with the strobes and DQ toggling continuously so the write latency only rotates the pattern, and reads back with a per-lane check for one rotation of the pattern `P` on even DQ and `~P` on odd DQ. `tools/build_ddr3_write.sh` gated it with a simulation that decodes every command and asserts row discipline, tRCD, tRP, tRFC, refresh within 7.8 us, the leveling entry and exit, ODT and the bus, which caught the core going idle a few nanoseconds before the serializers released the bus, fixed by ordering the release first; the first open-flow build missed `PCLK` by 0.02 percent through the read check, which now runs in two stages, closing at 165.8 MHz in nextpnr and 123.9 MHz in Gowin, and the image equals its Gowin build on all 306 tables. The user asked mid-cycle that the Tang not be touched, and the board session ran only after the user said it was ready. On the Tang the open-flow image, SHA-256 `58ceeb3d9a3738a29700ef4679122ba518b503a6576a4c276174c9d5b73db3af`, wrote and read back the pattern on all four lanes in every eligible cycle at every `WSTEP` from 0 to 248 in steps of 8 except the single settings 104, 112 and 248, and the vendor control, SHA-256 `447b41ad5ce197df254dcfa6fe22111e0fc241a3bbe67caa3d5f15a787397887`, except 72, 80 and 248, with no write leveling; changing the expected pattern without writing read 0 on every lane, and writing `0x6B` and then `0xC5` restored the full count, so the data read is the image's own. On the vendor control's first start-up lanes 0 and 2 read individual bits one or two clocks out of frame at every `WSTEP`, `RCLKSEL` and read delay, which the MPR pattern could never have shown, and a restart of the core's start-up aligned every lane in four of four tries; the open-flow image was aligned from its first start, and each lane's whole-word rotation changes between read sessions. The write-leveling count read 0 throughout because the core holds `READ` low outside read mode, so the read FIFO never clocks; that is recorded as a design limit in `wr_core.v` rather than fixed in this cycle, since writes land without leveling. The desktop core was reloaded afterwards and answered `0x54`. `docs/ddr3-open-flow.md` gained the cycle and TOOL-021 was added. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering and active-log capacity.
+
+#### Next Steps:
+
+Bring to the user for approval the read-calibration cycle: make the start-up wait for a settled PLL before the clock-stop sync and add per-bit `IDES8_MEM` `CALIB` control so word framing is aligned and verified at every start; hold each lane's word rotation fixed across read sessions; gate reads with `READ` around each burst instead of streaming, centre each lane's read delay, and explain the 4-to-10-step read-edge offset against the vendor build; assert `READ` during write leveling so it measures; and widen the pattern test from one row to many rows, banks and data patterns. A controller, most likely LiteDRAM's over this PHY, and the AE350 port follow. The `D108` unused-pin contradiction and the `is_mipi` bug outside the DDR context remain open.
+
+#### Files Modified:
+
+- docs/ddr3-open-flow.md
+- fpga/ddr3_write/wr_core.v
+- fpga/ddr3_write/top.v
+- fpga/ddr3_write/top.cst
+- fpga/ddr3_write/open.sdc
+- fpga/ddr3_write/vendor.sdc
+- fpga/ddr3_write/tb_wr.v
+- tools/ddr3_write.py
+- tools/build_ddr3_write.sh
+- tools/sim_ddr3_write.sh
+- tools/ddr3_write_probe.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: N/A
+
+---

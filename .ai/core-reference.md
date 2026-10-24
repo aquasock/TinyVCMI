@@ -138,6 +138,7 @@ Topic IDs are the `record_id` prefix. An entry reserves a namespace; it does not
 | Does the open-flow DDR3 PHY run on the board, and what does it need beyond the pad set? | TOOL | TOOL-018 |
 | How does the proven PHY start up, and how is its memory clock stopped? | TOOL | TOOL-019 |
 | Does the open-flow DDR3 read path return the device's data? | TOOL | TOOL-020 |
+| Do open-flow DDR3 writes land? | TOOL | TOOL-021 |
 | Which sources and licenses constrain reuse? | PROV | PROV-001 |
 
 ---
@@ -181,6 +182,7 @@ TOOL-017: "DDR3 lane serializers take FCLK from all four HCLK lanes; lanes 1 and
 TOOL-018: "An open-flow DDR3 PHY image equal to its vendor build on all 306 tables ran on the board beside the vendor control: PLL lock, DLL LOCK, STEP 0x2c in both, with the device held in reset"
 TOOL-019: "The vendor PHY waits 16384 clocks after DLL LOCK, updates the DLL under HOLD, then resets CLKDIV and lanes with the memory clock stopped through the PLL's ENCLK, a routed pin at (27,4) B4/B6 the open flow now models"
 TOOL-020: "The open-flow DDR3 PHY initializes the device and reads its MPR pattern on all 32 DQ, every cycle, at every RCLKSEL, with live read-delay edges; its lower edges sit 4 to 10 steps from the vendor build's"
+TOOL-021: "The open-flow DDR3 PHY writes a pattern to the device and reads it back on all 32 DQ at almost every WSTEP without write leveling; per-bit word framing can come up misaligned at first start-up"
 PROV-001: "Reuse source and interface ideas with their original license boundaries and attribution intact"
 ```
 
@@ -674,6 +676,20 @@ PROV-001: "Reuse source and interface ideas with their original license boundari
     - "TinyVCMI fpga/ddr3_mpr, tools/ddr3_mpr.py, tools/build_ddr3_mpr.sh, tools/sim_ddr3_mpr.sh, tools/ddr3_mpr_probe.py"
     - "TinyVCMI docs/ddr3-open-flow.md: MPR read-back"
   verification: "The simulation decoded every command at every CK edge against Gowin's models and passed, and a separate testbench checks the pattern counter, which on the first load read 0 on every lane because a fully matching 65536-cycle window overflowed it; the window is 65535 cycles since. With reads off the strobes stop and the deserializers hold their last word, so liveness rests on the read-delay edges, not on the count. The desktop core was reloaded afterwards and answered 0x54. tools/lane_open_build.py --pack over all four lanes passed after the PLL change."
+
+- record_id: TOOL-021
+  topic_id: TOOL
+  title: "Open-flow DDR3 writes on the board"
+  status: VERIFIED
+  verified_date: 2026-10-24
+  statement: "fpga/ddr3_write streams WRITEs of an 8-beat pattern P (even DQ) and ~P (odd DQ) across row 0 of bank 0 with the strobes and DQ driven continuously, ODT high and refresh every 7 us, then streams READs back and counts per lane the cycles in which all eight DQ words are one rotation of P and its inverse. Built by tools/build_ddr3_write.sh it equals its Gowin EDA 1.9.11.03 build on all 306 tables and meets timing. On 2026-10-24 the open-flow image (SHA-256 58ceeb3d9a3738a29700ef4679122ba518b503a6576a4c276174c9d5b73db3af) matched on all four lanes in every eligible cycle at every WSTEP from 0 to 248 in steps of 8 except single settings 104, 112 and 248, and the vendor control (SHA-256 447b41ad5ce197df254dcfa6fe22111e0fc241a3bbe67caa3d5f15a787397887) except 72, 80 and 248, with no write leveling. Changing P without writing read 0 on every lane, and writing 0x6B and then 0xC5 read back the full count each time. On the vendor control's first start-up, lanes 0 and 2 read individual bits one or two clocks out of frame at every WSTEP, RCLKSEL and read delay; a restart of the core's start-up sequence aligned all lanes in four of four tries, and the open-flow image was aligned from its first start. The write-leveling count read 0 throughout because the core holds READ low outside read mode, so the read FIFO never clocks."
+  consequence: "Data can be written to and read from the DDR3 array through the open flow on all 32 DQ, and the board's strobe-to-clock skew is small enough that writes land without leveling. A controller still needs per-bit word alignment (IDES8_MEM CALIB, or a start-up that waits for a settled PLL before the clock-stop sync), a stable per-lane word rotation across read sessions, read gating and delay centering, and refresh and timing for real traffic; write leveling must assert READ to capture the device's feedback. Only one row has been exercised."
+  sources:
+    - "TinyVCMI fpga/ddr3_write, tools/ddr3_write.py, tools/build_ddr3_write.sh, tools/sim_ddr3_write.sh, tools/ddr3_write_probe.py"
+    - "TinyVCMI docs/ddr3-open-flow.md: Writes"
+    - "Tang-PSX build/gate1-ip/ddr3_memory_interface/ddr3_memory_interface.vo, the four DQS instances' WSTEP, WLOADN, WMOVE and WDIR"
+    - "Gowin EDA 1.9.11.03 IDE/simlib/gw5a/prim_sim.v, module IDES8_MEM, CALIB"
+  verification: "The simulation passed after the bus-release fix; the board session ran the write-delay sweep on both images, the pattern-change controls and repeated re-reads of stored data on the open-flow image, four restarts of the vendor control and three of the open-flow image. The desktop core was reloaded afterwards and answered 0x54. No fork changed in this cycle."
 
 - record_id: PROV-001
   topic_id: PROV
