@@ -152,6 +152,7 @@ Topic IDs are the `record_id` prefix. An entry reserves a namespace; it does not
 | How does the proven controller gate and clock each lane's reads? | TOOL | TOOL-033 |
 | Which READ does each lane return, and do per-lane gates fix it? | TOOL | TOOL-034 |
 | Does taking a word only on RVALID return isolated READs whole? | TOOL | TOOL-035 |
+| How does the proven controller calibrate reads, and what does it accept? | TOOL | TOOL-036 |
 | Why did the Gowin control miss PCLK timing? | TOOL | TOOL-028 |
 | Which sources and licenses constrain reuse? | PROV | PROV-001 |
 
@@ -209,6 +210,7 @@ TOOL-032: "The controller did not route because its build reused the write image
 TOOL-033: "The proven controller drives READ, RCLKSEL and HOLD per lane, gates each READ with the same four-clock window as ours selected by a per-lane read_i, and trains it on an RBURST level; it takes read data only on cycles whose registered RVALID is high"
 TOOL-034: "Isolated READs: each lane holds its own READ's burst in at most about 51% of READs at any per-lane gate and RCLKSEL, in both builds, valid on two PCLK of every three"
 TOOL-035: "With RVALID-held capture a lane returns 100% of isolated READs' own bursts at its own setting, but the RVALID pattern and so the right setting change between read sessions"
+TOOL-036: "The proven controller accepts a lane only with exactly one RVALID cycle and one RBURST pulse per READ over 29 groups of four READs, sweeping RCLKSEL then the gate per lane"
 TOOL-031: "LiteDRAM's control layer alone generates, synthesises and places in the open flow at ~1% of the LUTs, with none of TOOL-025's three gaps"
 TOOL-030: "Closed-page scatter READs do not reach the read capture in the open or the vendor build of the same RTL; no cadence, gate position or shared RCLKSEL recovers them, and failing READs return other rows' patterns"
 PROV-001: "Reuse source and interface ideas with their original license boundaries and attribution intact"
@@ -905,6 +907,19 @@ PROV-001: "Reuse source and interface ideas with their original license boundari
     - "TinyVCMI tools/ddr3_write_probe.py lag --rvalid and tools/ddr3_lag_sweep.py --rvalid"
     - "TinyVCMI docs/ddr3-open-flow.md: Taking a word only when RVALID says so"
   verification: "The open image, .bin SHA-256 bb809c5b80dc83b3d26c15776e679431c6974c76cad2233baa6cfae7d93e5605, closing PCLK at 110.93 MHz, and its Gowin build, .bin SHA-256 d55b007fb30b598e5fc1400f3f3f2c1627a1600954c5c2b6ef8c5b5febc3c750, closing PCLK at 104.469 MHz with no negative slack, equal on all 306 DDR3 tables, were loaded on the Tang Console 138K on 2026-10-24 and calibrated, every lane within one cycle of all eligible cycles. The first calibration attempt of the open image stopped with no reply to command 0x0f and the FPGA was then found unconfigured; after a reload it held configuration idle for 30 s of status polls and calibrated cleanly. TinyTang's own fpga query gets no answer while the probe holds the fpgapipe link, so it was not used mid-session. The checker bench's case 10 holds a burst valid for one PCLK with RVALID marking it in 300 of 300 READs and fails all 300 without the hold. The desktop core was restored and answered 0x54."
+
+- record_id: TOOL-036
+  topic_id: TOOL
+  title: "The proven controller's read calibration: one RVALID cycle and one RBURST pulse per READ, found by sweeping RCLKSEL and then the gate per lane"
+  status: VERIFIED
+  verified_date: 2026-10-24
+  statement: "Simulated with Gowin's primitive models, the hardware-proven vendor controller's u_ddr_init block, 1,518 cells cut from Tang-PSX's post-route netlist, runs read calibration after write leveling as follows. A calibration step issues four BL8 READs five PCLK apart, and a batch is 30 steps, read_cmd_cnt ending at 30. During a batch each lane counts, after filtering the first burst, PCLK cycles with its registered RVALID high (rvalid_cnt) and falling edges of its RBURST level, high at a PCLK rising edge and two consecutive falling edges (rburst_cnt), and the lane passes only when both equal 116, which is 29 steps of four READs: exactly one RVALID-high cycle and one RBURST pulse of at least about one and a half PCLK per READ. A model answering every READ with RVALID for one PCLK and RBURST for one PCLK never passes; with RBURST held two PCLK it passes. The block sweeps lane 0's RCLKSEL upward from 0 at read_i 0 and stops at the second passing setting in a row: with every setting passing it finished at RCLKSEL 1, with only 3 to 5 passing at 4, and with only 6 and 7 at 7. With no setting passing it repeated the RCLKSEL sweep about eight times at each gate position before stepping read_i, eight sweeps at read_i 0 and nine at each of 1 to 4. The FIFO pointers are not reset by the fabric: RPOINT and WPOINT go straight to the deserializers, and RMOVE only steps the read delay (init_rmove from the DLL code, eye_calib around the eye)."
+  consequence: "The proven controller does not make a read session stable by re-aligning the FIFO; it searches gate position and RCLKSEL per lane until RVALID behaves as exactly one valid cycle per READ and RBURST as one pulse per READ, and only then uses the RVALID-qualified words of TOOL-033. That is the condition fpga/ddr3_write has never selected for: its 100% settings of TOOL-035 had RVALID high two cycles in three, a state the vendor would reject, while the one-in-forty RVALID share seen on some lanes at an access period of 40 is the vendor's accepted state. The next read path counts RVALID cycles and RBURST pulses per READ per lane and trains gate and RCLKSEL to one of each, then checks whether that state holds across read sessions."
+  sources:
+    - "Tang-PSX build/gate1-ip/ddr3_memory_interface/ddr3_memory_interface.vo: u_ddr_init (read_cal_state, read_cmd_cnt, rvalid_cnt, rburst_cnt, rvalid_cnt_check, rburst_cnt_check, filter_first_burst, read_calibration_logic_gen[n]), u_init_rmove_mod, u_eye_calib_rmove_mod"
+    - "TinyVCMI tools/vendor_read_cal_trace.py and tools/vendor_read_cal/tb_read_cal.v"
+    - "Gowin EDA 1.9.11.03 IDE/simlib/gw5a/prim_sim.v"
+  verification: "The acceptance constants were read from the LUT INITs, rvalid_cnt_check[0] true only at rvalid_cnt 116 and rburst_cnt_check[0] only at rburst_cnt 116, the batch end from read_cal_next_state at read_cmd_cnt 30, and the counting conditions from their cones: rvalid_cnt counts rvalid_Z with filter_first_burst set during calibration, rburst_cnt counts rburst_t low after rburst_t_r high. tools/vendor_read_cal_trace.py reproduces the four windowed runs and the never-passing run, which stops at the bench's 8 ms limit at read_i 5; in each run the block's commands were decoded from phy_cs_n, phy_ras_n, phy_cas_n and phy_we_n of its last command slot. The other modules the block waits on were modelled as answering done 200 PCLK after their start, so their own timing is not part of this record. No hardware was accessed."
 
 - record_id: PROV-001
   topic_id: PROV

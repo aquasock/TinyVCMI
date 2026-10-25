@@ -1866,3 +1866,35 @@ Bring for approval a cycle that puts each lane's DQS read FIFO pointers into a k
 - User Test: N/A
 
 ---
+
+## 57 COMMIT Unreleased 2026-10-24T21:40:56-07:00
+
+#### Coming From:
+
+Unreleased 4247781
+
+#### Purpose:
+
+Trace from its netlist how the proven DDR3 controller brings each lane's reads into a known state, since RVALID-held capture worked on a lane but its right setting changed from one read session to the next.
+
+#### Outcome:
+
+The trace was offline only. The vendor controller never resets the DQS read FIFO from the fabric: each lane's `RPOINT` and `WPOINT` go straight to its deserializers, and `RMOVE`/`RDIR` only step the read delay, from `u_init_rmove_mod` with the DLL code at initialization and `u_eye_calib_rmove_mod` around the eye. Its read calibration lives in `u_ddr_init`, whose 1,518 cells the new `tools/vendor_read_cal_trace.py` cuts out of Tang-PSX's post-route netlist and simulates with Gowin's models against `tools/vendor_read_cal/tb_read_cal.v`, a model that answers each READ the block issues with RVALID and RBURST only inside a chosen window of lane 0's RCLKSEL and gate position; a LUT-INIT evaluator first read the acceptance constants and counting conditions off the netlist. A calibration step is four BL8 READs five PCLK apart and a batch thirty steps; each lane passes only when, after the first burst, it counted exactly 116 RVALID-high cycles and 116 falling edges of the RBURST level, one valid cycle and one RBURST pulse per READ, the pulse long enough to be high at a rising edge and two falling edges. The block sweeps RCLKSEL upward at gate position 0 and keeps the second passing setting in a row, finishing at 1, 4 and 7 for pass windows of 0 to 7, 3 to 5 and 6 to 7, and with nothing passing it repeats the sweep about eight times per gate position before stepping `read_i`. The settings that gave 100% own-READ in entry 56 had RVALID high two cycles in three, a state this rule rejects, while the one-in-forty RVALID share some lanes showed at period 40 is the state it accepts. TOOL-036 was added and `docs/ddr3-open-flow.md` gained the rule. No image was built and the Tang was not accessed. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering and active-log capacity.
+
+#### Next Steps:
+
+Bring for approval a read-training cycle in `fpga/ddr3_write`: count each lane's RVALID-high cycles and RBURST pulses over groups of isolated READs, train each lane's RCLKSEL and then its gate position to exactly one of each per READ by the vendor's rule, keep the RVALID-held capture, gate it in simulation and against the Gowin build, then on the board check the lag classifier at the trained settings across several read sessions and lane 3 in particular. The acceptance gate before controller work resumes is unchanged. The `D108` unused-pin contradiction and the `is_mipi` bug outside the DDR context remain open.
+
+#### Files Modified:
+
+- docs/ddr3-open-flow.md
+- tools/vendor_read_cal/tb_read_cal.v
+- tools/vendor_read_cal_trace.py
+
+#### Status:
+
+- Build: N/A
+- Deployment: N/A
+- User Test: N/A
+
+---

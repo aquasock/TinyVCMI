@@ -2478,6 +2478,31 @@ start-up here -- so the next step is putting them into a known state at each
 session, after the proven controller's `init_rmove` and `rpoint`/`wpoint` logic,
 before training per lane (TOOL-035).
 
+## How the proven controller calibrates reads
+
+The vendor never resets the DQS read FIFO from the fabric -- `RPOINT` and
+`WPOINT` go straight to the deserializers, and `RMOVE` only steps the read delay
+(`u_init_rmove_mod` from the DLL code, `u_eye_calib_rmove_mod` around the eye).
+What it does instead was read off its `u_ddr_init` block, cut out of the
+post-route netlist and simulated with Gowin's models
+(`tools/vendor_read_cal_trace.py`):
+
+* a calibration step is four BL8 READs five PCLK apart, a batch 30 steps;
+* per lane it counts RVALID-high cycles and falling edges of the RBURST level
+  (high at a rising edge and two falling edges), skipping the first burst, and
+  passes only at **116 and 116** -- exactly one RVALID cycle and one RBURST
+  pulse per READ over 29 steps of four;
+* it sweeps RCLKSEL upward at gate position 0 and keeps the **second passing
+  setting in a row** (all passing: 1; 3..5 passing: 4; 6..7 passing: 7);
+* with nothing passing it repeats the sweep about eight times, then moves the
+  gate one memory clock and starts over.
+
+So the accepted state is one valid cycle per READ. The settings that gave 100%
+here had RVALID high two cycles in three, which the vendor would reject; the
+one-in-forty share seen on some lanes at period 40 is the vendor's state. The
+next read path trains each lane's gate and RCLKSEL to one RVALID cycle and one
+RBURST pulse per READ, and is then checked across read sessions (TOOL-036).
+
 ## The controller path: a spike, and seven pieces under it
 
 ### The spike, and what it settled
