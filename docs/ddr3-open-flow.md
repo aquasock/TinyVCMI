@@ -2678,6 +2678,32 @@ rotations, which GowinSynthesis had merged with `wr_core`'s, brought the Gowin
 control from 96.8 to 107.3 MHz. Still to do before the controller: the same with
 address-derived data, and read data at a fixed trained latency (TOOL-042).
 
+## A fixed read latency, and address data written and read back
+
+With the RVALID hold off and the old two-word reassembler off, every trained
+lane's **raw** deserializer word is its READ's own burst on every isolated READ
+at check offset 11 and nowhere else, on all four lanes, both images, every
+load: a fixed read latency a controller can take data at.
+
+For data that depends on the address, `wr_core` gained a fill (mode 5): 8 banks
+x 16 rows x 128 bursts, each burst one of the thirty aperiodic 8-bit necklaces
+picked by a fold of its address, through a write delay line of d PCLK and b
+beats (`0x36`); random mode with `0x37` reads the same region and `rd_check`
+expects each address's pattern. `train --write-train` fills and reads back at
+all 64 alignments. The first window was too late -- its best, 26.6%, was at its
+earliest end -- so the data now leaves two PCLK earlier relative to its WRITE:
+
+| Image | Alignments at 100% | Isolated READs right on all four lanes |
+|---|---|---|
+| open flow | d 1, b 2-3 | 725,822 of 725,822, both loads |
+| Gowin control | d 1, b 4-5 | 725,822 of 725,822, both loads |
+
+Every lane's logged word was its own with an identity beat map. The acceptance
+gate for resuming controller work -- isolated random READs returning each
+address's own data at a fixed trained latency -- is met in the diagnostic
+image. The write alignment differs between the two builds, so it is trained at
+start-up like the read settings (TOOL-043).
+
 ## The controller path: a spike, and seven pieces under it
 
 ### The spike, and what it settled

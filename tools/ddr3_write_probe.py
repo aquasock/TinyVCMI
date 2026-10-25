@@ -81,11 +81,29 @@ import time
 
 import serial
 
-MODES = ["idle", "level", "write", "read", "random"]
+MODES = ["idle", "level", "write", "read", "random", "fill"]
 
 #: rd_check.v's sixteen patterns, by {row bit, bank}
 RC_PATTERNS = [0x0B, 0x0D, 0x13, 0x15, 0x17, 0x19, 0x1B, 0x1D,
                0x25, 0x27, 0x2B, 0x2D, 0x35, 0x37, 0x3B, 0x57]
+#: wr_core.v's address data (TOOL-043): the thirty aperiodic 8-bit necklaces as
+#: least rotations, two repeated to make 32, picked by a fold of the address
+AD_PATTERNS = [0x01, 0x03, 0x05, 0x07, 0x09, 0x0B, 0x0D, 0x0F, 0x13, 0x15, 0x17, 0x19,
+               0x1B, 0x1D, 0x1F, 0x25, 0x27, 0x2B, 0x2D, 0x2F, 0x35, 0x37, 0x3B, 0x3D,
+               0x3F, 0x57, 0x5B, 0x5F, 0x6F, 0x7F, 0x0B, 0x13]
+
+
+def adata_pattern(bank: int, row4: int, burst: int) -> int:
+    """The pattern the fill writes at (bank, row's low four bits, burst)."""
+    x = (burst << 7) | (row4 << 3) | bank
+    f = lambda lo, n: (x >> lo) & ((1 << n) - 1)
+    h = f(0, 5) ^ f(5, 5) ^ f(10, 4) ^ ((f(0, 2) << 3) | f(11, 3))
+    return AD_PATTERNS[h]
+
+
+def exp_pat(e: dict) -> int:
+    """A logged READ's expected pattern: its address data, else its row's."""
+    return e["exp"] if "exp" in e else RC_PATTERNS[e["loc"]]
 #: rd_check's own pipeline: hist[j] means the burst reached dq_q j - 4
 #: PCLK after the cycle its READ left the core.  It was 3 until rd_check
 #: registered the deserializer words and RVALID first, so offsets recorded
@@ -235,17 +253,23 @@ class Core:
             v = int.from_bytes(b[4 + 9 * e:13 + 9 * e], "little")
             entries.append({
                 "loc": (v >> 48) & 15, "burst": (v >> 52) & 127, "refi": (v >> 59) & 1023,
+                "rhi": (v >> 69) & 7,
                 "lanes": [{"pat": (v >> (9 * l)) & 255, "pins": (v >> (9 * l + 8)) & 1,
                            "rot": (v >> (36 + 3 * l)) & 7} for l in range(4)]})
         return {"n": int.from_bytes(b[0:2], "little"), "skip": b[3], "entries": entries}
 
-    def read_log(self, pages: int = 64) -> list:
-        """The logged entries in READ order, at most `pages` pages of 16."""
+    def read_log(self, pages: int = 64, adata: bool = False) -> list:
+        """The logged entries in READ order, at most `pages` pages of 16; with
+        address data each carries its expected pattern as "exp"."""
         first = self.log_page(0)
         out = first["entries"]
         for page in range(1, min((first["n"] + 15) // 16, pages)):
             out += self.log_page(page)["entries"]
-        return out[:min(first["n"], 16 * pages)]
+        out = out[:min(first["n"], 16 * pages)]
+        if adata:
+            for e in out:
+                e["exp"] = adata_pattern(e["loc"] & 7, (e["rhi"] << 1) | (e["loc"] >> 3), e["burst"])
+        return out
 
     def set_lanes(self, delays, gates, rclksels):
         """Each lane's READ gate delay, gate offset and RCLKSEL."""
@@ -363,20 +387,22 @@ def rot8(w: int, r: int) -> int:
 def beat_map(ents: list, lane: int):
     """Which beats a lane's word carries, from a READ log.
 
-    For each location, the raw word the lane held most often; then, at each
-    framing rotation R, for each bit of that word, the beat of the expected
-    word rot(P, R) -- or a constant -- that equals it at every location seen.
+    For each expected pattern -- one per location in the sixteen-row test, a
+    shared one under address data -- the raw word the lane held most often;
+    then, at each framing rotation R, for each bit of that word, the beat of
+    the expected word rot(P, R) -- or a constant -- that equals it for every
+    pattern seen.
     Returns (% of READs holding their location's most frequent word, R, the
     source of bits 0..7 as strings), R and sources None when no single map
     explains every location.  A lane that captures whole bursts maps every
     bit b to beat b.
     """
     raw, det = {}, 0
-    for loc in range(16):
+    for pat in sorted({exp_pat(e) for e in ents}):
         c = Counter(rot8(e["lanes"][lane]["pat"], e["lanes"][lane]["rot"])
-                    for e in ents if e["loc"] == loc)
+                    for e in ents if exp_pat(e) == pat)
         if c:
-            raw[loc], cnt = c.most_common(1)[0]
+            raw[pat], cnt = c.most_common(1)[0]
             det += cnt
     fits = []
     for R in range(8):
@@ -384,7 +410,7 @@ def beat_map(ents: list, lane: int):
         for bit in range(8):
             hb = [(raw[l] >> bit) & 1 for l in sorted(raw)]
             beats = [b for b in range(8)
-                     if hb == [(rot8(RC_PATTERNS[l], R) >> b) & 1 for l in sorted(raw)]]
+                     if hb == [(rot8(p, R) >> b) & 1 for p in sorted(raw)]]
             if beats:
                 srcs.append(str(bit) if bit in beats else str(beats[0]))
             elif len(set(hb)) == 1:
@@ -396,6 +422,98 @@ def beat_map(ents: list, lane: int):
     fits.sort(reverse=True)
     pct = 100.0 * det / max(len(ents), 1)
     return (pct, fits[0][1], fits[0][2]) if fits else (pct, None, None)
+
+
+def write_train(core: "Core", args, sets: list, locked: list):
+    """Train the fill's write alignment with trained reads (TOOL-043).
+
+    For each d PCLK and b beats the fill writes the whole region with address
+    data and random READs across it are checked against each address's own
+    pattern; the score is the share of READs whose four lanes all held it
+    (frame 0x27's class_ok over total).  The best alignment is then logged
+    and fitted per lane.
+    """
+    core.set_lanes([x[0] for x in sets], [x[1] for x in sets], [x[2] for x in sets])
+    core.request(0x29, 1)
+    core.request(0x26, args.log_lat)
+    core.request(0x37, 1)
+    scores = {}
+    for d in range(8):
+        for b in range(8):
+            core.request(0x36, d << 4 | b)
+            core.mode(5)
+            time.sleep(0.02)                    # a pass of the region is about 0.2 ms
+            core.mode(0)
+            core.mode(4)
+            time.sleep(0.05)
+            core.mode(0)
+            c = core.check()
+            scores[(d, b)] = 100.0 * c["class_ok"] / max(c["total"], 1)
+        print(f"write d {d}: all-lane own % at b 0..7 " +
+              " ".join(f"{scores[(d, b)]:5.1f}" for b in range(8)), flush=True)
+    best = max(scores, key=scores.get)
+    full = [k for k, v in scores.items() if v >= 99.9]
+    print(f"write alignments with every READ whole on all lanes: {full or 'none'}; "
+          f"best d {best[0]} b {best[1]} at {scores[best]:.2f}%")
+    core.request(0x36, best[0] << 4 | best[1])
+    core.mode(5)
+    time.sleep(0.02)
+    core.mode(0)
+    core.request(0x32, args.log_skip)
+    core.mode(4)
+    time.sleep(0.3)
+    core.mode(0)
+    c = core.check()
+    ents = core.read_log(adata=True)
+    print(f"at d {best[0]} b {best[1]}: {c['class_ok']} of {c['total']} READs held their "
+          f"address's pattern on all four lanes")
+    for lane in range(4):
+        own = sum(e["lanes"][lane]["pins"] and e["lanes"][lane]["pat"] == exp_pat(e) for e in ents)
+        det, R, srcs = beat_map(ents, lane)
+        m = f"R={R} bits 7..0 from " + " ".join(reversed(srcs)) if srcs else "no single map"
+        print(f"  lane {lane}: {own} of {len(ents)} logged READs own, {len({exp_pat(e) for e in ents})} "
+              f"patterns, {m}")
+    if args.write_train:
+        json.dump({"lat": args.log_lat, "skip": args.log_skip, "gap": args.gap, "adata": True,
+                   "walign": list(best), "scores": {f"{d},{b}": v for (d, b), v in scores.items()},
+                   "settings": sets, "locked": [bool(x) for x in locked], "entries": ents},
+                  open(args.write_train, "w"))
+        print(f"address-data READ log saved to {args.write_train}")
+    core.request(0x37, 0)
+
+
+def fixed_latency(core: "Core", args, locked: list):
+    """Own-burst share of the raw deserializer word at every check offset.
+
+    With the RVALID hold off (command 0x29 0) the checker sees the raw word
+    at a fixed offset after each READ.  A lane whose RVALID cycle falls at the
+    same PCLK after every READ reads 100% own at that one offset, which is
+    the fixed read latency a controller can take its data at.  The two-word
+    reassembler of TOOL-029, which train enables with lane 3 slipped 4 beats,
+    is switched off for this: on a held word a slip is only a rotation, but
+    on the raw word it joins two different cycles.
+    """
+    core.request(0x2A, 0)                       # bit 7 clear: reassembler off
+    core.request(0x29, 0)
+    full = [[] for _ in range(4)]
+    for lat in range(32):
+        core.request(0x26, lat)
+        core.mode(4)
+        time.sleep(args.lag_seconds)
+        core.mode(0)
+        g = core.lag()
+        n = g["eval"] or 1
+        shares = [100.0 * g["lag"][l][0] / n for l in range(4)]
+        for l in range(4):
+            if shares[l] >= 99.9:
+                full[l].append(lat)
+        print(f"raw lat {lat:2d}: own % " + " ".join(f"{v:5.1f}" for v in shares), flush=True)
+    core.request(0x29, 1)
+    core.set_slips([0, 0, 0, 4])                # as train left it
+    for l in range(4):
+        tag = "" if locked[l] else " (untrained)"
+        print(f"lane {l}{tag}: every READ its own burst in the raw word at offset(s) "
+              + (", ".join(str(x) for x in full[l]) if full[l] else "none"))
 
 
 def slip_point(core: "Core", args, sets: list) -> tuple:
@@ -412,7 +530,7 @@ def slip_point(core: "Core", args, sets: list) -> tuple:
 
 def slip_line(lane: int, c: dict, ents: list) -> str:
     n = c["reads"] or 1
-    own = sum(e["lanes"][lane]["pins"] and e["lanes"][lane]["pat"] == RC_PATTERNS[e["loc"]]
+    own = sum(e["lanes"][lane]["pins"] and e["lanes"][lane]["pat"] == exp_pat(e)
               for e in ents)
     det, R, srcs = beat_map(ents, lane)
     whole = srcs is not None and all(srcs[b] == str(b) for b in range(8))
@@ -428,7 +546,7 @@ def lane_pass(c: dict, ents: list, lane: int, tol: int) -> tuple:
     state = n > 100 and abs(c["rv"][lane] - n) <= tol and abs(c["rb"][lane] - n) <= tol
     if not state or not ents:
         return state, False
-    own = sum(e["lanes"][lane]["pins"] and e["lanes"][lane]["pat"] == RC_PATTERNS[e["loc"]]
+    own = sum(e["lanes"][lane]["pins"] and e["lanes"][lane]["pat"] == exp_pat(e)
               for e in ents) / len(ents)
     _, _, srcs = beat_map(ents, lane)
     return state, srcs is not None and all(srcs[b] == str(b) for b in range(8)) and own >= 0.99
@@ -576,7 +694,7 @@ def calib_fix(core: "Core", args, sets: list, locked: list, max_pulses: int = 16
             c, ents = slip_point(core, args, sets)
             n = c["reads"] or 1
             _, _, srcs = beat_map(ents, lane)
-            own = sum(e["lanes"][lane]["pins"] and e["lanes"][lane]["pat"] == RC_PATTERNS[e["loc"]]
+            own = sum(e["lanes"][lane]["pins"] and e["lanes"][lane]["pat"] == exp_pat(e)
                       for e in ents) / max(len(ents), 1)
             whole = srcs is not None and all(srcs[b] == str(b) for b in range(8)) and own >= 0.99
             state = abs(c["rv"][lane] - n) <= args.tol and abs(c["rb"][lane] - n) <= args.tol
@@ -617,7 +735,7 @@ def log_report(log: dict):
     """Condition each lane's own-READ result in a saved READ log."""
     ents = log["entries"]
     n = len(ents)
-    own = [[e["lanes"][l]["pins"] and e["lanes"][l]["pat"] == RC_PATTERNS[e["loc"]]
+    own = [[e["lanes"][l]["pins"] and e["lanes"][l]["pat"] == exp_pat(e)
             for e in ents] for l in range(4)]
     print(f"{n} READs from READ {1024 * log['skip']} at offset {log['lat']}, "
           f"settings (delay, k, rclksel) {log['settings']}, trained {log['locked']}")
@@ -1129,6 +1247,15 @@ def main() -> int:
                     help="before training, set every lane's read delay as the proven controller's "
                          "u_init_rmove_mod does: RLOADN loads the DLL STEP code, then STEP - 4 RMOVE "
                          "pulses with RDIR = 1 leave the tap at 4 (TOOL-041)")
+    tr.add_argument("--write-train", metavar="FILE", nargs="?", const="",
+                    help="after read training, train the fill's write alignment (0x36) over every "
+                         "d 0..7 PCLK and b 0..7 beats by filling the region with address data "
+                         "(mode 5) and reading it back at random (0x37), then keep a READ log at "
+                         "the best alignment, saved to FILE if given")
+    tr.add_argument("--fixed-latency", action="store_true",
+                    help="after the lag check, check the raw deserializer word, without the "
+                         "RVALID hold, at every offset 0..31, and report per lane the offsets "
+                         "at which every READ held its own burst")
     tr.add_argument("--hold", choices=["none", "vendor"], default="none",
                     help="with --vendor-search, hold every lane not yet locked while its gate and "
                          "RCLKSEL change between trials, as the proven controller does (TOOL-042, "
@@ -1445,6 +1572,10 @@ def main() -> int:
                                 top[l] = (share, k, lat)
                     print(lag_line(lat, g))
                 print("best own % per lane: " + " ".join(f"{v:5.1f}" for v in own))
+                if args.fixed_latency:
+                    fixed_latency(core, args, locked)
+                if args.write_train is not None:
+                    write_train(core, args, sets, locked)
                 for l in range(4):
                     share, k, lat = top[l]
                     print(f"lane {l}{'' if locked[l] else ' (untrained)'}: most often lag {k}"

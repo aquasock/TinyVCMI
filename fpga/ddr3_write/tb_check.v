@@ -30,7 +30,9 @@
 //   * the READ log passes over log_skip * 1024 READs, then keeps 1024 and
 //     no more, and two pages of it read back entry by entry as the model
 //     answered: each READ's location and burst, and per lane the pattern
-//     held, whether its pins agreed and its rotation.
+//     held, whether its pins agreed and its rotation;
+//   * with exp_sel the expected pattern is the core's, not the table's, and
+//     the row's high bits reach the log.
 module tb_check;
     reg pclk = 1'b0;
     always #5 pclk = ~pclk;
@@ -65,6 +67,9 @@ module tb_check;
     reg  [7:0]   log_skip = 8'd0;
     reg  [5:0]   log_page = 6'd0;
     reg          log_go = 1'b0;
+    reg          exp_sel = 1'b0;
+    reg  [7:0]   issue_exp = 8'd0;
+    reg  [2:0]   issue_rhi = 3'd0;
     wire [10:0]  log_n;
     wire [1151:0] log_buf;
     wire [5:0]   log_buf_page;
@@ -75,6 +80,7 @@ module tb_check;
         .issue_idx(issue_idx), .issue_col(issue_col), .lat(lat), .step(step),
         .slip_enable(slip_enable), .slip(slip), .refi(refi),
         .log_skip(log_skip), .log_page(log_page), .log_go(log_go),
+        .exp_sel(exp_sel), .issue_exp(issue_exp), .issue_rhi(issue_rhi),
         .log_n(log_n), .log_buf(log_buf), .log_buf_page(log_buf_page),
         .n_both(n_both), .n_only11(n_only11), .n_only19(n_only19),
         .n_other(n_other), .pos_range(pos_range), .pos_cls(pos_cls),
@@ -125,6 +131,7 @@ module tb_check;
     reg [7:0] by_no [0:4095];       // every READ's pattern by its number
     reg [3:0] idx_no [0:4095];      // and its location and burst
     reg [6:0] col_no [0:4095];
+    reg [2:0] rhi_no [0:4095];
     integer   pend_no [0:1023];
     integer   seed = 32'h1234;
     integer   q, r;
@@ -156,9 +163,12 @@ module tb_check;
             issue <= 1'b1;
             issue_idx <= r[3:0];
             issue_col <= r[10:4];
-            pend_pat[cyc % 1024] <= rom(r[3:0]);
+            issue_exp <= rom(r[3:0] ^ 4'h9);
+            issue_rhi <= r[13:11];
+            rhi_no[nissued % 4096] <= r[13:11];
+            pend_pat[cyc % 1024] <= exp_sel ? rom(r[3:0] ^ 4'h9) : rom(r[3:0]);
             pend_no[cyc % 1024] <= nissued;
-            by_no[nissued % 4096] <= rom(r[3:0]);
+            by_no[nissued % 4096] <= exp_sel ? rom(r[3:0] ^ 4'h9) : rom(r[3:0]);
             idx_no[nissued % 4096] <= r[3:0];
             col_no[nissued % 4096] <= r[10:4];
             nissued <= nissued + 1;
@@ -422,6 +432,22 @@ module tb_check;
         check_page(63);
         $display("     11: log of %0d READs from READ 1024, pages 0 and 63 as answered", log_n);
         log_skip <= 8'd0;
+
+        // 12: address data: the expected pattern comes from the core, not
+        // from the sixteen-row table, and the row's high bits go to the log
+        exp_sel <= 1'b1;
+        @(posedge pclk);
+        rearm;
+        run(300);
+        if (good != total || class_ok != total || total < 290 || fail_seen)
+            fail("READs with an external expected pattern were not all good");
+        log_page <= 0; @(posedge pclk) log_go <= 1'b1; @(posedge pclk) log_go <= 1'b0;
+        repeat (24) @(posedge pclk);
+        for (q = 0; q < 16; q = q + 1)
+            if (log_buf[72 * q + 69 +: 3] != rhi_no[q])
+                fail("the log did not keep the row's high bits");
+        exp_sel <= 1'b0;
+        $display("     12: address data: %0d/%0d good, row bits logged", good, total);
 
         if (errors == 0)
             $display("PASS  latency, lock, jump, predicted move, pin faults, lane slips, lag and RVALID as specified");

@@ -33,7 +33,9 @@
 //   * the READ log keeps every random READ, and a page copied by command 33
 //     reaches the link whole in frame 0x34, its entries those of the log;
 //   * command 35 holds exactly the lanes it names for 4 x (v[7:4] + 1) PCLK,
-//     or with code 15 until a command naming no lane releases them.
+//     or with code 15 until a command naming no lane releases them;
+//   * the fill writes each burst's address pattern back to back across a
+//     row, and command 36 moves that data d PCLK and b beats later.
 module tb;
     reg sys_clk = 1'b0;
     always #10 sys_clk = ~sys_clk;
@@ -89,9 +91,11 @@ module tb;
     // pads: nothing while the device is in reset or outside the driving modes
     wire [2:0] mode = dut.core.mode;
     always @(dq_pads or dqs_pads or ddr_reset_n or mode) begin
-        if (ddr_reset_n === 1'b1 && mode != 3'd2 && dq_pads !== {36{1'bz}})
+        // the fill (mode 5) writes as write mode does
+        if (ddr_reset_n === 1'b1 && mode != 3'd2 && mode != 3'd5 && dq_pads !== {36{1'bz}})
             fail("DQ or DM driven outside write mode");
-        if (ddr_reset_n === 1'b1 && mode != 3'd2 && mode != 3'd1 && dqs_pads !== {8{1'bz}})
+        if (ddr_reset_n === 1'b1 && mode != 3'd2 && mode != 3'd5 && mode != 3'd1 &&
+            dqs_pads !== {8{1'bz}})
             fail("a strobe driven outside the write and leveling modes");
         if (mode == 3'd1 && dqs_pads !== {8{1'bz}} && ddr_odt !== 1'b1)
             fail("a strobe driven in leveling before ODT");
@@ -159,7 +163,8 @@ module tb;
                         nrand = nrand + 1;
                         // auto-precharge begins tRTP (4 tCK) after the READ
                         precharge(bank, $time + 10);
-                    end else if (bank !== 3'd0 || addr[10] !== 1'b0) begin
+                    end else if ((mode != 3'd5 && bank !== 3'd0) || addr[10] !== 1'b0) begin
+                        // the fill (mode 5) writes every bank of its region
                         fail("a streaming column command outside bank 0 or with auto-precharge");
                     end
                     if (c == 4'b0100) begin
@@ -228,6 +233,69 @@ module tb;
     integer dq_driven_at_write = 0;
     integer idle_wait = 0;
     integer fi, frame_bad;
+    // fill: the serializers' pattern as a beat stream, beat j of a PCLK word
+    // its bit j, and the address of every fill WRITE with the PCLK it left in
+    reg fill_rec = 1'b0;
+    integer fpc = 0, fw = 0;
+    reg [7:0] fbeats [0:8191];
+    integer fw_pc [0:511];
+    reg [7:0] fw_exp [0:511];
+    function [7:0] tb_apat(input [4:0] i);
+        reg [7:0] t [0:31];
+        begin
+            t[0]=8'h01; t[1]=8'h03; t[2]=8'h05; t[3]=8'h07; t[4]=8'h09; t[5]=8'h0b; t[6]=8'h0d; t[7]=8'h0f;
+            t[8]=8'h13; t[9]=8'h15; t[10]=8'h17; t[11]=8'h19; t[12]=8'h1b; t[13]=8'h1d; t[14]=8'h1f; t[15]=8'h25;
+            t[16]=8'h27; t[17]=8'h2b; t[18]=8'h2d; t[19]=8'h2f; t[20]=8'h35; t[21]=8'h37; t[22]=8'h3b; t[23]=8'h3d;
+            t[24]=8'h3f; t[25]=8'h57; t[26]=8'h5b; t[27]=8'h5f; t[28]=8'h6f; t[29]=8'h7f; t[30]=8'h0b; t[31]=8'h13;
+            tb_apat = t[i];
+        end
+    endfunction
+    function [7:0] tb_adata(input [2:0] b, input [3:0] r, input [6:0] c);
+        reg [13:0] x;
+        begin
+            x = {c, r, b};
+            tb_adata = tb_apat(x[4:0] ^ x[9:5] ^ {1'b0, x[13:10]} ^ {x[1:0], x[13:11]});
+        end
+    endfunction
+    always @(posedge dut.pclk)
+        if (fill_rec) begin
+            if (fpc < 8192) fbeats[fpc] = dut.core.dq_pat;
+            if (dut.core.istate == 4'd13 && dut.core.step_no == 4'd2 && fw < 512) begin
+                fw_pc[fw] = fpc;
+                fw_exp[fw] = tb_adata(dut.core.fb, dut.core.fr, dut.core.fc);
+                fw = fw + 1;
+            end
+            fpc = fpc + 1;
+        end
+    // the beat offset at which the first row's 128 WRITEs' patterns appear, -1 if none
+    function integer fill_offset(input integer dummy);
+        integer k, t, ok, found, g;
+        begin
+            found = -1;
+            for (k = 0; k < 128 && found < 0; k = k + 1) begin
+                ok = 1;
+                for (t = 0; t < 1024 && ok; t = t + 1) begin
+                    g = 8 * fw_pc[0] + t + k;
+                    if (fbeats[g / 8][g % 8] !== fw_exp[t / 8][t % 8]) ok = 0;
+                end
+                if (ok) found = k;
+            end
+            fill_offset = found;
+        end
+    endfunction
+    integer fk0, fk1;
+    task fill_run(input [7:0] align);
+        begin
+            request(8'h36, align);
+            #30000;
+            fpc = 0; fw = 0; fill_rec = 1'b1;
+            request(8'h0c, 8'h05);
+            #40000;
+            request(8'h0c, 8'h00);
+            #30000;
+            fill_rec = 1'b0;
+        end
+    endtask
     // PCLK each lane's DQS HOLD is high while hold_count is set
     integer hold_hi [0:3];
     integer hold_count = 0;
@@ -395,6 +463,21 @@ module tb;
         #30000;
         if (dut.hold !== 4'b0000) fail("command 0x35 naming no lane did not release the HOLD");
         $display("      HOLD: level on lanes 1 and 3 held and released");
+        // fill: each WRITE's address pattern, d PCLK and b beats on
+        fill_run(8'h00);
+        if (fw < 256) fail("the fill issued too few WRITEs");
+        for (fi = 1; fi < 128; fi = fi + 1)
+            if (fw_pc[fi] != fw_pc[0] + fi) fail("a row's fill WRITEs are not back to back");
+        fk0 = fill_offset(0);
+        fill_run(8'h23);
+        fk1 = fill_offset(0);
+        if (fk0 < 0 || fk1 < 0) fail("a fill row's patterns are not in the serializers' beats");
+        else if (fk1 != fk0 + 19) begin
+            $display("      offsets %0d and %0d", fk0, fk1);
+            fail("alignment d 2, b 3 did not move the fill's data 19 beats later");
+        end
+        $display("      fill: %0d WRITEs, a row's patterns at beat %0d and, at d 2 b 3, %0d",
+                 fw, fk0, fk1);
         // idle mode refreshes every 7 us and waits tRFC after each, so the
         // core is given up to 2 us to be seen in its idle state
         idle_wait = 0;

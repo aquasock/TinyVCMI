@@ -76,6 +76,12 @@ module rd_check #(
     input  wire         issue,      // a READ leaves the core this cycle
     input  wire [3:0]   issue_idx,  // its location: {row bit, bank}
     input  wire [6:0]   issue_col,  // its burst within the row
+    // address data (command 0x37): the READ's expected pattern comes from the
+    // core, a least rotation derived from its whole address, instead of the
+    // sixteen-row table, and the row's next three bits go into the log
+    input  wire         exp_sel,
+    input  wire [7:0]   issue_exp,
+    input  wire [2:0]   issue_rhi,
     input  wire [4:0]   lat,        // check offset, in hist's units
     input  wire [2:0]   step,       // expected rotation advance per READ
     input  wire         slip_enable,
@@ -104,7 +110,8 @@ module rd_check #(
     // one page of 16, entry e at [72e +: 72] laid out as
     //   [9l +: 8] lane l's least rotation, [9l + 8] its pins agreed,
     //   [36 + 3l +: 3] its rotation, [51:48] the READ's location {row bit,
-    //   bank}, [58:52] its burst, [68:59] the refresh phase at the check.
+    //   bank}, [58:52] its burst, [68:59] the refresh phase at the check,
+    //   [71:69] with address data the row's bits 3..1, else 0.
     output reg  [10:0]  log_n = 11'd0,
     output reg  [1151:0] log_buf = 1152'd0,
     output reg  [5:0]   log_buf_page = 6'd0,
@@ -247,13 +254,17 @@ module rd_check #(
     reg [31:0]  ex_h = 32'd0;       // counted in hist
     reg [255:0] ex_pat = 256'd0;    // its pattern, 8 bits each
     reg [351:0] ex_addr = 352'd0;   // its address, 11 bits each
+    reg [95:0]  ex_rhi = 96'd0;     // the row's bits 3..1, 3 bits each
     localparam integer PW = 4 * LAGS + 1;  // {distinct, idx of READs n-1 .. n-LAGS}
     reg [32*PW-1:0] ex_prev = {32*PW{1'b0}};
     reg [7:0]   prev_pat = 8'd0;
     reg         have_prev = 1'b0;
     reg [4*LAGS-1:0] prev_idx = {4*LAGS{1'b0}};  // the last LAGS READs' locations, newest at [3:0]
     reg [3:0]   prev_n = 4'd0;      // how many of them exist since `arm`, saturating
-    wire [7:0]  issue_pat = rom(issue_idx);
+    reg         exp_sel_r = 1'b0;
+    always @(posedge pclk)
+        exp_sel_r <= exp_sel;
+    wire [7:0]  issue_pat = exp_sel_r ? issue_exp : rom(issue_idx);
     wire        fresh = issue && (!have_prev || issue_pat != prev_pat) && hist_n != 16'hffff;
     // Whether the earlier READs are distinct among themselves, and which
     // locations they hold, are registered from prev_idx, so only the new
@@ -278,10 +289,13 @@ module rd_check #(
     end
     wire        distinct = prev_n == LAGS && prev_cur && prev_ok && !prev_mask[issue_idx];
 
+    reg fresh_r = 1'b0;
     always @(posedge pclk) begin
+        fresh_r <= fresh && !clr;
         // pattern and address only mean something where ex_v is set
         ex_pat <= {ex_pat[247:0], issue_pat};
         ex_addr <= {ex_addr[340:0], issue_idx, issue_col};
+        ex_rhi <= {ex_rhi[92:0], exp_sel_r ? issue_rhi : 3'd0};
         ex_prev <= {ex_prev[31*PW-1:0], distinct, prev_idx};
         if (clr) begin
             ex_v <= 32'd0;
@@ -299,7 +313,9 @@ module rd_check #(
                 if (prev_n != LAGS)
                     prev_n <= prev_n + 4'd1;
             end
-            if (fresh)
+            // counted a cycle late, from a flop: the expected pattern's
+            // select and compare in front of the enable cost the Gowin control
+            if (fresh_r)
                 hist_n <= hist_n + 16'd1;
         end
     end
@@ -387,6 +403,8 @@ module rd_check #(
     reg  [7:0]   sel_v_block = 8'd0;
     reg  [63:0]  sel_pat_block = 64'd0;
     reg  [87:0]  sel_addr_block = 88'd0;
+    reg  [23:0]  sel_rhi_block = 24'd0;
+    reg  [2:0]   sel_rhi = 3'd0;
     reg  [8*PW-1:0] sel_prev_block = {8*PW{1'b0}};
     reg  [2:0]   sel_low = 3'd0;
     reg          sel_v = 1'b0;
@@ -401,30 +419,35 @@ module rd_check #(
                 sel_v_block <= ex_v[7:0];
                 sel_pat_block <= ex_pat[63:0];
                 sel_addr_block <= ex_addr[87:0];
+                sel_rhi_block <= ex_rhi[23:0];
                 sel_prev_block <= ex_prev[8*PW-1:0];
             end
             2'd1: begin
                 sel_v_block <= ex_v[15:8];
                 sel_pat_block <= ex_pat[127:64];
                 sel_addr_block <= ex_addr[175:88];
+                sel_rhi_block <= ex_rhi[47:24];
                 sel_prev_block <= ex_prev[16*PW-1:8*PW];
             end
             2'd2: begin
                 sel_v_block <= ex_v[23:16];
                 sel_pat_block <= ex_pat[191:128];
                 sel_addr_block <= ex_addr[263:176];
+                sel_rhi_block <= ex_rhi[71:48];
                 sel_prev_block <= ex_prev[24*PW-1:16*PW];
             end
             default: begin
                 sel_v_block <= ex_v[31:24];
                 sel_pat_block <= ex_pat[255:192];
                 sel_addr_block <= ex_addr[351:264];
+                sel_rhi_block <= ex_rhi[95:72];
                 sel_prev_block <= ex_prev[32*PW-1:24*PW];
             end
         endcase
         sel_v <= !clr && sel_v_block[sel_low];
         sel_pat <= sel_pat_block[8*sel_low +: 8];
         sel_addr <= sel_addr_block[11*sel_low +: 11];
+        sel_rhi <= sel_rhi_block[3*sel_low +: 3];
         sel_prev <= sel_prev_block[PW*sel_low +: PW];
     end
 
@@ -443,12 +466,14 @@ module rd_check #(
     reg [31:0]  ck_canon = 32'd0;
     reg [3:0]   ck_pins = 4'd0;
     reg [9:0]   ck_refi = 10'd0;
+    reg [2:0]   ck_rhi = 3'd0;
     integer ck_k;
     always @(posedge pclk) begin
         ck_v <= !clr && sel_v;
         ck_canon <= canon_b3;
         ck_pins <= pins_b3;
         ck_refi <= refi;
+        ck_rhi <= sel_rhi;
         ck_pat <= sel_pat;
         ck_addr <= sel_addr;
         for (cl = 0; cl < 4; cl = cl + 1) begin
@@ -507,7 +532,7 @@ module rd_check #(
         lw_d[51:48] <= ck_addr[10:7];  // {row bit, bank}
         lw_d[58:52] <= ck_addr[6:0];   // burst
         lw_d[68:59] <= ck_refi;
-        lw_d[71:69] <= 3'd0;
+        lw_d[71:69] <= ck_rhi;
         if (clr) begin
             log_n <= 11'd0;
             lw_skip <= {log_skip, 10'd0};

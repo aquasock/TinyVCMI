@@ -2163,3 +2163,39 @@ Finish the acceptance gate before controller work resumes: write address-derived
 - User Test: N/A
 
 ---
+
+## 66 COMMIT Unreleased 2026-10-25T13:03:31-07:00
+
+#### Coming From:
+
+Unreleased 88914a6
+
+#### Purpose:
+
+Finish the DDR3 acceptance gate before controller work resumes by showing a fixed read latency on all four trained lanes and isolated random READs returning each address's own data with address-derived data written across many rows and banks.
+
+#### Outcome:
+
+`tools/ddr3_write_probe.py train --fixed-latency` checks the raw deserializer word without the RVALID hold at every offset: after the TOOL-042 training every lane's raw word was its READ's own burst on every isolated READ at offset 11 and nowhere else, on all four lanes and both images, once the old two-word reassembler, whose lane-3 slip joined two cycles, was switched off for the check. `fpga/ddr3_write/wr_core.v` gained a fill, mode 5, writing 8 banks x 16 rows x 128 bursts, each burst one of the thirty aperiodic 8-bit necklaces picked by a fold of its address, through a write delay line set by command `0x36`, and random mode with `0x37` reads that region while `fpga/ddr3_write/rd_check.v` checks each READ against its address's pattern and logs the extra row bits; the probe's `train --write-train` searches all 64 alignments and its fold matches the RTL's on all 16,384 addresses. The image bench caught two bench assumptions and one real fault, a refresh interval of 8.22 us in the fill, now refreshed a row early to 7.17 us, and checks the fill's patterns back to back in the serializers' beats and the 19-beat move of d 2, b 3; `fpga/ddr3_write/tb_check.v` checks the external expected pattern and `fpga/ddr3_write/tb_pos.v` ties it off. The Gowin control missed PCLK twice on older paths the added logic crowded, the stream check, the phase monitor's counters and rd_check's hist counter, which were each given a registered stage. The first board search, with the data a delay line behind its WRITE, peaked at 26.6% at its earliest alignment, so the word now leaves two PCLK earlier, its WRITE following it a PCLK later; the open image, SHA-256 `7485c10f58dce78f85b902f8c4403a5bd8897602162bfcf700f4a6fa55cd53b1`, closes PCLK at 117.97 MHz and its Gowin control, `6c2f1677bbaf144eeb96d60274eda314a67d94c7a78d014b2acb52cfaa870b26`, at 105.537 MHz with no negative slack, equal on all 306 DDR3 tables. On the Tang, after the user rebooted it, the open image passed at write alignments d 1, b 2 and 3 and the control at d 1, b 4 and 5, the same in both loads of each image, and at the best alignment 725,822 of 725,822 isolated random READs held their address's pattern on all four lanes in each of the four loads, every logged lane word its own with an identity beat map. One control load stopped answering mid-calibration with no reply to command `0x07` and recovered on a reload, the stall first seen after reboots now seen mid-session. TOOL-043 was added, TOOL-042 annotated, and `docs/ddr3-open-flow.md` gained the section. The desktop core was restored after every load and answered `0x54`. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering and active-log capacity.
+
+#### Next Steps:
+
+The acceptance gate is met in the diagnostic image, so controller work can resume on this PHY: carry the start-up the image now proves, the tap-4 start, the vendor-style read search with CALIB and HOLD, centring, the fixed read latency and the trained write alignment, into hardware the controller owns rather than host commands, give the controller its own constraint files, add the DM mask path, and qualify it with per-pin independent data over the full array, every column and back-to-back READs. Find the cause of the mid-calibration stall before the controller depends on an unattended start-up. The `D108` unused-pin contradiction and the `is_mipi` bug outside the DDR context remain open.
+
+#### Files Modified:
+
+- docs/ddr3-open-flow.md
+- fpga/ddr3_write/rd_check.v
+- fpga/ddr3_write/tb_check.v
+- fpga/ddr3_write/tb_pos.v
+- fpga/ddr3_write/tb_wr.v
+- fpga/ddr3_write/wr_core.v
+- tools/ddr3_write_probe.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: N/A
+
+---

@@ -63,7 +63,7 @@
 //   09 n      gap of max(n,1) PCLK between gated READ groups
 //   0A        RLOADN pulse: every lane's read delay back to its default
 //   0B p      READ = p[3:0] while reading
-//   0C m      mode m[2:0]; 5..7 are idle
+//   0C m      mode m[2:0]; 6 and 7 are idle
 //   0D n      max(n,1) consecutive READ commands per gated group
 //   0E p      pattern P = p
 //   0F b      active bank b[2:0]
@@ -103,6 +103,12 @@
 //             the page frame
 //   34        the READ log page: entries logged, the page copied and 16
 //             entries, answered with 148 payload bytes (see status6)
+//   36 v      the fill's write data, d = v[6:4] whole PCLK and b = v[2:0] beats
+//             later than its earliest place, which is a PCLK ahead of its WRITE
+//             (TOOL-043)
+//   37 v      v[0]: address data in random mode -- bank, four row bits and the
+//             burst from the address source, and rd_check expects each READ's
+//             pattern from its whole address, as the fill writes it
 //   35 v      HOLD on the lanes in v[3:0]: for 4 x (v[7:4] + 1) PCLK, or with
 //             v[7:4] = 15 until the next 0x35, so the host can change a
 //             lane's settings inside it as the proven controller changes
@@ -366,6 +372,8 @@ module wr_core (
     reg [14:0] row_req = 15'd0;
     reg rmove_tog = 1'b0, rload_tog = 1'b0, snap_tog = 1'b0, wload_tog = 1'b0,
         calib_tog = 1'b0, bclr_tog = 1'b0;
+    reg [6:0] walign_req = 7'd0;        // {d[2:0], 1'b0, b[2:0]}
+    reg adata_req = 1'b0;
     reg [3:0] hold_mask_req = 4'd0;
     reg [3:0] hold_len_req = 4'd0;
     reg hold_tog = 1'b0;
@@ -399,6 +407,8 @@ module wr_core (
     reg [7:0] log_skip_p1 = 8'd0, log_skip_p2 = 8'd0;
     reg [5:0] log_page_p1 = 6'd0, log_page_p2 = 6'd0;
     reg [3:0] log_p = 4'b0000;
+    reg [6:0] walign_p1 = 7'd0, walign_p2 = 7'd0;
+    reg adata_p1 = 1'b0, adata_p2 = 1'b0;
     reg [3:0] hold_mask_p1 = 4'd0, hold_mask_p2 = 4'd0;
     reg [3:0] hold_len_p1 = 4'd0, hold_len_p2 = 4'd0;
     reg [3:0] hold_p = 4'b0000;
@@ -419,7 +429,7 @@ module wr_core (
         rv_en_p1 <= rv_en_req;          rv_en_p2 <= rv_en_p1;
         bwin_p1 <= bwin_req;            bwin_p2 <= bwin_p1;
         pat_p1 <= read_pat;             pat_p2 <= pat_p1;
-        dpat_p1 <= pat_req;             dq_pat <= dpat_p1;
+        dpat_p1 <= pat_req;
         sel_p1 <= rclksel_req;          rclksel <= sel_p1;
         rdir_p1 <= rdir_req;            rdir <= rdir_p1;
         mask_p1 <= rmove_mask;          mask_p2 <= mask_p1;
@@ -434,6 +444,8 @@ module wr_core (
         log_page_p1 <= log_page_req;    log_page_p2 <= log_page_p1;
         log_p <= {log_p[2:0], log_tog};
         hold_mask_p1 <= hold_mask_req;  hold_mask_p2 <= hold_mask_p1;
+        walign_p1 <= walign_req;        walign_p2 <= walign_p1;
+        adata_p1 <= adata_req;          adata_p2 <= adata_p1;
         hold_len_p1 <= hold_len_req;    hold_len_p2 <= hold_len_p1;
         hold_p <= {hold_p[2:0], hold_tog};
     end
@@ -477,9 +489,9 @@ module wr_core (
     localparam [3:0] I_IDLE = 4'd0, I_RESET = 4'd1, I_CKE = 4'd2, I_XPR = 4'd3,
                      I_MR = 4'd4, I_ZQ = 4'd5, I_WAIT = 4'd6,
                      R_IDLE = 4'd8, R_LEVEL = 4'd9, R_WRITE = 4'd10, R_READ = 4'd11,
-                     R_RAND = 4'd12;
+                     R_RAND = 4'd12, R_FILL = 4'd13;
     localparam [2:0] M_IDLE = 3'd0, M_LEVEL = 3'd1, M_WRITE = 3'd2, M_READ = 3'd3,
-                     M_RAND = 3'd4;
+                     M_RAND = 3'd4, M_FILL = 3'd5;
 
     reg [3:0] istate = I_IDLE;
     reg [3:0] wnext = I_IDLE;
@@ -502,7 +514,60 @@ module wr_core (
     reg [2:0] acc_bank = 3'd0;
     reg acc_rowbit = 1'b0;
     reg [6:0] acc_col = 7'd0;
+    reg [3:0] acc_row4 = 4'd0;          // with address data, the row's low four bits
+    reg [7:0] acc_exp = 8'd0;           // and the pattern the fill wrote there
     reg rc_issue = 1'b0;                // a READ leaves the core this cycle
+
+    // Address data (TOOL-043): every burst of the fill region, banks 0..7,
+    // rows {row[14:4], 0..15}, bursts 0..127, carries one of the thirty
+    // aperiodic 8-bit necklaces, as its least rotation, picked by a fold of
+    // its address; even DQ carry it and odd DQ its inverse, as every write
+    // here does.  tools/ddr3_write_probe.py carries the same table and fold.
+    function [7:0] apat(input [4:0] i);
+        case (i)
+            5'd0:  apat = 8'h01; 5'd1:  apat = 8'h03; 5'd2:  apat = 8'h05; 5'd3:  apat = 8'h07;
+            5'd4:  apat = 8'h09; 5'd5:  apat = 8'h0b; 5'd6:  apat = 8'h0d; 5'd7:  apat = 8'h0f;
+            5'd8:  apat = 8'h13; 5'd9:  apat = 8'h15; 5'd10: apat = 8'h17; 5'd11: apat = 8'h19;
+            5'd12: apat = 8'h1b; 5'd13: apat = 8'h1d; 5'd14: apat = 8'h1f; 5'd15: apat = 8'h25;
+            5'd16: apat = 8'h27; 5'd17: apat = 8'h2b; 5'd18: apat = 8'h2d; 5'd19: apat = 8'h2f;
+            5'd20: apat = 8'h35; 5'd21: apat = 8'h37; 5'd22: apat = 8'h3b; 5'd23: apat = 8'h3d;
+            5'd24: apat = 8'h3f; 5'd25: apat = 8'h57; 5'd26: apat = 8'h5b; 5'd27: apat = 8'h5f;
+            5'd28: apat = 8'h6f; 5'd29: apat = 8'h7f; 5'd30: apat = 8'h0b; default: apat = 8'h13;
+        endcase
+    endfunction
+    function [7:0] adata(input [2:0] b, input [3:0] r, input [6:0] c);
+        reg [13:0] x;
+        begin
+            x = {c, r, b};
+            adata = apat(x[4:0] ^ x[9:5] ^ {1'b0, x[13:10]} ^ {x[1:0], x[13:11]});
+        end
+    endfunction
+
+    // the fill's position, and the word each of its WRITEs carries, delayed
+    // d PCLK and b beats on the way to the serializers (command 0x36).  The
+    // word is set a PCLK before its WRITE goes out (fill_wr), and word 0 is
+    // that newest one: at d = 0 the data reaches the serializers two PCLK
+    // ahead of where a delay line behind the command would put it, which a
+    // first search on the board showed the write path needs (TOOL-043).
+    reg [2:0] fb = 3'd0;                // bank
+    reg [3:0] fr = 4'd0;                // row's low bits
+    reg [6:0] fc = 7'd0;                // burst
+    reg [7:0] wq_in = 8'd0;
+    reg [63:0] wq = 64'd0;              // word k + 1 at [8k +: 8]
+    reg fill_wr = 1'b0;                 // the WRITE of the word set last PCLK
+    reg [2:0] fill_wr_b = 3'd0;
+    reg [6:0] fill_wr_c = 7'd0;
+    wire [2:0] wa_d = walign_p2[6:4];
+    wire [2:0] wa_b = walign_p2[2:0];
+    wire [79:0] wq_all = {wq, wq_in, 8'd0};       // word k at [8k + 8 +: 8]
+    // beats b..7 carry the burst starting in this word, 0..b-1 the one before
+    wire [15:0] wq_pair = {wq_all[8 * wa_d + 8 +: 8], wq_all[8 * wa_d + 16 +: 8]};
+    wire [7:0] wq_out = wq_pair >> (5'd8 - {2'b00, wa_b});
+    always @(posedge pclk) begin
+        wq <= {wq[55:0], wq_in};
+        // the serializers' pattern: the fill's words in fill mode, else P
+        dq_pat <= (mode == M_FILL) ? wq_out : dpat_p1;
+    end
     // the pause after a random READ: the access period, at least 8, less
     // the ACTIVATE-to-READ cycles and the pause's own two; set from the
     // link, so registered off the counter's path
@@ -584,6 +649,10 @@ module wr_core (
 
     always @(posedge pclk) begin
         deselect;
+        wq_in <= 8'd0;                  // a fill WRITE sets its word
+        fill_wr <= 1'b0;
+        if (fill_wr)                    // a PCLK after its word
+            issue(C_WR, fill_wr_b, {6'd0, fill_wr_c, 3'b000});
         itimer <= itimer + 17'd1;
         rmove <= rmove_pulse ? mask_p2 : 4'b0000;
         rc_issue <= 1'b0;
@@ -681,7 +750,8 @@ module wr_core (
                         xs <= XS_SEED;
                         istate <= mode_p == M_LEVEL ? R_LEVEL :
                                   mode_p == M_WRITE ? R_WRITE :
-                                  mode_p == M_READ ? R_READ : R_RAND;
+                                  mode_p == M_READ ? R_READ :
+                                  mode_p == M_FILL ? R_FILL : R_RAND;
                     end
                 end
 
@@ -795,6 +865,16 @@ module wr_core (
                             issue(C_REF, 3'd0, 16'h0000);
                             refi <= 10'd0;
                             pause(17'd30, R_RAND);              // tRFC
+                        end else if (adata_p2) begin
+                            // the fill's region and the pattern it wrote here
+                            acc_bank <= xs[2:0];
+                            acc_rowbit <= xs[3];
+                            acc_row4 <= xs[6:3];
+                            acc_col <= xs[13:7];
+                            acc_exp <= adata(xs[2:0], xs[6:3], xs[13:7]);
+                            issue(C_ACT, xs[2:0], {1'b0, row_p2[14:4], xs[6:3]});
+                            step_no <= 4'd1;
+                            pause(17'd1, R_RAND);
                         end else begin
                             acc_bank <= xs[2:0];
                             acc_rowbit <= xs[3];
@@ -812,6 +892,67 @@ module wr_core (
                         step_no <= 4'd0;
                         pause(rand_wait, R_RAND);
                     end
+                end
+                // fill: every row of the region in turn, ACTIVATE, 128 back
+                // to back WRITEs each with its address's pattern, PRECHARGE,
+                // a refresh between rows when one is due, and round again
+                // until the mode changes; the bus is driven throughout, as in
+                // write mode
+                R_FILL: begin
+                    case (step_no)
+                        4'd0: begin
+                            odt <= 1'b1;
+                            dq_drive <= 1'b1;
+                            dqs_drive <= 1'b1;
+                            fb <= 3'd0;
+                            fr <= 4'd0;
+                            step_no <= 4'd1;
+                            pause(17'd8, R_FILL);               // the bus settles
+                        end
+                        4'd1: begin
+                            if (mode_p != mode) begin
+                                dq_drive <= 1'b0;
+                                dqs_drive <= 1'b0;
+                                odt <= 1'b0;
+                                step_no <= 4'd4;
+                                pause(17'd4, R_FILL);
+                            end else if (refi >= TREFI - 10'd160) begin
+                                // a row takes about 150 PCLK and refreshes
+                                // wait for its end, so one is due a row early
+                                issue(C_REF, 3'd0, 16'h0000);
+                                refi <= 10'd0;
+                                pause(17'd30, R_FILL);          // tRFC
+                            end else begin
+                                issue(C_ACT, fb, {1'b0, row_p2[14:4], fr});
+                                fc <= 7'd0;
+                                step_no <= 4'd2;
+                                pause(17'd8, R_FILL);           // tRCD
+                            end
+                        end
+                        4'd2: begin
+                            fill_wr <= 1'b1;
+                            fill_wr_b <= fb;
+                            fill_wr_c <= fc;
+                            wq_in <= adata(fb, fr, fc);
+                            fc <= fc + 7'd1;
+                            if (fc == 7'd127) begin
+                                step_no <= 4'd3;
+                                pause(17'd8, R_FILL);           // the last WRITE, tWR, the burst tail
+                            end
+                        end
+                        4'd3: begin
+                            issue(C_PRE, 3'd0, 16'h0400);       // all banks
+                            fr <= fr + 4'd1;
+                            if (fr == 4'd15)
+                                fb <= fb + 3'd1;
+                            step_no <= 4'd1;
+                            pause(17'd4, R_FILL);               // tRP
+                        end
+                        default: begin
+                            mode <= M_IDLE;
+                            istate <= R_IDLE;
+                        end
+                    endcase
                 end
                 default: istate <= I_IDLE;
             endcase
@@ -836,7 +977,12 @@ module wr_core (
     (* syn_preserve = 1, keep = 1 *) reg [255:0] dq_ra = 256'd0;
     reg eligible = 1'b0;
     reg [63:0] pat_rot = 64'd0;         // the eight rotations of P, rotation r at [8r +: 8]
-    reg [3:0] hit = 4'b0000;            // a lane's match, one cycle after its words
+    reg [3:0] hit = 4'b0000;            // a lane's match, two cycles after its words
+    // the match's parts, registered before they are combined: the rotation
+    // search and the pin check in one cycle put the Gowin control 0.47 ns
+    // short of PCLK
+    reg [3:0] h_rot = 4'b0000, h_pins = 4'b0000, h_lvl = 4'b0000;
+    reg h_read = 1'b0, h_level = 1'b0;
     integer l, k, r;
     reg ok, rot;
     reg [7:0] w0;
@@ -856,21 +1002,20 @@ module wr_core (
             pat_rot[8 * r +: 8] <= (dq_pat << r) | (dq_pat >> (8 - r));
         if (snap_pulse || eligible)
             snap <= dq_r4;
+        h_level <= (mode == M_LEVEL);
+        h_read <= (mode == M_READ) && eligible;
         for (l = 0; l < 4; l = l + 1) begin
             w0 = dq_r[64 * l +: 8];
-            if (mode == M_LEVEL) begin
-                ok = rvalid[l] && (w0 == 8'hff);
-            end else if (mode == M_READ) begin
-                rot = 1'b0;
-                for (r = 0; r < 8; r = r + 1)
-                    rot = rot || (w0 == pat_rot[8 * r +: 8]);
-                ok = eligible && rvalid[l] && rot;
-                for (k = 1; k < 8; k = k + 1)
-                    ok = ok && (dq_r[64 * l + 8 * k +: 8] == (k % 2 == 1 ? ~w0 : w0));
-            end else begin
-                ok = 1'b0;
-            end
-            hit[l] <= ok;
+            rot = 1'b0;
+            for (r = 0; r < 8; r = r + 1)
+                rot = rot || (w0 == pat_rot[8 * r +: 8]);
+            ok = 1'b1;
+            for (k = 1; k < 8; k = k + 1)
+                ok = ok && (dq_r[64 * l + 8 * k +: 8] == (k % 2 == 1 ? ~w0 : w0));
+            h_rot[l] <= rvalid[l] && rot;
+            h_pins[l] <= ok;
+            h_lvl[l] <= rvalid[l] && (w0 == 8'hff);
+            hit[l] <= h_level ? h_lvl[l] : (h_read && h_rot[l] && h_pins[l]);
             // the window is the 65535 cycles before the wrap
             if (pclk_cnt == 16'hffff) begin
                 good_last[16 * l +: 16] <= good[16 * l +: 16];
@@ -949,6 +1094,7 @@ module wr_core (
         .pclk(pclk), .rst(!ready_pc), .arm(rc_arm), .dq_q(dq_q),
         .rvalid(rvalid), .rv_enable(rv_en_p2),
         .issue(rc_issue), .issue_idx({acc_rowbit, acc_bank}), .issue_col(acc_col),
+        .exp_sel(adata_p2), .issue_exp(acc_exp), .issue_rhi(acc_row4[3:1]),
         .lat(lat_p2), .step(rstep_p2), .slip_enable(slip_en_p2), .slip(slip_p2),
         .refi(refi_rc),
         .log_skip(log_skip_p2), .log_page(log_page_p2), .log_go(log_go_pulse),
@@ -1025,32 +1171,43 @@ module wr_core (
     reg [15:0] last_change = 16'd0;
     reg [2:0]  step0 = 3'd0, step1 = 3'd0, step2 = 3'd0, step3 = 3'd0;
     reg        skew_changed = 1'b0, stream_d = 1'b0, moved_d = 1'b0;
+    // A move is registered as an event with the values it compares, and the
+    // counters update from those a PCLK later: the compare in front of all
+    // their enables put the Gowin control 0.38 ns short of PCLK.
+    reg        ph_ev = 1'b0, ph_gap = 1'b0;
+    reg [11:0] ph_new = 12'd0, ph_old = 12'd0;
+    reg [15:0] ph_cnt = 16'd0;
     always @(posedge pclk) begin
         stream_d <= eligible;
+        ph_ev <= !ra_arm && eligible && (&ra_phase_ok) && (ra_phase != ph_prev);
+        ph_new <= ra_phase;
+        ph_old <= ph_prev;
+        ph_gap <= !stream_d;
+        ph_cnt <= pclk_cnt;
         // the lanes' steps are compared the cycle after they are recorded
-        moved_d <= !ra_arm && eligible && (&ra_phase_ok) && (ra_phase != ph_prev);
+        moved_d <= ph_ev;
         if (moved_d && (step0 != step1 || step0 != step2 || step0 != step3))
             skew_changed <= 1'b1;
+        if (ra_arm)
+            ph_prev <= 12'd0;
+        else if (eligible && (&ra_phase_ok))
+            ph_prev <= ra_phase;
         if (ra_arm) begin
             chg_total <= 16'd0;
             chg_gap <= 16'd0;
             delta_last <= 16'd0;
             step0 <= 3'd0; step1 <= 3'd0; step2 <= 3'd0; step3 <= 3'd0;
             skew_changed <= 1'b0;
-            ph_prev <= 12'd0;
-        end else if (eligible && (&ra_phase_ok) && (ra_phase != ph_prev)) begin
+        end else if (ph_ev) begin
             chg_total <= chg_total + 16'd1;
-            if (!stream_d)
+            if (ph_gap)
                 chg_gap <= chg_gap + 16'd1;
-            delta_last <= pclk_cnt - last_change;
-            last_change <= pclk_cnt;
-            step0 <= ra_phase[2:0]  - ph_prev[2:0];
-            step1 <= ra_phase[5:3]  - ph_prev[5:3];
-            step2 <= ra_phase[8:6]  - ph_prev[8:6];
-            step3 <= ra_phase[11:9] - ph_prev[11:9];
-            ph_prev <= ra_phase;
-        end else if (eligible && (&ra_phase_ok)) begin
-            ph_prev <= ra_phase;
+            delta_last <= ph_cnt - last_change;
+            last_change <= ph_cnt;
+            step0 <= ph_new[2:0]  - ph_old[2:0];
+            step1 <= ph_new[5:3]  - ph_old[5:3];
+            step2 <= ph_new[8:6]  - ph_old[8:6];
+            step3 <= ph_new[11:9] - ph_old[11:9];
         end
     end
 
@@ -1390,7 +1547,8 @@ module wr_core (
                     (c == 8'h25) || (c == 8'h26) || (c == 8'h27) || (c == 8'h28) ||
                     (c == 8'h29) || (c == 8'h2a) || (c == 8'h2b) || (c == 8'h2c) || (c == 8'h2d) ||
                     (c == 8'h2e) || (c == 8'h2f) || (c == 8'h31) || (c == 8'h32) ||
-                    (c == 8'h33) || (c == 8'h34) || (c == 8'h35);
+                    (c == 8'h33) || (c == 8'h34) || (c == 8'h35) || (c == 8'h36) ||
+                    (c == 8'h37);
         end
     endfunction
 
@@ -1461,7 +1619,7 @@ module wr_core (
                                 moves <= 32'd0;
                             end
                             8'h0b: read_pat <= rx_data[3:0];
-                            8'h0c: mode_req <= rx_data[2:0] > 3'd4 ? 3'd0 : rx_data[2:0];
+                            8'h0c: mode_req <= rx_data[2:0] > 3'd5 ? 3'd0 : rx_data[2:0];
                             8'h0d: read_run_req <= rx_data == 8'd0 ? 8'd1 : rx_data;
                             8'h0e: pat_req <= rx_data;
                             8'h0f: bank_req <= rx_data[2:0];
@@ -1479,6 +1637,8 @@ module wr_core (
                             8'h2e: rclksel_req[3 * rx_data[7:6] +: 3] <= rx_data[2:0];
                             8'h29: rv_en_req <= rx_data[0];
                             8'h32: log_skip_req <= rx_data;
+                            8'h36: walign_req <= {rx_data[6:4], 1'b0, rx_data[2:0]};
+                            8'h37: adata_req <= rx_data[0];
                             8'h35: begin
                                 hold_mask_req <= rx_data[3:0];
                                 hold_len_req <= rx_data[7:4];
