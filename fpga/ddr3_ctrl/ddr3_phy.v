@@ -33,6 +33,7 @@ module ddr3_phy (
     input  wire [2:0] ba,
     input  wire [15:0] addr,
     output wire pclk,
+    output wire mclk,      // 400 MHz memory clock, generated here
     output wire pll_lock,
     output wire dll_lock,
     output wire [7:0] step,
@@ -83,7 +84,15 @@ module ddr3_phy (
     output wire ddr_ras,
     output wire ddr_cs
 );
-    wire mclk, pll_lock;
+    // kept, so the open flow's SDC can name the memory-side clock whatever
+    // Yosys does with the submodules' aliases of it
+    (* keep *) wire pclk;
+    wire [3:0] dq_tx = {4{!dq_drive}};
+    wire [3:0] dqs_tx = {4{!dqs_drive}};
+    // RBURST can rise and fall between PCLK edges in X4 mode.  The memory
+    // clock sees it, so it toggles one bit per edge there and PCLK does the
+    // counting: a counter in this domain would put a wide incrementer on the
+    // 400 MHz path.
     PLL #(
         .FCLKIN("50"), .IDIV_SEL(1), .FBDIV_SEL(1), .MDIV_SEL(16), .ODIV0_SEL(2),
         .CLKOUT0_EN("TRUE")
@@ -101,15 +110,6 @@ module ddr3_phy (
         .SSCPOL(1'b0), .SSCON(1'b0), .SSCMDSEL(7'b0), .SSCMDSEL_FRAC(3'b0),
         .LOCK(pll_lock), .CLKOUT0(mclk));
 
-    // kept, so the open flow's SDC can name the memory-side clock whatever
-    // Yosys does with the submodules' aliases of it
-    (* keep *) wire pclk;
-    wire [3:0] dq_tx = {4{!dq_drive}};
-    wire [3:0] dqs_tx = {4{!dqs_drive}};
-    // RBURST can rise and fall between PCLK edges in X4 mode.  The memory
-    // clock sees it, so it toggles one bit per edge there and PCLK does the
-    // counting: a counter in this domain would put a wide incrementer on the
-    // 400 MHz path.
     CLKDIV #(.DIV_MODE("4")) fdiv (.HCLKIN(mclk), .RESETN(!phy_rst), .CALIB(1'b0), .CLKOUT(pclk));
     DDRDLL #(.DLL_FORCE("FALSE"), .CODESCAL("111"), .SCAL_EN("FALSE"), .DIV_SEL(1'b0)) dll (
         .CLKIN(mclk), .STOP(!pll_lock), .UPDNCNTL(updncntl), .RESET(dll_rst),

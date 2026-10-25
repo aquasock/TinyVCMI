@@ -8,10 +8,13 @@
 // op codes become exactly the pin levels the proven core uses, and a cycle
 // without a command is deselected rather than repeating the last one.
 module tb_ddr3_cmdmux;
-    reg pclk = 1'b0, init_done = 1'b0;
+    reg pclk = 1'b0, init_done = 1'b0, train_done = 1'b1;
     reg i_cs_n = 1, i_ras_n = 1, i_cas_n = 1, i_we_n = 1;
     reg [2:0] i_ba = 0;
     reg [15:0] i_addr = 0;
+    reg t_valid = 0;
+    reg [2:0] t_op = 0, t_ba = 0;
+    reg [15:0] t_addr = 0;
     reg a_valid = 0;
     reg [2:0] a_op = 0, a_ba = 0;
     reg [15:0] a_addr = 0;
@@ -22,7 +25,8 @@ module tb_ddr3_cmdmux;
     always #5 pclk = ~pclk;
 
     ddr3_cmdmux dut (
-        .pclk(pclk), .init_done(init_done),
+        .pclk(pclk), .init_done(init_done), .train_done(train_done),
+        .t_valid(t_valid), .t_op(t_op), .t_ba(t_ba), .t_addr(t_addr),
         .i_cs_n(i_cs_n), .i_ras_n(i_ras_n), .i_cas_n(i_cas_n), .i_we_n(i_we_n),
         .i_ba(i_ba), .i_addr(i_addr),
         .a_valid(a_valid), .a_op(a_op), .a_ba(a_ba), .a_addr(a_addr),
@@ -77,6 +81,29 @@ module tb_ddr3_cmdmux;
         expect_op(3'd3, 4'b0011, "ACT did not map to 0011");
         expect_op(3'd5, 4'b0100, "WR did not map to 0100");
         expect_op(3'd4, 4'b0101, "RD did not map to 0101");
+
+        // ---- the training tier owns the bus once the power-up is done --
+        train_done <= 1'b0;
+        @(posedge pclk);
+        // a controller command must not reach the pins while training owns it
+        a_valid = 1'b1; a_op = 3'd4; a_ba = 3'd1; a_addr = 16'h0011;
+        @(posedge pclk); #1;
+        if ({cs_n, ras_n, cas_n, we_n} !== 4'b1111)
+            fail("the controller drove the bus during training");
+        a_valid = 1'b0;
+        // a training command does reach them
+        @(negedge pclk);
+        t_valid = 1'b1; t_op = 3'd3; t_ba = 3'd2; t_addr = 16'h0022;
+        @(negedge pclk);
+        t_valid = 1'b0;
+        if ({cs_n, ras_n, cas_n, we_n} !== 4'b0011 || ba !== 3'd2 || addr !== 16'h0022) begin
+            fail("a training ACT did not reach the pins");
+            $display("      got %b ba %0d addr %h", {cs_n, ras_n, cas_n, we_n}, ba, addr);
+        end
+        // and once training is done the controller owns it again
+        train_done <= 1'b1;
+        repeat (2) @(posedge pclk);      // let the hand-over settle
+        expect_op(3'd4, 4'b0101, "RD did not map to 0101 after training");
 
         // ---- an idle cycle deselects ---------------------------------
         @(negedge pclk);

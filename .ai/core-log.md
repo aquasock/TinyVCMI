@@ -1720,3 +1720,41 @@ Build the controller top level that instantiates the seven verified pieces with 
 - User Test: N/A
 
 ---
+
+## 53 COMMIT Unreleased 2026-10-24T19:00:00-07:00
+
+#### Coming From:
+
+Unreleased ffc185a
+
+#### Purpose:
+
+Assemble the controller into a top level that can be placed, and find out what stands between this design and an image.
+
+#### Outcome:
+
+`fpga/ddr3_ctrl/top.v` instantiates the extracted PHY, the start-up sequencer, the JEDEC power-up, the command mux, the boot trainer, `rd_align`, the rotation latch, the static derotator, the write fan-out, the DFI adapter and the generated LiteDRAM core, and it synthesises for GW5AST-138C with no warnings. Three pieces are new under it. `ddr3_rotlatch.v` freezes the four rotations only when every lane has trained, holds pattern mode until then, and clears on rearm; its bench caught a test that contradicted the design's own rule — a rearm that leaves the training mask set is correctly re-frozen at once. `ddr3_train.v` runs the boot pattern pass, one ACTIVATE, the configured WRITEs, then READs with the gate open and `stream` asserted, ending on all-four-trained or on a timeout flag rather than hanging; its bench covers the converging path only, which is stated rather than implied. `ddr3_cmdmux.v` became three-tier: the power-up owns the command pins until it is done, the training pass until the rotations are frozen, and the controller after that; its bench covers all three, and it caught a real defect in my own edit, a `pins` register assigned from both a combinational decode and the clocked block, which silently turned an RD into an ACT on the bus. `tools/build_ddr3_ctrl.sh` generates the core, synthesises, routes eight seeds in parallel, keeps the best and packs with the declared DDR3 context. The gate then produced four findings. An unconstrained `heartbeat` output was removed rather than pinned. Nextpnr failed deterministically on one arc, `Net ddr.sys4x_clk has no route to the FCLK of phy.ck_ser (sink wire X0Y30/FCLKA)`, in all eight seeds. A warning census showed it was one problem counted 586 times on `adapter.pclk`, plus a `mclk` warning and, more seriously, `get_nets argument 'pclk' matched no objects`, which meant PCLK was unconstrained and every timing number from that build was worthless; `tools/build_ddr3_ctrl.sh` now fails on an unmatched clock constraint as the write build already did. Moving the PLL out of the PHY to make the memory clock a top-level net replaced the named arc with a generic routing failure and 586 repeated errors, so it was reverted and the named failure restored. In the nextpnr fork, widening `extend_dq_lane_fclk` to every IO tile with FCLK pips made nextpnr segfault, and narrowing it to the bank-7 rows produced a byte-identical bba because those rows are absent from `hclk_pips` altogether; both changes were reverted and the fork is clean, regenerating 95,407,417 bytes, with `check_dqs_site.py` passing six of six. The conclusion recorded in TOOL-032 is that bank-7 FCLK is a modelling gap rather than an extension. No image was packed, no bitstream was loaded, and the Tang was not accessed in this cycle. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering and active-log capacity.
+
+#### Next Steps:
+
+Model bank 7's serializer FCLK in the nextpnr fork by creating the wire and pips for those tile types the way `create_dqs_bel` creates `DQS_FCLK`, rather than widening `hclk_pips`, and gate that change with `check_dqs_site.py`, `check_internal_net.py` and `check_arch_gen_deterministic.py` before any route attempt, since an inconsistent database appears as a segfault and not as a routing error; then re-run the eight seeds, add the training-timeout bench case and the DM mask path, and only then pack an image.
+
+#### Files Modified:
+
+- fpga/ddr3_ctrl/ddr3_cmdmux.v
+- fpga/ddr3_ctrl/ddr3_phy.v
+- fpga/ddr3_ctrl/ddr3_rotlatch.v
+- fpga/ddr3_ctrl/ddr3_train.v
+- fpga/ddr3_ctrl/tb_ddr3_cmdmux.v
+- fpga/ddr3_ctrl/tb_ddr3_rotlatch.v
+- fpga/ddr3_ctrl/tb_ddr3_train.v
+- fpga/ddr3_ctrl/top.v
+- tools/build_ddr3_ctrl.sh
+
+#### Status:
+
+- Build: PASS
+- Deployment: N/A
+- User Test: N/A
+
+---

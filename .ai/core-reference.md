@@ -148,6 +148,7 @@ Topic IDs are the `record_id` prefix. An entry reserves a namespace; it does not
 | Does a single read burst straddle two captured words? | TOOL | TOOL-029 |
 | Do closed-page scatter READs reach the read capture? | TOOL | TOOL-030 |
 | Can LiteDRAM's control layer be built without its PHY? | TOOL | TOOL-031 |
+| Why does the controller not route? | TOOL | TOOL-032 |
 | Why did the Gowin control miss PCLK timing? | TOOL | TOOL-028 |
 | Which sources and licenses constrain reuse? | PROV | PROV-001 |
 
@@ -201,6 +202,7 @@ TOOL-026: "The READ gate's memory-clock offset k sets the frame move per read ga
 TOOL-027: "Single closed-page READs to sixteen pattern rows pass at no gate position; at the stream-stable one the right burst is whole in 12.5% of READs, 7 PCLK after the command"
 TOOL-028: "GowinSynthesis packs two-flop setting synchronizers into counter-addressed LUT-RAM shift registers unless syn_srlstyle = registers, which cost the Gowin control PCLK timing"
 TOOL-029: "A single read burst straddles two captured words: cycle 11 with slips 0,0,0,4 in a raw capture, and a runtime per-lane beat slip lifts the best-position pass rate from 5.5% to 25.4%"
+TOOL-032: "The controller synthesises but does not route: bank-7 serializer FCLK has no pips in the database, and widening hclk_pips segfaults nextpnr"
 TOOL-031: "LiteDRAM's control layer alone generates, synthesises and places in the open flow at ~1% of the LUTs, with none of TOOL-025's three gaps"
 TOOL-030: "Closed-page scatter READs do not reach the read capture: 97.9% match nowhere, and neither cadence (1.17% to 0.64% over gap 8 to 255) nor any of the 32 gate positions (best 0.40%) recovers them, while streams match every cycle"
 PROV-001: "Reuse source and interface ideas with their original license boundaries and attribution intact"
@@ -843,6 +845,19 @@ PROV-001: "Reuse source and interface ideas with their original license boundari
     - "Tang-PSX third_party/litedram, litex, migen and litex-boards"
     - "TinyVCMI docs/ddr3-open-flow.md: The controller path"
   verification: "The spike generated the core against a stub, synthesised it and placed it with nextpnr-himbaechel for GW5AST-LV138PG484AC1/I0. The generator then emitted the core at board geometry with the DFI at its ports and synthesised it clean. Each hand-written piece has a passing unit simulation: dfi_adapter (commands on any phase, burst slicing, write data, underflow), ddr3_init (power-up order), ddr3_sync (start-up order), ddr3_wdata (all 256 burst bits by one-hot walk), ddr3_derot (every rotation 0 to 7), ddr3_cmdmux (arbitration and op encoding). The extracted PHY synthesises standalone and again with its write path repointed. No image was written and no hardware was accessed."
+
+- record_id: TOOL-032
+  topic_id: TOOL
+  title: "The controller's memory clock cannot reach bank 7's serializer FCLK"
+  status: VERIFIED
+  verified_date: 2026-10-24
+  statement: "Assembling the controller top level -- the extracted PHY, the start-up and JEDEC sequencers, the three-tier command mux, the boot trainer, rd_align, the rotation latch, the derotator, the write fan-out, the DFI adapter and LiteDRAM's control layer -- synthesises for GW5AST-138C without warnings, but nextpnr cannot route it: `Net ddr.sys4x_clk has no route to the FCLK of phy.ck_ser (sink wire X0Y30/FCLKA)`, deterministically at every seed. The sink is a bank-7 command serializer. The database does not model FCLK pips for bank-7 IO tiles at all: bank-7 rows 0 to 54 are absent from hclk_pips, so the bank-6 lane extension of TOOL-017 has nothing to extend there. Adding lane membership for every IO tile that does carry FCLK pips makes the generator run and nextpnr segfault, because it registers node membership for tiles that have no matching pips; the fork was reverted and regenerates unchanged at 95,407,417 bytes. Moving the PLL out of the PHY so the memory clock is a top-level net replaces the named arc with a generic routing failure and 586 copies of one CLKDIV-to-clock arc error, so it is not a fix."
+  consequence: "Bank-7 FCLK is a modelling gap, not an extension: the wire and pips must be created for those tile types in the way create_dqs_bel creates DQS_FCLK, rather than by widening hclk_pips. Until that exists the controller cannot route, and a hand-written design could only avoid it by keeping the memory clock inside one module where the router happened to cope. The gate for the change is the fork's own checks -- check_dqs_site.py, check_internal_net.py and check_arch_gen_deterministic.py -- before any route attempt, because an inconsistent database surfaces as a segfault rather than a routing error."
+  sources:
+    - "TinyVCMI fpga/ddr3_ctrl/top.v and tools/build_ddr3_ctrl.sh"
+    - "aquasock/nextpnr branch epic/gw5ast138c, himbaechel/uarch/gowin/gowin_arch_gen.py extend_dq_lane_fclk and hclk_pips"
+    - "TinyVCMI build/ddr3_ctrl/seed*/nextpnr.log"
+  verification: "Eight seeds, run eight at a time, all failed on the same named arc; the warning census of one seed was 586 repetitions of `Failed to route net 'adapter.pclk' ... using dedicated routing`, one `mclk feeds a DQS FCLK but is carried on 2 HCLK lanes` warning, and one `get_nets argument 'pclk' matched no objects` -- which means PCLK was unconstrained in that build, so tools/build_ddr3_ctrl.sh now fails on an unmatched clock constraint as the write build already did. The broad generator change and the narrow one were both reverted; the narrow one produced a byte-identical bba, which is how the absence of bank-7 tiles from hclk_pips was established. The fork's check_dqs_site.py passes six of six against the reverted tree. No image was packed and no hardware was accessed."
 
 - record_id: PROV-001
   topic_id: PROV
