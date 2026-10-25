@@ -2533,6 +2533,39 @@ row. So the RVALID word is in order but often from an older READ. The next
 measurement is how many READs back, with the lag classifier deepened past three
 (TOOL-037).
 
+## Eight READs back: no fixed offset
+
+`rd_check`'s lag classifier now names the READ's own pattern and those of the
+eight READs before it, counting only READs whose nine patterns are distinct --
+about 6% of random READs, some 21,600 per check offset at period 40 -- and frame
+`0x2F` grew to 206 bytes to carry 40 counters (`LAGS` in `rd_check.v` and
+`tools/ddr3_write_probe.py`). `tb_check.v` drives lanes at lags 0 to 8 and at 9,
+outside the window, and fails when lags 1 and 2 or 7 and 8 are swapped;
+`tb_wr.v` now receives frame `0x2F` over the simulated link and compares all 206
+bytes. `ddr3_write_probe.py train` runs the lag check whenever any lane locks,
+leaving unlocked lanes at the old shared setting, and
+`tools/ddr3_boot_repeat.sh` now loads an image, calibrates, trains and runs that
+check.
+
+Three loads of the open image and two of the Gowin control, at offsets 14 to 25:
+
+| Load | Lanes in the vendor's state | Own / each lag 1..8 / none |
+|---|---|---|
+| open 1 | 3 | 13.6% / ~2.6% / 65% |
+| open 2, 3 | none | -- |
+| control 1 | 0, 2 | 31.0% / ~2.5% / 48.5% on both |
+| control 2 | 0, 1, 3 | 31.0% / ~2.5% / 48.5% on all three |
+
+No trained lane delivers its burst a fixed number of READs back: lags 1 to 8
+are flat at chance level, so there is no offset for an in-order FIFO to absorb.
+Random mode reseeds its address generator on every entry, so every run issues
+the same READ sequence, and every trained control lane -- two loads, both x16
+devices, gate positions 4 and 6 -- gave the same distribution to 0.1% in all ten
+classes. Which READs return their own burst is therefore set by the READ
+sequence itself, alike on every lane, rather than by each lane's FIFO state at
+start-up; what property of a READ decides it is the next measurement (TOOL-038).
+Two of three open loads reached the vendor's state on no lane at all.
+
 ## The controller path: a spike, and seven pieces under it
 
 ### The spike, and what it settled

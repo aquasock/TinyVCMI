@@ -27,7 +27,9 @@
 //     lane's RCLKSEL its own setting (commands 2C, 2D, 2E over 22, 25, 06),
 //     and the lag and RBURST-level counters of frame 0x2F run in random mode,
 //     with the RVALID-held capture switched on by command 29, and the read-
-//     training counters of frame 0x31 count the random READs.
+//     training counters of frame 0x31 count the random READs;
+//   * frame 0x2F, the longest, reaches the link whole: its header and all
+//     206 payload bytes equal to status4.
 module tb;
     reg sys_clk = 1'b0;
     always #10 sys_clk = ~sys_clk;
@@ -203,8 +205,25 @@ module tb;
         end
     endtask
 
+    // The core's replies, decoded at 2 Mbaud while `listen` is set
+    reg [7:0] rx_buf [0:255];
+    integer rx_n = 0;
+    integer listen = 0;
+    always @(negedge uart_tx) if (listen) begin : rx_byte
+        integer bi;
+        reg [7:0] b;
+        #750;                                                   // mid first data bit
+        for (bi = 0; bi < 8; bi = bi + 1) begin
+            b[bi] = uart_tx;
+            #500;
+        end
+        if (rx_n < 256) rx_buf[rx_n] = b;
+        rx_n = rx_n + 1;
+    end
+
     integer dq_driven_at_write = 0;
     integer idle_wait = 0;
+    integer fi, frame_bad;
 
     // Per-lane READ gates in random mode: lanes 0 and 1 at delay 2, k 0;
     // lane 2 at delay 5; lane 3 at delay 2, k 3.  Every gate a lane opens is
@@ -273,15 +292,40 @@ module tb;
             fail("the read-training READ count does not follow the random READs");
         request(8'h0c, 8'h00);
         #10000;
-        if (dut.core.status4[104*8 +: 12] !== {3'd2, 3'd5, 3'd2, 3'd2} ||
-            dut.core.status4[106*8 +: 8] !== {2'd3, 2'd0, 2'd0, 2'd0} ||
-            dut.core.status4[107*8 +: 12] !== {3'd3, 3'd3, 3'd6, 3'd3} ||
-            dut.core.status4[125*8] !== 1'b1 ||
+        if (dut.core.status4[184*8 +: 12] !== {3'd2, 3'd5, 3'd2, 3'd2} ||
+            dut.core.status4[186*8 +: 8] !== {2'd3, 2'd0, 2'd0, 2'd0} ||
+            dut.core.status4[187*8 +: 12] !== {3'd3, 3'd3, 3'd6, 3'd3} ||
+            dut.core.status4[205*8] !== 1'b1 ||
             dut.core.status5[31:0] !== dut.core.tr_reads ||
             dut.core.status5[63:32] !== dut.core.rb_cyc)
             fail("frame 0x2F does not carry the per-lane settings");
         $display("      per-lane gates: %0d compared; %0d READs classified for lag over %0d PCLK",
                  gates_seen, dut.core.rc_lag_eval, dut.core.rb_cyc);
+        // frame 0x2F over the link: the header and all 206 payload bytes
+        #30000;                                                 // the mode request's reply
+        rx_n = 0;
+        listen = 1;
+        request(8'h2f, 8'h00);
+        idle_wait = 0;
+        while (rx_n < 210 && idle_wait < 1200000) begin
+            #1000;
+            idle_wait = idle_wait + 1000;
+        end
+        #2000;
+        listen = 0;
+        frame_bad = 0;
+        if (rx_n != 210 || rx_buf[0] !== 8'haa || rx_buf[1] !== 8'h00 ||
+            rx_buf[2] !== 8'h06 || rx_buf[3] !== 8'd206)
+            frame_bad = 1;
+        for (fi = 0; fi < 206; fi = fi + 1)
+            if (rx_buf[4 + fi] !== dut.core.status4[8*fi +: 8])
+                frame_bad = frame_bad + 1;
+        if (frame_bad != 0) begin
+            $display("      %0d bytes, header %h %h %h %h, %0d wrong",
+                     rx_n, rx_buf[0], rx_buf[1], rx_buf[2], rx_buf[3], frame_bad);
+            fail("frame 0x2F does not arrive whole over the link");
+        end
+        $display("      frame 0x2F: %0d bytes received, payload equal to status4", rx_n);
         // idle mode refreshes every 7 us and waits tRFC after each, so the
         // core is given up to 2 us to be seen in its idle state
         idle_wait = 0;
@@ -310,7 +354,7 @@ module tb;
     end
 
     initial begin
-        #4000000;
+        #6000000;
         $display("FAIL  timeout: state %0d", dut.core.istate);
         $finish;
     end

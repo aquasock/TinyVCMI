@@ -1992,3 +1992,39 @@ None.
 - User Test: N/A
 
 ---
+
+## 61 COMMIT Unreleased 2026-10-25T07:19:58-07:00
+
+#### Coming From:
+
+Unreleased 3877e4c
+
+#### Purpose:
+
+Measure how many READs back each lane's delivered burst is in the proven controller's accepted read state, by deepening the lag classifier from three earlier READs to eight, to decide between absorbing a fixed per-lane offset in an in-order read FIFO and fixing the DQS read FIFO's start-up state.
+
+#### Outcome:
+
+`fpga/ddr3_write/rd_check.v` now names, per lane at the check offset, the READ's own pattern, those of the eight READs before it, or none, counting only READs whose nine patterns are distinct, about 6% of random READs; whether the earlier eight are distinct and which locations they hold are registered from their history so only the new READ's lookup is in front of it, and a READ marked on the cycle after another is not classified. `fpga/ddr3_write/wr_core.v` carries the 40 counters in frame `0x2F`, now 206 bytes, with every field from RBURST on 80 bytes higher, and its shift-out register grew to the longest frame. `fpga/ddr3_write/tb_check.v` classifies lanes at lags 0 to 3 and 4, 5, 7 and 8 exactly and a lane at lag 9 as none in 70 of 180 READs, and mutants with lags 1 and 2 or 7 and 8 swapped fail it; `fpga/ddr3_write/tb_wr.v` gained a link receiver and takes all 210 bytes of frame `0x2F` equal to `status4`, and the probe's decoder read a dump of that frame back to the bench's per-lane settings. `tools/ddr3_write_probe.py` decodes the new frame, `train` runs its lag check whenever any lane locks with unlocked lanes at the old shared setting and reports each lane's most frequent lag, and `tools/ddr3_boot_repeat.sh` now loads an image, calibrates, trains and runs that check. All four simulations pass. The open image, SHA-256 `ba985ab51c873a9f9ab90f9147951fb84191fab259c68729f9669ee0ea0bc1d7`, closes PCLK at 117.00 MHz, and its Gowin build, `1dbb6ae84b64a89900a43f2bae02b009331323cc1278ff443fb750da353ba20f`, with place option 3 and route option 1, closes PCLK at 101.381 MHz with no negative slack; they are equal on all 306 DDR3 tables with lanes exact. On the Tang, after the user freed it, both were placed on the card as `ddr3_lag8.bin` and `ddr3_lag8_vendor.bin`, and three open loads and two control loads in one boot each calibrated cleanly with no stall, trained and were checked at offsets 14 to 25 with about 21,600 classified READs per offset. Only open load 1 reached the vendor's state on any lane, lane 3, with 13.6% own, 2.5 to 3.1% at each lag 1 to 8 and 65% none; the control's five trained lanes over its two loads, on both x16 devices and at gate positions 4 and 6, all gave 31.0% own, 2.4 to 2.8% at each lag and 48.5% none, the same to 0.1% in every class. There is no fixed offset, so neither branch of the plan applies: because random mode reseeds its address generator on every entry, every run issues the same READ sequence, and which READs succeed is a property of the READ within that sequence shared by every trained lane, not of a lane's FIFO state. TOOL-038 was added, TOOL-037's consequence revised, and `docs/ddr3-open-flow.md` gained the result. The desktop core was restored after every load and answered `0x54`. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering and active-log capacity.
+
+#### Next Steps:
+
+Run the user-approved next cycle: condition each lane's own-READ hits in the vendor's state on the READ's location, column and position in the reseeded READ sequence, so the property that decides which READs return their own burst is named, and repeat it on the two images now on the card after the offline gates. Why the open image reaches the vendor's state on far fewer lanes than the control, the acceptance gate of isolated random READs returning each address's own data at a fixed trained latency before controller work resumes, the first-load stall after a Tang reboot, the `D108` unused-pin contradiction and the `is_mipi` bug outside the DDR context remain open.
+
+#### Files Modified:
+
+- docs/ddr3-open-flow.md
+- fpga/ddr3_write/rd_check.v
+- fpga/ddr3_write/tb_check.v
+- fpga/ddr3_write/tb_wr.v
+- fpga/ddr3_write/wr_core.v
+- tools/ddr3_boot_repeat.sh
+- tools/ddr3_write_probe.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: N/A
+
+---

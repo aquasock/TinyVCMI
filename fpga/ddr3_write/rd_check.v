@@ -31,11 +31,14 @@
 //
 //   lag      at the same offset `lat`, each lane of each READ is classified
 //            by which READ's pattern it holds: its own (0), or that of the
-//            READ issued one, two or three before it, or none of these (4).
-//            Only READs whose four patterns are all distinct are classified,
-//            so a lane's class is never ambiguous.  A lane that delivers an
-//            earlier READ's burst shows here as a steady non-zero lag, which
-//            a stream of one pattern could never reveal.
+//            READ issued k = 1 to LAGS before it, or none of these (LAGS + 1).
+//            Only READs whose LAGS + 1 patterns are all distinct are
+//            classified, so a lane's class is never ambiguous; with sixteen
+//            patterns drawn at random that is about 6% of READs at LAGS = 8.
+//            A lane that delivers an earlier READ's burst shows here as a
+//            steady non-zero lag, which a stream of one pattern could never
+//            reveal.  Before 2026-10-25 LAGS was 3 and four patterns had to
+//            be distinct.
 //
 // RVALID: the proven controller takes a lane's deserializer word only on a
 // cycle whose DQS RVALID is high (TOOL-033).  With rv_enable set, each lane's
@@ -53,7 +56,8 @@
 // Offsets below 1 are checked at 1.  The check runs three stages behind the
 // capture, which READs at least eight cycles apart leave room for.
 module rd_check #(
-    parameter integer PIPE = 4      // documented above; not a knob
+    parameter integer PIPE = 4,     // documented above; not a knob
+    parameter integer LAGS = 8      // earlier READs the lag classifier names
 ) (
     input  wire         pclk,
     input  wire         rst,
@@ -80,9 +84,10 @@ module rd_check #(
     output reg  [15:0]  pos_cls = 16'd0,     // last 8 classes, newest at [1:0]
 
     // Which READ's pattern each lane held at `lat` (command 0x2F): READs
-    // classified, then lane l, lag k (4 = none) at [32 * (5l + k) +: 32].
+    // classified, then lane l, lag k (LAGS + 1 = none) at
+    // [32 * ((LAGS + 2) l + k) +: 32].
     output reg  [31:0]  lag_eval = 32'd0,
-    output reg  [639:0] lag_cnt = 640'd0,
+    output reg  [128*(LAGS+2)-1:0] lag_cnt = {128*(LAGS+2){1'b0}},
 
     output reg          locked = 1'b0,
     output reg  [11:0]  expect_rot = 12'd0,   // per lane, for the next READ
@@ -222,28 +227,47 @@ module rd_check #(
     reg [31:0]  ex_h = 32'd0;       // counted in hist
     reg [255:0] ex_pat = 256'd0;    // its pattern, 8 bits each
     reg [351:0] ex_addr = 352'd0;   // its address, 11 bits each
-    reg [415:0] ex_prev = 416'd0;   // {distinct, idx of READs n-1, n-2, n-3}, 13 bits each
+    localparam integer PW = 4 * LAGS + 1;  // {distinct, idx of READs n-1 .. n-LAGS}
+    reg [32*PW-1:0] ex_prev = {32*PW{1'b0}};
     reg [7:0]   prev_pat = 8'd0;
     reg         have_prev = 1'b0;
-    reg [11:0]  prev_idx = 12'd0;   // the last three READs' locations, newest at [3:0]
-    reg [1:0]   prev_n = 2'd0;      // how many of them exist since `arm`, saturating
+    reg [4*LAGS-1:0] prev_idx = {4*LAGS{1'b0}};  // the last LAGS READs' locations, newest at [3:0]
+    reg [3:0]   prev_n = 4'd0;      // how many of them exist since `arm`, saturating
     wire [7:0]  issue_pat = rom(issue_idx);
     wire        fresh = issue && (!have_prev || issue_pat != prev_pat) && hist_n != 16'hffff;
-    wire        distinct = prev_n == 2'd3 &&
-                           issue_idx != prev_idx[3:0] && issue_idx != prev_idx[7:4] &&
-                           issue_idx != prev_idx[11:8] && prev_idx[3:0] != prev_idx[7:4] &&
-                           prev_idx[3:0] != prev_idx[11:8] && prev_idx[7:4] != prev_idx[11:8];
+    // Whether the earlier READs are distinct among themselves, and which
+    // locations they hold, are registered from prev_idx, so only the new
+    // READ's own lookup is in front of ex_prev.  They describe prev_idx as it
+    // was a cycle ago, which is prev_idx now unless a READ was marked then;
+    // a READ marked on the cycle after another is not classified.
+    reg [15:0]  prev_mask = 16'd0, pm;
+    reg         prev_ok = 1'b0, prev_cur = 1'b0, po;
+    integer pa, pb;
+    always @(posedge pclk) begin
+        pm = 16'd0;
+        po = 1'b1;
+        for (pa = 0; pa < LAGS; pa = pa + 1) begin
+            pm[prev_idx[4*pa +: 4]] = 1'b1;
+            for (pb = pa + 1; pb < LAGS; pb = pb + 1)
+                if (prev_idx[4*pa +: 4] == prev_idx[4*pb +: 4])
+                    po = 1'b0;
+        end
+        prev_mask <= pm;
+        prev_ok <= po;
+        prev_cur <= !issue;
+    end
+    wire        distinct = prev_n == LAGS && prev_cur && prev_ok && !prev_mask[issue_idx];
 
     always @(posedge pclk) begin
         // pattern and address only mean something where ex_v is set
         ex_pat <= {ex_pat[247:0], issue_pat};
         ex_addr <= {ex_addr[340:0], issue_idx, issue_col};
-        ex_prev <= {ex_prev[402:0], distinct, prev_idx};
+        ex_prev <= {ex_prev[31*PW-1:0], distinct, prev_idx};
         if (clr) begin
             ex_v <= 32'd0;
             ex_h <= 32'd0;
             have_prev <= 1'b0;
-            prev_n <= 2'd0;
+            prev_n <= 4'd0;
             hist_n <= 16'd0;
         end else begin
             ex_v <= {ex_v[30:0], issue};
@@ -251,9 +275,9 @@ module rd_check #(
             if (issue) begin
                 prev_pat <= issue_pat;
                 have_prev <= 1'b1;
-                prev_idx <= {prev_idx[7:0], issue_idx};
-                if (prev_n != 2'd3)
-                    prev_n <= prev_n + 2'd1;
+                prev_idx <= {prev_idx[4*LAGS-5:0], issue_idx};
+                if (prev_n != LAGS)
+                    prev_n <= prev_n + 4'd1;
             end
             if (fresh)
                 hist_n <= hist_n + 16'd1;
@@ -343,12 +367,12 @@ module rd_check #(
     reg  [7:0]   sel_v_block = 8'd0;
     reg  [63:0]  sel_pat_block = 64'd0;
     reg  [87:0]  sel_addr_block = 88'd0;
-    reg  [103:0] sel_prev_block = 104'd0;
+    reg  [8*PW-1:0] sel_prev_block = {8*PW{1'b0}};
     reg  [2:0]   sel_low = 3'd0;
     reg          sel_v = 1'b0;
     reg  [7:0]   sel_pat = 8'd0;
     reg  [10:0]  sel_addr = 11'd0;
-    reg  [12:0]  sel_prev = 13'd0;
+    reg  [PW-1:0] sel_prev = {PW{1'b0}};
     always @(posedge pclk) begin
         lat_m2 <= (lat < 5'd2) ? 5'd0 : lat - 5'd2;
         sel_low <= lat_m2[2:0];
@@ -357,31 +381,31 @@ module rd_check #(
                 sel_v_block <= ex_v[7:0];
                 sel_pat_block <= ex_pat[63:0];
                 sel_addr_block <= ex_addr[87:0];
-                sel_prev_block <= ex_prev[103:0];
+                sel_prev_block <= ex_prev[8*PW-1:0];
             end
             2'd1: begin
                 sel_v_block <= ex_v[15:8];
                 sel_pat_block <= ex_pat[127:64];
                 sel_addr_block <= ex_addr[175:88];
-                sel_prev_block <= ex_prev[207:104];
+                sel_prev_block <= ex_prev[16*PW-1:8*PW];
             end
             2'd2: begin
                 sel_v_block <= ex_v[23:16];
                 sel_pat_block <= ex_pat[191:128];
                 sel_addr_block <= ex_addr[263:176];
-                sel_prev_block <= ex_prev[311:208];
+                sel_prev_block <= ex_prev[24*PW-1:16*PW];
             end
             default: begin
                 sel_v_block <= ex_v[31:24];
                 sel_pat_block <= ex_pat[255:192];
                 sel_addr_block <= ex_addr[351:264];
-                sel_prev_block <= ex_prev[415:312];
+                sel_prev_block <= ex_prev[32*PW-1:24*PW];
             end
         endcase
         sel_v <= !clr && sel_v_block[sel_low];
         sel_pat <= sel_pat_block[8*sel_low +: 8];
         sel_addr <= sel_addr_block[11*sel_low +: 11];
-        sel_prev <= sel_prev_block[13*sel_low +: 13];
+        sel_prev <= sel_prev_block[PW*sel_low +: PW];
     end
 
     // first: does each lane hold the READ's pattern
@@ -392,9 +416,9 @@ module rd_check #(
     reg [10:0]  ck_addr = 11'd0;
     reg [255:0] ck_words = 256'd0;
     integer cl;
-    // and does it hold one of the three READs' before it
+    // and does it hold one of the LAGS READs' before it
     reg         ck_distinct = 1'b0;
-    reg [11:0]  ck_older = 12'd0;   // lane l, lag k = 1..3 at 3l + k - 1
+    reg [4*LAGS-1:0] ck_older = {4*LAGS{1'b0}};  // lane l, lag k = 1..LAGS at LAGS l + k - 1
     integer ck_k;
     always @(posedge pclk) begin
         ck_v <= !clr && sel_v;
@@ -402,36 +426,39 @@ module rd_check #(
         ck_addr <= sel_addr;
         for (cl = 0; cl < 4; cl = cl + 1) begin
             ck_cls[cl] <= pins_b3[cl] && canon_b3[8*cl +: 8] == sel_pat;
-            for (ck_k = 0; ck_k < 3; ck_k = ck_k + 1)
-                ck_older[3*cl + ck_k] <= pins_b3[cl] &&
-                                         canon_b3[8*cl +: 8] == rom(sel_prev[4*ck_k +: 4]);
+            for (ck_k = 0; ck_k < LAGS; ck_k = ck_k + 1)
+                ck_older[LAGS*cl + ck_k] <= pins_b3[cl] &&
+                                            canon_b3[8*cl +: 8] == rom(sel_prev[4*ck_k +: 4]);
         end
-        ck_distinct <= sel_prev[12];
+        ck_distinct <= sel_prev[4*LAGS];
         ck_rot <= crot_b3;
         ck_words <= dq_b3;
     end
 
-    // lag: one-hot per lane, registered before it counts so the compare
-    // chain is not in front of the 32-bit increments
+    // lag: one-hot per lane, the nearest READ first, registered before it
+    // counts so the compare chain is not in front of the 32-bit increments
+    localparam integer LC = LAGS + 2;   // classes per lane
     reg         lg_v = 1'b0;
-    reg [19:0]  lg_hit = 20'd0;     // lane l, lag k at 5l + k
+    reg [4*LC-1:0] lg_hit = {4*LC{1'b0}};  // lane l, lag k at LC l + k
+    reg         lg_seen;
     integer lgl, lgk;
     always @(posedge pclk) begin
         lg_v <= !clr && ck_v && ck_distinct;
         for (lgl = 0; lgl < 4; lgl = lgl + 1) begin
-            lg_hit[5*lgl + 0] <= ck_cls[lgl];
-            lg_hit[5*lgl + 1] <= !ck_cls[lgl] && ck_older[3*lgl];
-            lg_hit[5*lgl + 2] <= !ck_cls[lgl] && !ck_older[3*lgl] && ck_older[3*lgl + 1];
-            lg_hit[5*lgl + 3] <= !ck_cls[lgl] && !ck_older[3*lgl] && !ck_older[3*lgl + 1] &&
-                                 ck_older[3*lgl + 2];
-            lg_hit[5*lgl + 4] <= !ck_cls[lgl] && !(|ck_older[3*lgl +: 3]);
+            lg_seen = ck_cls[lgl];
+            lg_hit[LC*lgl] <= lg_seen;
+            for (lgk = 1; lgk <= LAGS; lgk = lgk + 1) begin
+                lg_hit[LC*lgl + lgk] <= !lg_seen && ck_older[LAGS*lgl + lgk - 1];
+                lg_seen = lg_seen || ck_older[LAGS*lgl + lgk - 1];
+            end
+            lg_hit[LC*lgl + LAGS + 1] <= !lg_seen;
         end
         if (clr) begin
             lag_eval <= 32'd0;
-            lag_cnt <= 640'd0;
+            lag_cnt <= {128*LC{1'b0}};
         end else if (lg_v) begin
             lag_eval <= lag_eval + 32'd1;
-            for (lgk = 0; lgk < 20; lgk = lgk + 1)
+            for (lgk = 0; lgk < 4*LC; lgk = lgk + 1)
                 if (lg_hit[lgk])
                     lag_cnt[32*lgk +: 32] <= lag_cnt[32*lgk +: 32] + 32'd1;
         end

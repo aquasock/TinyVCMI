@@ -40,13 +40,14 @@ chosen over the link.  This tool opens TinyTang's `fpgapipe` once and:
               0..7 on every lane not yet locked, pass a lane when its RVALID-
               high cycles and RBURST pulses each equal the READs issued, and
               lock it at the second passing RCLKSEL in a row (frame 0x31); then
-              check the trained settings with the lag classifier
+              check the trained settings with the lag classifier and report,
+              per lane, how many READs back its delivered burst most often is
   lag         closed-page single READs with each lane's own READ gate delay,
               gate offset and RCLKSEL (commands 0x2C, 0x2D, 0x2E); at each
               check offset in --lats, which READ's pattern every lane held --
-              its own, one, two or three READs before, or none (frame 0x2F)
-              -- and the fraction of PCLK each lane's RBURST was high as a
-              level
+              its own, that of one of the LAGS READs before, or none (frame
+              0x2F) -- and the fraction of PCLK each lane's RBURST was high as
+              a level
 
 The aligner trains per read session, so every align case re-enters read mode
 and the tool reports the raw rotation it observes beside the locked one.  A
@@ -80,6 +81,8 @@ RC_PATTERNS = [0x0B, 0x0D, 0x13, 0x15, 0x17, 0x19, 0x1B, 0x1D,
 #: registered the deserializer words and RVALID first, so offsets recorded
 #: before then are one lower for the same arrival.
 RC_PIPE = 4
+#: earlier READs rd_check's lag classifier names; it was 3 until 2026-10-25
+LAGS = 8
 PAYLOAD = 127
 TOTAL = 4 + PAYLOAD
 
@@ -171,23 +174,30 @@ class Core:
         return s
 
     def lag(self) -> dict:
-        """Lag, RBURST level and RVALID frame, command 0x2F: 126 payload bytes."""
-        r = self.request(0x2F, expect=4 + 126)
-        if r[2] != 0x06 or r[3] != 126:
-            raise RuntimeError(f"lag frame is {r[2]:#04x}/{r[3]}, expected 0x06/126")
+        """Lag, RBURST level and RVALID frame, command 0x2F: 206 payload bytes.
+
+        lag[lane][k] counts READs whose lane held the pattern of the READ k
+        before, k = 0 its own, up to LAGS; lag[lane][LAGS + 1] none of them.
+        """
+        n = 4 + 16 * (LAGS + 2) + 42
+        r = self.request(0x2F, expect=4 + n)
+        if r[2] != 0x06 or r[3] != n:
+            raise RuntimeError(f"lag frame is {r[2]:#04x}/{r[3]}, expected 0x06/{n}")
         b = r[4:]
         u32 = lambda o: int.from_bytes(b[o:o + 4], "little")
-        delay = int.from_bytes(b[104:106], "little")
-        sel = int.from_bytes(b[107:109], "little")
+        o = 4 + 16 * (LAGS + 2)                 # the fields after the lag counts
+        delay = int.from_bytes(b[o + 20:o + 22], "little")
+        sel = int.from_bytes(b[o + 23:o + 25], "little")
         return {"eval": u32(0),
-                "lag": [[u32(4 + 20 * lane + 4 * k) for k in range(5)] for lane in range(4)],
-                "rb": [u32(84 + 4 * lane) for lane in range(4)],
-                "cycles": u32(100),
+                "lag": [[u32(4 + 4 * (LAGS + 2) * lane + 4 * k) for k in range(LAGS + 2)]
+                        for lane in range(4)],
+                "rb": [u32(o + 4 * lane) for lane in range(4)],
+                "cycles": u32(o + 16),
                 "delay": [(delay >> (3 * n)) & 7 for n in range(4)],
-                "gate": [(b[106] >> (2 * n)) & 3 for n in range(4)],
+                "gate": [(b[o + 22] >> (2 * n)) & 3 for n in range(4)],
                 "rclksel": [(sel >> (3 * n)) & 7 for n in range(4)],
-                "rv": [u32(109 + 4 * lane) for lane in range(4)],
-                "rv_held": b[125] & 1}
+                "rv": [u32(o + 25 + 4 * lane) for lane in range(4)],
+                "rv_held": b[o + 41] & 1}
 
     def train_counts(self) -> dict:
         """Read-training counters, command 0x31: 40 payload bytes."""
@@ -286,6 +296,19 @@ def hist_window(c: dict) -> tuple[int, int]:
         return -1, 0
     full = [h >= n * 0.98 for h in c["hist"]]
     return longest_run(full)
+
+
+def lag_line(lat: int, g: dict) -> str:
+    """One check offset of frame 0x2F: per lane, % of READs at each lag."""
+    n = g["eval"] or 1
+    lanes = "  ".join(
+        f"L{lane} " + " ".join(f"{100.0 * c / n:5.1f}" for c in g["lag"][lane])
+        for lane in range(4))
+    rb = " ".join(f"{100.0 * c / (g['cycles'] or 1):5.1f}" for c in g["rb"])
+    rv = " ".join(f"{100.0 * c / (g['cycles'] or 1):5.1f}" for c in g["rv"])
+    lags = " ".join(str(k) for k in range(LAGS + 1))
+    return (f"lat {lat:2d}: {g['eval']} READs, % at lag {lags} none: {lanes}"
+            f"   RBURST level % {rb}   RVALID % {rv}")
 
 
 def check_line(c: dict) -> str:
@@ -679,6 +702,9 @@ def main() -> int:
                     help="last gate position, 4 x delay + offset")
     tr.add_argument("--lats", type=int, nargs="+", default=list(range(14, 26)),
                     help="check offsets for the lag check of the trained settings")
+    tr.add_argument("--lag-seconds", type=float, default=0.15,
+                    help="random mode per check offset of the lag check; about 6%% of"
+                         " READs are classified")
     tr.add_argument("--verbose", action="store_true", help="one line per setting tried")
     pw = sub.add_parser("prewrite")
     pw.add_argument("--row", type=lambda x: int(x, 0), default=0)
@@ -932,21 +958,38 @@ def main() -> int:
                 if all(locked):
                     break
             print(f"{tried} settings tried; trained (delay, k, rclksel) per lane: {locked}")
-            if all(locked):
-                core.set_lanes([x[0] for x in locked], [x[1] for x in locked], [x[2] for x in locked])
+            # TOOL-037: often only some lanes lock in a load, and those are
+            # the ones whose lag matters; an unlocked lane is checked at the
+            # old shared setting and marked as such
+            if any(locked):
+                sets = [locked[n] or (1, 2, 0) for n in range(4)]
+                if not all(locked):
+                    print("untrained lanes at delay 1 k 2 rclksel 0: "
+                          + " ".join(str(n) for n in range(4) if not locked[n]))
+                core.set_lanes([x[0] for x in sets], [x[1] for x in sets], [x[2] for x in sets])
                 own = [0.0] * 4
+                # per lane, the (share, lag, lat) of its most frequent class
+                # other than none, over every check offset
+                top = [(0.0, None, None)] * 4
                 for lat in args.lats:
                     core.request(0x26, lat)
                     core.mode(4)
-                    time.sleep(0.15)
+                    time.sleep(args.lag_seconds)
                     core.mode(0)
                     g = core.lag()
                     n = g["eval"] or 1
-                    shares = [100.0 * g["lag"][l][0] / n for l in range(4)]
-                    own = [max(own[l], shares[l]) for l in range(4)]
-                    print(f"lat {lat:2d}: own % " + " ".join(f"{v:5.1f}" for v in shares)
-                          + "   RVALID % " + " ".join(f"{100.0 * v / (g['cycles'] or 1):5.1f}" for v in g["rv"]))
+                    own = [max(own[l], 100.0 * g["lag"][l][0] / n) for l in range(4)]
+                    for l in range(4):
+                        for k in range(LAGS + 1):
+                            share = 100.0 * g["lag"][l][k] / n
+                            if share > top[l][0]:
+                                top[l] = (share, k, lat)
+                    print(lag_line(lat, g))
                 print("best own % per lane: " + " ".join(f"{v:5.1f}" for v in own))
+                for l in range(4):
+                    share, k, lat = top[l]
+                    print(f"lane {l}{'' if locked[l] else ' (untrained)'}: most often lag {k}"
+                          f" in {share:5.1f}% at lat {lat}")
         elif args.cmd == "lag":
             if args.prewrite:
                 prewrite(core, args.row, 0.2)
@@ -969,14 +1012,7 @@ def main() -> int:
                 if lat == args.lats[0]:
                     print(f"delay {g['delay']} gate {g['gate']} rclksel {g['rclksel']} "
                           f"RVALID-held {g['rv_held']}")
-                n = g["eval"] or 1
-                lanes = "  ".join(
-                    f"L{lane} " + " ".join(f"{100.0 * c / n:5.1f}" for c in g["lag"][lane])
-                    for lane in range(4))
-                rb = " ".join(f"{100.0 * c / (g['cycles'] or 1):5.1f}" for c in g["rb"])
-                rv = " ".join(f"{100.0 * c / (g['cycles'] or 1):5.1f}" for c in g["rv"])
-                print(f"lat {lat:2d}: {g['eval']} READs, % at lag 0 1 2 3 none: {lanes}"
-                      f"   RBURST level % {rb}   RVALID % {rv}")
+                print(lag_line(lat, g))
         elif args.cmd == "pos":
             if args.prewrite:
                 prewrite(core, args.row, 0.2)

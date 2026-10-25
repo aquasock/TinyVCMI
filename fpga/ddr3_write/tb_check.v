@@ -20,9 +20,10 @@
 //   * a frame that moves on every READ passes when `step` predicts it;
 //   * one mis-framed pin fails only its own lane;
 //   * a second latency and spacing is measured as well;
-//   * a lane that answers with the burst of the READ one, two or three
-//     before is classified at that lag, every lane separately, and a lane
-//     holding no recent READ's pattern is classified as none;
+//   * a lane that answers with the burst of the READ one to eight before is
+//     classified at that lag, every lane separately, a lane holding no recent
+//     READ's pattern is classified as none, and one holding the READ nine
+//     before, outside the window, is spread as chance repeats predict;
 //   * with rv_enable, a burst presented for one PCLK with RVALID high and
 //     noise on every other cycle is held and checked one offset later, and
 //     without it the same READs fail.
@@ -55,7 +56,7 @@ module tb_check;
     wire [127:0] pos_range;
     wire [15:0]  pos_cls;
     wire [31:0]  lag_eval;
-    wire [639:0] lag_cnt;
+    wire [1279:0] lag_cnt;
     reg  [9:0]   refi = 10'd0;
 
     rd_check dut (
@@ -186,15 +187,16 @@ module tb_check;
         end
     endtask
 
+    // lane ll, lag kk; kk = 9 is none
     function [31:0] lagc(input integer ll, input integer kk);
-        lagc = lag_cnt[32 * (5 * ll + kk) +: 32];
+        lagc = lag_cnt[32 * (10 * ll + kk) +: 32];
     endfunction
 
     // every classified READ of lane ll at lag want, none elsewhere
     task expect_lag(input integer ll, input integer want);
         integer kk;
         begin
-            for (kk = 0; kk < 5; kk = kk + 1)
+            for (kk = 0; kk < 10; kk = kk + 1)
                 if (lagc(ll, kk) != (kk == want ? lag_eval : 32'd0)) begin
                     $display("      lane %0d lag %0d: %0d of %0d", ll, kk, lagc(ll, kk), lag_eval);
                     fail("a lane classified at the wrong lag");
@@ -247,8 +249,9 @@ module tb_check;
         if (rot_moves != 0) fail("a move counted on a still frame");
         if (fail_seen) fail("a failure kept on a clean run");
         if (last_rot != {3'd0, 3'd6, 3'd3, 3'd1}) fail("the lanes' rotations not reported");
-        // about (15/16)(14/16)(13/16) of READs have four distinct patterns
-        if (lag_eval < total / 2 || lag_eval > total) fail("too few READs classified for lag");
+        // about 16!/(7! 16^9), 6.0%, of READs have nine distinct patterns
+        if (lag_eval < total / 40 || lag_eval > total / 8)
+            fail("READs classified for lag not about 6% of READs");
         expect_lag(0, 0); expect_lag(1, 0); expect_lag(2, 0); expect_lag(3, 0);
         $display("      1: hist from 11, %0d/%0d good, rot %h", good, total, last_rot);
 
@@ -312,18 +315,37 @@ module tb_check;
         rearm;
         delay = 7; spacing = 8; lat <= 5'd11;
         lane_lag[0] = 0; lane_lag[1] = 1; lane_lag[2] = 2; lane_lag[3] = 3;
-        run(300);
-        if (lag_eval < 150) fail("too few READs classified for lag");
+        run(3000);
+        if (lag_eval < 100) fail("too few READs classified for lag");
         expect_lag(0, 0); expect_lag(1, 1); expect_lag(2, 2); expect_lag(3, 3);
         $display("      8: lags 0,1,2,3: %0d READs classified, lane 3 at lag 3 in %0d",
                  lag_eval, lagc(3, 3));
+        rearm;
+        lane_lag[0] = 4; lane_lag[1] = 5; lane_lag[2] = 7; lane_lag[3] = 8;
+        run(3000);
+        if (lag_eval < 100) fail("too few READs classified for lag");
+        expect_lag(0, 4); expect_lag(1, 5); expect_lag(2, 7); expect_lag(3, 8);
+        $display("      8: lags 4,5,7,8: %0d READs classified, lane 3 at lag 8 in %0d",
+                 lag_eval, lagc(3, 8));
+        // the READ nine before is outside the window: its pattern is any of
+        // the sixteen, so the lane is none in about 7/16 of READs and at
+        // each lag 0 to 8 in about 1/16, with no lag standing out
+        rearm;
+        lane_lag[3] = 9;
+        run(3000);
+        if (lagc(3, 9) < lag_eval / 4 || lagc(3, 9) > 2 * lag_eval / 3)
+            fail("a lane at lag 9 not mostly none");
+        for (q = 0; q < 9; q = q + 1)
+            if (lagc(3, q) > lag_eval / 5)
+                fail("a lane at lag 9 classified at a lag inside the window");
+        $display("      8: lag 9: none in %0d of %0d", lagc(3, 9), lag_eval);
 
         // 9: a lane holding no recent READ's pattern is none
         rearm;
         lane_lag[2] = -1;
         run(300);
-        expect_lag(0, 0); expect_lag(1, 0); expect_lag(2, 4); expect_lag(3, 0);
-        $display("      9: lane 2 none in %0d of %0d", lagc(2, 4), lag_eval);
+        expect_lag(0, 0); expect_lag(1, 0); expect_lag(2, 9); expect_lag(3, 0);
+        $display("      9: lane 2 none in %0d of %0d", lagc(2, 9), lag_eval);
 
         // 10: a burst valid for one PCLK only, RVALID marking it
         rearm;
@@ -354,7 +376,7 @@ module tb_check;
     end
 
     initial begin
-        #2000000;
+        #4000000;
         $display("FAIL  timeout");
         $finish;
     end

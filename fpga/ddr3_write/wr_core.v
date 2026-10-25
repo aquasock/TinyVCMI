@@ -90,10 +90,10 @@
 //   2C v      lane v[7:6]'s READ gating delay = v[2:0] PCLK
 //   2D v      lane v[7:6]'s READ gate offset = v[1:0] memory clocks
 //   2E v      lane v[7:6]'s RCLKSEL = v[2:0]
-//   2F        lag and RBURST level: for every isolated READ with four
+//   2F        lag and RBURST level: for every isolated READ with nine
 //             distinct recent patterns, which READ's pattern each lane held
 //             at the check offset, each lane's RBURST level count and RVALID
-//             count, answered with 126 payload bytes (see status4)
+//             count, answered with 206 payload bytes (see status4)
 //   31        read-training counters: READs issued in random mode since the
 //             arm, the PCLK counted, and per lane RVALID-high cycles and RBURST
 //             pulses, answered with 40 payload bytes (see status5)
@@ -877,7 +877,7 @@ module wr_core (
     wire [127:0] rc_pos_range;
     wire [15:0]  rc_pos_cls;
     wire [31:0]  rc_lag_eval;
-    wire [639:0] rc_lag_cnt;
+    wire [1279:0] rc_lag_cnt;
     reg          rc_arm = 1'b0, mode_rand_d = 1'b0;
     // the refresh phase for rd_check's statistics, one PCLK late: a copy, so
     // the checker's compares do not load the refresh counter's own path
@@ -1233,35 +1233,37 @@ module wr_core (
         rc_n_other, rc_n_only19, rc_n_only11, rc_n_both         // 12..15, 8..11, 4..7, 0..3
     };
 
-    // Lag, RBURST level and RVALID (command 0x2F), 126 payload bytes, static once
+    // Lag, RBURST level and RVALID (command 0x2F), 206 payload bytes, static once
     // random mode is left.  Little-endian, byte 0 in the low bits.
-    //    0-3     READs classified: four distinct recent patterns
-    //    4+20l+4k  lane l, lag k: the lane held the pattern of the READ k
-    //            before (k = 0 its own), k = 4 none of the four
-    //   84+4l    lane l's PCLK cycles with RBURST high as a level
-    //  100-103   random-mode PCLK cycles those were counted over
-    //  104-105   per-lane READ gating delay, lane n at [3n +: 3]
-    //  106       per-lane READ gate offset, lane n at [2n +: 2]
-    //  107-108   per-lane RCLKSEL, lane n at [3n +: 3]
-    //  109+4l    lane l's PCLK cycles with RVALID high
-    //  125       {7'b0, RVALID-held capture enabled (command 0x29)}
+    //    0-3     READs classified: nine distinct recent patterns
+    //    4+40l+4k  lane l, lag k: the lane held the pattern of the READ k
+    //            before (k = 0 its own, up to 8), k = 9 none of the nine
+    //  164+4l    lane l's PCLK cycles with RBURST high as a level
+    //  180-183   random-mode PCLK cycles those were counted over
+    //  184-185   per-lane READ gating delay, lane n at [3n +: 3]
+    //  186       per-lane READ gate offset, lane n at [2n +: 2]
+    //  187-188   per-lane RCLKSEL, lane n at [3n +: 3]
+    //  189+4l    lane l's PCLK cycles with RVALID high
+    //  205       {7'b0, RVALID-held capture enabled (command 0x29)}
+    // Until 2026-10-25 the classifier named three earlier READs and this
+    // frame was 126 bytes, with every field from RBURST on 80 bytes lower.
     reg [31:0]  rc_lag_eval_s = 32'd0, rb_cyc_s = 32'd0;
-    reg [639:0] rc_lag_cnt_s = 640'd0;
+    reg [1279:0] rc_lag_cnt_s = 1280'd0;
     reg [127:0] rb_cnt_s = 128'd0, rv_cnt_s = 128'd0;
     always @(posedge sys_clk) begin
         rc_lag_eval_s <= rc_lag_eval;   rc_lag_cnt_s <= rc_lag_cnt;
         rb_cnt_s <= rb_cnt;             rb_cyc_s <= rb_cyc;
         rv_cnt_s <= rv_cnt;
     end
-    wire [1007:0] status4 = {
-        {7'd0, rv_en_req},                                      // 125
-        rv_cnt_s,                                               // 109..124
-        {4'b0000, rclksel_req},                                 // 107..108
-        gate_req,                                               // 106
-        {4'b0000, read_delay_req},                              // 104..105
-        rb_cyc_s,                                               // 100..103
-        rb_cnt_s,                                               // 84..99
-        rc_lag_cnt_s,                                           // 4..83
+    wire [1647:0] status4 = {
+        {7'd0, rv_en_req},                                      // 205
+        rv_cnt_s,                                               // 189..204
+        {4'b0000, rclksel_req},                                 // 187..188
+        gate_req,                                               // 186
+        {4'b0000, read_delay_req},                              // 184..185
+        rb_cyc_s,                                               // 180..183
+        rb_cnt_s,                                               // 164..179
+        rc_lag_cnt_s,                                           // 4..163
         rc_lag_eval_s                                           // 0..3
     };
 
@@ -1298,7 +1300,7 @@ module wr_core (
     reg [7:0] response_type = 8'h04;    // frame type byte
     reg [7:0] response_len = 8'h7f;     // payload bytes
     reg [7:0] response_index = 8'd0;
-    reg [1015:0] frame = 1016'd0;
+    reg [1647:0] frame = 1648'd0;      // the longest frame, 0x2F's
 
     function known;
         input [7:0] c;
@@ -1345,13 +1347,13 @@ module wr_core (
                                          (cmd_byte == 8'h2f) ? 8'h06 :
                                          (cmd_byte == 8'h31) ? 8'h07 : 8'h04;
                         response_len <= (cmd_byte == 8'h2b) ? 8'd34 :
-                                        (cmd_byte == 8'h2f) ? 8'd126 :
+                                        (cmd_byte == 8'h2f) ? 8'd206 :
                                         (cmd_byte == 8'h31) ? 8'd40 : 8'd127;
                         response_index <= 8'd0;
-                        frame <= (cmd_byte == 8'h27) ? status2 :
-                                 (cmd_byte == 8'h2b) ? {744'd0, status3} :
-                                 (cmd_byte == 8'h2f) ? {8'd0, status4} :
-                                 (cmd_byte == 8'h31) ? {696'd0, status5} : status;
+                        frame <= (cmd_byte == 8'h27) ? {632'd0, status2} :
+                                 (cmd_byte == 8'h2b) ? {1376'd0, status3} :
+                                 (cmd_byte == 8'h2f) ? status4 :
+                                 (cmd_byte == 8'h31) ? {1328'd0, status5} : {632'd0, status};
                         case (cmd_byte)
                             8'h04: snap_tog <= ~snap_tog;
                             8'h05: begin
