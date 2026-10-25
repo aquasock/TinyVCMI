@@ -1929,3 +1929,36 @@ Bring for approval the read-training cycle of entry 57's Next Steps, now known t
 - User Test: N/A
 
 ---
+
+## 59 COMMIT Unreleased 2026-10-24T22:38:13-07:00
+
+#### Coming From:
+
+Unreleased d271fbb
+
+#### Purpose:
+
+Train each lane's read gate and RCLKSEL by the proven controller's rule of one RVALID cycle and one RBURST pulse per READ and measure whether isolated READs then return their own data.
+
+#### Outcome:
+
+`fpga/ddr3_write/wr_core.v` now counts, in random mode since the arm, the READs issued and per lane the PCLK with RVALID high and the RBURST pulses sampled and counted as the vendor does, returned in frame `0x31`, and `tools/ddr3_write_probe.py train` runs the vendor's search over gate positions 0 to 31 and RCLKSEL 0 to 7, locking a lane at its second pass in a row, then checks the trained settings with the lag classifier; the image bench checks the counters. The open flow closed PCLK at 113.38 MHz; the Gowin control missed at 90.883 MHz with its default options, on existing phase-monitor and `rd_align` paths, and the place/route sweep found two clean variants, of which place option 3 with route option 1 at 105.429 MHz was used. The open image, `49fc517b642db04d4d5a90da0392fe4b7adec57efba8212931e72b4d499a7e0c`, and the control, `74bf2ed439c5b8d59ed88cdd03471e9a39f5d3507a16a1073ee2e7004cfe644e`, equal on all 306 DDR3 tables, were loaded after the user freed the Tang. The vendor's accepted state appears exactly on this board, 1.00 RVALID cycle and 1.00 RBURST pulse per READ over about 81,000 READs, but on two lanes per load only, lanes 2 and 3 on the open image and 0 and 1 on the control, and the counts jump between a few fixed values at particular setting changes. In that state the trained lanes did not return their own data: 18.8%, 11.5% and 31.2% own-READ, all whole sixteenths, while a lane left in the two-in-three RVALID state still read 100%. Read delay over plus and minus 40 steps and stream framing changed nothing, and the failing words were clean, pin-consistent bursts of another row, so the RVALID word is in order but often from an older READ. TOOL-037 was added and `docs/ddr3-open-flow.md` gained the result. The desktop core was restored and answered `0x54`. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering and active-log capacity.
+
+#### Next Steps:
+
+Bring for approval a measurement cycle that deepens the lag classifier from three READs back to at least eight, so the offset of the delivered burst in the vendor's accepted state is counted directly per lane, and runs it after training across several loads to see whether that offset is fixed per lane per load. If it is, a controller can absorb it as the proven controller's in-order FIFO does once the offset is known, and the read training gains a final step that measures it; if it is not, the DQS read FIFO's start-up state needs work before training. The acceptance gate before controller work resumes, the first-load stall after a Tang reboot, the `D108` unused-pin contradiction and the `is_mipi` bug outside the DDR context remain open.
+
+#### Files Modified:
+
+- docs/ddr3-open-flow.md
+- fpga/ddr3_write/tb_wr.v
+- fpga/ddr3_write/wr_core.v
+- tools/ddr3_write_probe.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: N/A
+
+---

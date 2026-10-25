@@ -94,6 +94,9 @@
 //             distinct recent patterns, which READ's pattern each lane held
 //             at the check offset, each lane's RBURST level count and RVALID
 //             count, answered with 126 payload bytes (see status4)
+//   31        read-training counters: READs issued in random mode since the
+//             arm, the PCLK counted, and per lane RVALID-high cycles and RBURST
+//             pulses, answered with 40 payload bytes (see status5)
 //   29 v      v[0]: rd_check takes each lane's word only on cycles whose RVALID
 //             is high, holding it between them, as the proven controller's
 //             read FIFO does (TOOL-033); clear by default
@@ -912,6 +915,12 @@ module wr_core (
     reg  [127:0] rb_cnt = 128'd0;       // lane n at [32n +: 32]
     reg  [127:0] rv_cnt = 128'd0;       // RVALID high, lane n at [32n +: 32]
     reg  [3:0]   rv_r = 4'd0;
+    // The proven controller's read calibration passes a lane only with one
+    // RVALID-high cycle and one RBURST pulse per READ (TOOL-036); a pulse is
+    // a falling edge of the level above, counted as its rburst_cnt counts it.
+    reg  [127:0] rb_fall = 128'd0;      // RBURST pulses, lane n at [32n +: 32]
+    reg  [31:0]  tr_reads = 32'd0;      // READs issued while counting
+    wire [3:0]   rb_t = rb_pos & rb_neg & rb_neg_r;
     reg  [31:0]  rb_cyc = 32'd0;
     reg          rb_on = 1'b0;
     integer      rbl;
@@ -927,14 +936,20 @@ module wr_core (
         if (rc_arm) begin
             rb_cnt <= 128'd0;
             rv_cnt <= 128'd0;
+            rb_fall <= 128'd0;
+            tr_reads <= 32'd0;
             rb_cyc <= 32'd0;
         end else if (rb_on) begin
             rb_cyc <= rb_cyc + 32'd1;
+            if (rc_issue)
+                tr_reads <= tr_reads + 32'd1;
             for (rbl = 0; rbl < 4; rbl = rbl + 1) begin
                 if (rb_lvl[rbl])
                     rb_cnt[32*rbl +: 32] <= rb_cnt[32*rbl +: 32] + 32'd1;
                 if (rv_r[rbl])
                     rv_cnt[32*rbl +: 32] <= rv_cnt[32*rbl +: 32] + 32'd1;
+                if (rb_lvl[rbl] && !rb_t[rbl])
+                    rb_fall[32*rbl +: 32] <= rb_fall[32*rbl +: 32] + 32'd1;
             end
         end
     end
@@ -1250,6 +1265,19 @@ module wr_core (
         rc_lag_eval_s                                           // 0..3
     };
 
+    // Read-training counters (command 0x31), 40 payload bytes, static once
+    // random mode is left.  Little-endian, byte 0 in the low bits.
+    //    0-3     READs issued in random mode since the arm
+    //    4-7     random-mode PCLK counted
+    //    8+4l    lane l's PCLK with RVALID high
+    //   24+4l    lane l's RBURST pulses
+    reg [127:0] rb_fall_s = 128'd0;
+    reg [31:0]  tr_reads_s = 32'd0;
+    always @(posedge sys_clk) begin
+        rb_fall_s <= rb_fall;           tr_reads_s <= tr_reads;
+    end
+    wire [319:0] status5 = {rb_fall_s, rv_cnt_s, rb_cyc_s, tr_reads_s};
+
     // ------------------------------------------------------------------
     // The link
     // ------------------------------------------------------------------
@@ -1283,7 +1311,7 @@ module wr_core (
                     (c == 8'h21) || (c == 8'h22) || (c == 8'h23) || (c == 8'h24) ||
                     (c == 8'h25) || (c == 8'h26) || (c == 8'h27) || (c == 8'h28) ||
                     (c == 8'h29) || (c == 8'h2a) || (c == 8'h2b) || (c == 8'h2c) || (c == 8'h2d) ||
-                    (c == 8'h2e) || (c == 8'h2f);
+                    (c == 8'h2e) || (c == 8'h2f) || (c == 8'h31);
         end
     endfunction
 
@@ -1310,16 +1338,20 @@ module wr_core (
                     if (!response_active) begin
                         response_active <= 1'b1;
                         response_is_status <= (cmd_byte == 8'h03) || (cmd_byte == 8'h27) ||
-                                              (cmd_byte == 8'h2b) || (cmd_byte == 8'h2f);
+                                              (cmd_byte == 8'h2b) || (cmd_byte == 8'h2f) ||
+                                              (cmd_byte == 8'h31);
                         response_type <= (cmd_byte == 8'h27) ? 8'h05 :
                                          (cmd_byte == 8'h2b) ? 8'h00 :
-                                         (cmd_byte == 8'h2f) ? 8'h06 : 8'h04;
+                                         (cmd_byte == 8'h2f) ? 8'h06 :
+                                         (cmd_byte == 8'h31) ? 8'h07 : 8'h04;
                         response_len <= (cmd_byte == 8'h2b) ? 8'd34 :
-                                        (cmd_byte == 8'h2f) ? 8'd126 : 8'd127;
+                                        (cmd_byte == 8'h2f) ? 8'd126 :
+                                        (cmd_byte == 8'h31) ? 8'd40 : 8'd127;
                         response_index <= 8'd0;
                         frame <= (cmd_byte == 8'h27) ? status2 :
                                  (cmd_byte == 8'h2b) ? {744'd0, status3} :
-                                 (cmd_byte == 8'h2f) ? {8'd0, status4} : status;
+                                 (cmd_byte == 8'h2f) ? {8'd0, status4} :
+                                 (cmd_byte == 8'h31) ? {696'd0, status5} : status;
                         case (cmd_byte)
                             8'h04: snap_tog <= ~snap_tog;
                             8'h05: begin

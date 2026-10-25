@@ -2515,6 +2515,24 @@ one-in-forty share seen on some lanes at period 40 is the vendor's state. The
 next read path trains each lane's gate and RCLKSEL to one RVALID cycle and one
 RBURST pulse per READ, and is then checked across read sessions (TOOL-036).
 
+## Training to the vendor's state
+
+`wr_core` counts, per lane, RVALID-high cycles and RBURST pulses against the
+READs issued (frame `0x31`), and `ddr3_write_probe.py train` runs the vendor's
+search. On the board the vendor's accepted state appears exactly -- **1.00
+RVALID cycle and 1.00 RBURST pulse per READ** over 81,000 READs -- but on two
+lanes per load only (lanes 2 and 3 on the open image, 0 and 1 on the Gowin
+control), and the counts move in jumps between a few values at certain setting
+changes rather than following the setting.
+
+In that state the lanes do **not** return their own data: 18.8%, 11.5% and
+31.2% own-READ, all whole sixteenths, where a lane left in the two-in-three
+RVALID state still reads 100%. Read delay over +/-40 steps and stream framing
+change nothing; the failing words are clean, pin-consistent bursts of another
+row. So the RVALID word is in order but often from an older READ. The next
+measurement is how many READs back, with the lag classifier deepened past three
+(TOOL-037).
+
 ## The controller path: a spike, and seven pieces under it
 
 ### The spike, and what it settled

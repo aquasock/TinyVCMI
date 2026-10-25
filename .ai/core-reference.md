@@ -153,6 +153,7 @@ Topic IDs are the `record_id` prefix. An entry reserves a namespace; it does not
 | Which READ does each lane return, and do per-lane gates fix it? | TOOL | TOOL-034 |
 | Does taking a word only on RVALID return isolated READs whole? | TOOL | TOOL-035 |
 | How does the proven controller calibrate reads, and what does it accept? | TOOL | TOOL-036 |
+| Does training to the vendor's state return isolated READs' data? | TOOL | TOOL-037 |
 | Why did the Gowin control miss PCLK timing? | TOOL | TOOL-028 |
 | Which sources and licenses constrain reuse? | PROV | PROV-001 |
 
@@ -211,6 +212,7 @@ TOOL-033: "The proven controller drives READ, RCLKSEL and HOLD per lane, gates e
 TOOL-034: "Isolated READs: each lane holds its own READ's burst in at most about 51% of READs at any per-lane gate and RCLKSEL, in both builds, valid on two PCLK of every three"
 TOOL-035: "With RVALID-held capture a lane returns 100% of isolated READs' own bursts at its own setting, but the right setting is fixed per FPGA load and changes from load to load"
 TOOL-036: "The proven controller accepts a lane only with exactly one RVALID cycle and one RBURST pulse per READ over 29 groups of four READs, sweeping RCLKSEL then the gate per lane"
+TOOL-037: "Training reaches the vendor's one-RVALID-and-one-RBURST-per-READ state on two lanes per load, but in it the RVALID word is often an older READ's clean burst"
 TOOL-031: "LiteDRAM's control layer alone generates, synthesises and places in the open flow at ~1% of the LUTs, with none of TOOL-025's three gaps"
 TOOL-030: "Closed-page scatter READs do not reach the read capture in the open or the vendor build of the same RTL; no cadence, gate position or shared RCLKSEL recovers them, and failing READs return other rows' patterns"
 PROV-001: "Reuse source and interface ideas with their original license boundaries and attribution intact"
@@ -920,6 +922,19 @@ PROV-001: "Reuse source and interface ideas with their original license boundari
     - "TinyVCMI tools/vendor_read_cal_trace.py and tools/vendor_read_cal/tb_read_cal.v"
     - "Gowin EDA 1.9.11.03 IDE/simlib/gw5a/prim_sim.v"
   verification: "The acceptance constants were read from the LUT INITs, rvalid_cnt_check[0] true only at rvalid_cnt 116 and rburst_cnt_check[0] only at rburst_cnt 116, the batch end from read_cal_next_state at read_cmd_cnt 30, and the counting conditions from their cones: rvalid_cnt counts rvalid_Z with filter_first_burst set during calibration, rburst_cnt counts rburst_t low after rburst_t_r high. tools/vendor_read_cal_trace.py reproduces the four windowed runs and the never-passing run, which stops at the bench's 8 ms limit at read_i 5; in each run the block's commands were decoded from phy_cs_n, phy_ras_n, phy_cas_n and phy_we_n of its last command slot. The other modules the block waits on were modelled as answering done 200 PCLK after their start, so their own timing is not part of this record. No hardware was accessed."
+
+- record_id: TOOL-037
+  topic_id: TOOL
+  title: "The vendor's read-calibration state is reachable on two lanes per load, but in it the RVALID word often carries another READ's burst"
+  status: VERIFIED
+  verified_date: 2026-10-24
+  statement: "fpga/ddr3_write now counts, in random mode since the arm, the READs issued and per lane the PCLK with RVALID high and the RBURST pulses sampled and counted as the proven controller does, returned in frame 0x31, and tools/ddr3_write_probe.py train applies the vendor's search of TOOL-036: gate positions 0 to 31 from earliest, RCLKSEL 0 to 7 on every unlocked lane, a lane passing when both counts equal the READs within two, locked at the second pass in a row. On the open image about 81,000 isolated READs per setting at period 40 gave passing lanes exactly 1.00 RVALID cycle and 1.00 RBURST pulse per READ, so the vendor's accepted state exists on this board; lanes 2 and 3 locked at delay 1, offset 1, RCLKSEL 4 and kept passing at every later setting, while lanes 0 and 1 never passed in 256 settings, often with RBURST at 1.00 per READ and RVALID at 14 to 42 cycles per READ. The counts moved in jumps between a few fixed values at particular setting changes and then held, not following the setting. The Gowin control, rebuilt with place option 3 and route option 1, locked lanes 0 and 1 and never lanes 2 and 3. In the accepted state the lanes did not return their own data: with RVALID-held capture the open image's lanes 2 and 3 held their own READ's pattern in 18.8% and 11.5% of READs and the Gowin control's lanes 0 and 1 in 31.2%, every share a whole number of sixteenths, while a lane left in the two-in-three RVALID state held 100% at its offsets. Moving lanes 2 and 3's read delay over plus and minus 40 steps changed nothing, re-aligning per-bit framing on a stream changed nothing, and the failing words were consistent across all eight pins of a lane at one rotation but were clean bursts of another row's pattern."
+  consequence: "Exactly one RVALID cycle and one RBURST pulse per READ is necessary for the vendor but not sufficient here: in that state the word under the RVALID cycle is often an older READ's burst, so the capture is in order but offset by some number of READs, which a fixed-offset check calls none once the offset exceeds three. The proven controller associates words with READs through an in-order FIFO, which an offset would defeat as much as it defeats this check unless the offset is zero, so the next measurement is how many READs back the delivered burst is, with the lag classifier deepened past three, and whether that offset is set at start-up and differs per lane."
+  sources:
+    - "TinyVCMI fpga/ddr3_write/wr_core.v (rb_fall, tr_reads, status5, command 0x31) and fpga/ddr3_write/tb_wr.v"
+    - "TinyVCMI tools/ddr3_write_probe.py train"
+    - "TinyVCMI tools/ddr3_write.py --vendor --place-option 3 --route-option 1"
+  verification: "The open image, .bin SHA-256 49fc517b642db04d4d5a90da0392fe4b7adec57efba8212931e72b4d499a7e0c, closing PCLK at 113.38 MHz, and its Gowin build, .bin SHA-256 74bf2ed439c5b8d59ed88cdd03471e9a39f5d3507a16a1073ee2e7004cfe644e, closing PCLK at 105.429 MHz with no negative slack after Gowin's default options had missed at 90.883 MHz, equal on all 306 DDR3 tables, were each loaded on the Tang Console 138K on 2026-10-24, calibrated within one cycle of all eligible cycles on every lane and trained. The read-delay sweep moved lanes 2 and 3 together with RMOVE in single steps and returned them to their starting point. The image bench checks that the training counters follow the random READs and that frame 0x31 carries them. The desktop core was restored and answered 0x54."
 
 - record_id: PROV-001
   topic_id: PROV

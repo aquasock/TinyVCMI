@@ -35,6 +35,12 @@ chosen over the link.  This tool opens TinyTang's `fpgapipe` once and:
   random      closed-page single READs to those rows (mode 4): rd_check's
               latency histogram and per-READ check; --sweep-gate repeats it
               at every read delay and gate offset
+  train       per-lane read training by the proven controller's rule (TOOL-036):
+              step the READ gate from earliest to latest, at each sweep RCLKSEL
+              0..7 on every lane not yet locked, pass a lane when its RVALID-
+              high cycles and RBURST pulses each equal the READs issued, and
+              lock it at the second passing RCLKSEL in a row (frame 0x31); then
+              check the trained settings with the lag classifier
   lag         closed-page single READs with each lane's own READ gate delay,
               gate offset and RCLKSEL (commands 0x2C, 0x2D, 0x2E); at each
               check offset in --lats, which READ's pattern every lane held --
@@ -182,6 +188,17 @@ class Core:
                 "rclksel": [(sel >> (3 * n)) & 7 for n in range(4)],
                 "rv": [u32(109 + 4 * lane) for lane in range(4)],
                 "rv_held": b[125] & 1}
+
+    def train_counts(self) -> dict:
+        """Read-training counters, command 0x31: 40 payload bytes."""
+        r = self.request(0x31, expect=4 + 40)
+        if r[2] != 0x07 or r[3] != 40:
+            raise RuntimeError(f"training frame is {r[2]:#04x}/{r[3]}, expected 0x07/40")
+        b = r[4:]
+        u32 = lambda o: int.from_bytes(b[o:o + 4], "little")
+        return {"reads": u32(0), "cycles": u32(4),
+                "rv": [u32(8 + 4 * lane) for lane in range(4)],
+                "rb": [u32(24 + 4 * lane) for lane in range(4)]}
 
     def set_lanes(self, delays, gates, rclksels):
         """Each lane's READ gate delay, gate offset and RCLKSEL."""
@@ -651,6 +668,18 @@ def main() -> int:
     lg.add_argument("--rvalid", action="store_true",
                     help="check each lane's word held from its last RVALID cycle (0x29)")
     lg.add_argument("--slips", type=int, nargs=4, default=[0, 0, 0, 4])
+    tr = sub.add_parser("train", help="per-lane read training by the vendor's rule (0x31)")
+    tr.add_argument("--row", type=lambda x: int(x, 0), default=0)
+    tr.add_argument("--prewrite", action="store_true")
+    tr.add_argument("--gap", type=int, default=40, help="PCLK between READs, at least 8")
+    tr.add_argument("--seconds", type=float, default=0.03, help="random mode per setting")
+    tr.add_argument("--tol", type=int, default=2,
+                    help="counts may differ from the READs by this much (window edges)")
+    tr.add_argument("--max-pos", type=int, default=31,
+                    help="last gate position, 4 x delay + offset")
+    tr.add_argument("--lats", type=int, nargs="+", default=list(range(14, 26)),
+                    help="check offsets for the lag check of the trained settings")
+    tr.add_argument("--verbose", action="store_true", help="one line per setting tried")
     pw = sub.add_parser("prewrite")
     pw.add_argument("--row", type=lambda x: int(x, 0), default=0)
     pw.add_argument("--write-ms", type=float, default=5)
@@ -862,6 +891,62 @@ def main() -> int:
             core.request(0x22, args.read_delay)
             if failures and not args.sweep_gate:
                 raise RuntimeError(f"{failures} random session(s) failed")
+        elif args.cmd == "train":
+            if args.prewrite:
+                prewrite(core, args.row, 0.2)
+            core.request(0x0E, RC_PATTERNS[0])
+            core.mode(3)                        # a read stream to align in
+            core.settle()
+            align_framing(core, RC_PATTERNS[0])
+            core.mode(0)
+            core.address(0, args.row & ~1)
+            core.set_slips([0, 0, 0, 4])
+            core.request(0x09, max(args.gap, 8))
+            core.request(0x29, 1)
+            locked = [None] * 4
+            tried = 0
+            for pos in range(args.max_pos + 1):
+                d, k = divmod(pos, 4)
+                prev = [False] * 4
+                for rs in range(8):
+                    sets = [locked[n] if locked[n] else (d, k, rs) for n in range(4)]
+                    core.set_lanes([x[0] for x in sets], [x[1] for x in sets], [x[2] for x in sets])
+                    core.mode(4)                # entering random mode arms the counters
+                    time.sleep(args.seconds)
+                    core.mode(0)
+                    c = core.train_counts()
+                    tried += 1
+                    n = c["reads"]
+                    ok = [n > 100 and abs(c["rv"][l] - n) <= args.tol and abs(c["rb"][l] - n) <= args.tol
+                          for l in range(4)]
+                    if args.verbose:
+                        print(f"gate {pos:2d} (delay {d} k {k}) rclksel {rs}: {n} READs; "
+                              + "  ".join(f"L{l} rv {c['rv'][l] / max(n, 1):5.2f} rb {c['rb'][l] / max(n, 1):5.2f}"
+                                          f"{' pass' if ok[l] else '     '}" for l in range(4)))
+                    for l in range(4):
+                        if locked[l] is None:
+                            if ok[l] and prev[l]:
+                                locked[l] = (d, k, rs)
+                                print(f"lane {l} locked at gate {pos} (delay {d} k {k}) rclksel {rs}")
+                            prev[l] = ok[l]
+                if all(locked):
+                    break
+            print(f"{tried} settings tried; trained (delay, k, rclksel) per lane: {locked}")
+            if all(locked):
+                core.set_lanes([x[0] for x in locked], [x[1] for x in locked], [x[2] for x in locked])
+                own = [0.0] * 4
+                for lat in args.lats:
+                    core.request(0x26, lat)
+                    core.mode(4)
+                    time.sleep(0.15)
+                    core.mode(0)
+                    g = core.lag()
+                    n = g["eval"] or 1
+                    shares = [100.0 * g["lag"][l][0] / n for l in range(4)]
+                    own = [max(own[l], shares[l]) for l in range(4)]
+                    print(f"lat {lat:2d}: own % " + " ".join(f"{v:5.1f}" for v in shares)
+                          + "   RVALID % " + " ".join(f"{100.0 * v / (g['cycles'] or 1):5.1f}" for v in g["rv"]))
+                print("best own % per lane: " + " ".join(f"{v:5.1f}" for v in own))
         elif args.cmd == "lag":
             if args.prewrite:
                 prewrite(core, args.row, 0.2)
