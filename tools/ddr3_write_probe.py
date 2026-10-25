@@ -307,6 +307,9 @@ class Core:
         self.request(0x21, row >> 8)
 
     def move(self, lane: int, up: bool, count: int = 1):
+        """RMOVE pulses on one lane with RDIR = up.  RDIR = 1 lowers the read
+        tap (TOOL-041), so "up" here moves toward tap 0, the end of the range
+        where further steps are lost and which this tool calls the top."""
         for _ in range(count):
             self.request(0x07, (1 << (4 + lane)) | int(up))
 
@@ -1110,6 +1113,10 @@ def main() -> int:
     tr.add_argument("--log-lat", type=int, default=20, help="the log's check offset")
     tr.add_argument("--log-skip", type=int, default=1,
                     help="READs passed over before the log, in 1024s")
+    tr.add_argument("--vendor-delay", action="store_true",
+                    help="before training, set every lane's read delay as the proven controller's "
+                         "u_init_rmove_mod does: RLOADN loads the DLL STEP code, then STEP - 4 RMOVE "
+                         "pulses with RDIR = 1 leave the tap at 4 (TOOL-041)")
     tr.add_argument("--vendor-search", action="store_true",
                     help="train as the proven controller does (TOOL-039): gate outer, CALIB 0..8, "
                          "RCLKSEL inner, a lane passing only with one RVALID and one RBURST per READ "
@@ -1351,6 +1358,13 @@ def main() -> int:
             core.set_slips([0, 0, 0, 4])
             core.request(0x09, max(args.gap, 8))
             core.request(0x29, 1)
+            if args.vendor_delay:
+                step = core.status()["step"]
+                core.request(0x0A)              # RLOADN: every lane's tap back to STEP
+                for lane in range(4):
+                    core.move(lane, True, max(step - 4, 0))   # RDIR = 1: down a tap each
+                print(f"read delay set as the vendor does: STEP {step}, {max(step - 4, 0)} RMOVE "
+                      "pulses at RDIR = 1 on every lane, tap 4")
             if args.vendor_search:
                 locked, tried = vendor_search(core, args)
             else:

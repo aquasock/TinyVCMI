@@ -2096,3 +2096,34 @@ Take Codex's decoding of `u_init_rmove_mod` and any other start-up step the prov
 - User Test: N/A
 
 ---
+
+## 64 COMMIT Unreleased 2026-10-25T10:10:42-07:00
+
+#### Coming From:
+
+Unreleased e8cf2fe
+
+#### Purpose:
+
+Apply the proven controller's start-up read-delay rule, decoded from its netlist by the second agent, before the vendor-style read training and find out whether it lets all four DDR3 lanes reach the vendor's read-calibration state.
+
+#### Outcome:
+
+At the user's direction Codex decoded the proven controller's `u_init_rmove_mod` read-only, with cut simulations in its own temporary directory: RLOADN loads each lane's read tap with the DLL `STEP` code, and after write leveling and before read calibration every lane receives `STEP - 4` RMOVE pulses at `RDIR = 1`, leaving tap 4; it also reported fixed `RD_PNTR`, `WLOADN` held low, and HOLD pulses on unconfigured lanes during write leveling and read calibration. `tools/ddr3_write_probe.py train --vendor-delay` now applies that start, and `Core.move` documents the direction. No image changed: the cycle-62 images ran on the Tang six times, every load calibrating cleanly. With `STEP` 43, 39 pulses put every lane at tap 4, and the vendor-style search with centring trained lane 3 alone in three of four loads and none in the fourth, each trained lane reading 100.0% own after centring; one such lane moved exactly four `RDIR = 1` steps before its delay stopped, which shows on the board that `RDIR = 1` lowers the tap, so entry 63's top of the range is tap 0 and the vendor's tap 4 sits 3 or 4 taps from the edge of the whole window on this board, centring moving lanes about 24 taps up. With READs every 8 PCLK instead of 40 the same training trained no lane on either image. Neither the starting tap nor the cadence explains why lanes miss the vendor's state; the remaining difference is the HOLD pulse the proven controller applies to unconfigured lanes during read calibration, which resets the DQS FIFO control that produces RVALID, and Codex is decoding its exact rule. TOOL-041 was added, TOOL-040 annotated with the direction, and `docs/ddr3-open-flow.md` gained the section. The desktop core was restored after every load and answered `0x54`. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering and active-log capacity.
+
+#### Next Steps:
+
+With Codex's decoding of the read-calibration HOLD rule checked against the netlist, add a per-lane HOLD pulse command to `fpga/ddr3_write`, gate it in simulation and against the Gowin build, drive it from the vendor-style search as the proven controller does, and measure over several loads of both images whether all four lanes then reach the vendor's state and read 100% of isolated READs; the acceptance gate for resuming controller work is unchanged. The first-load stall after a Tang reboot, the `D108` unused-pin contradiction and the `is_mipi` bug outside the DDR context remain open.
+
+#### Files Modified:
+
+- docs/ddr3-open-flow.md
+- tools/ddr3_write_probe.py
+
+#### Status:
+
+- Build: N/A
+- Deployment: PASS
+- User Test: N/A
+
+---

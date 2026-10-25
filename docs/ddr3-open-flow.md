@@ -2635,6 +2635,26 @@ not what limits it. The proven controller's remaining start-up step is the read
 delay it sets from the DLL code in `u_init_rmove_mod` before read calibration,
 being decoded next (TOOL-040).
 
+## The vendor's starting tap, and which way RDIR goes
+
+The proven controller's `u_init_rmove_mod` (decoded by the second agent from the
+netlist and a cut simulation) loads each lane's read tap with the DLL `STEP`
+code through RLOADN, then after write leveling sends `STEP - 4` RMOVE pulses at
+`RDIR = 1` to every lane, so read calibration starts at **tap 4**.
+`train --vendor-delay` does the same. On the board a lane at tap 4 moved exactly
+four `RDIR = 1` steps before stopping, so `RDIR = 1` lowers the tap and the "top
+of the range" of the previous section is tap 0; the whole window runs from tap
+0 to about 44 to 68 taps.
+
+Starting at tap 4 trained lane 3 alone in three of four loads; each trained lane
+had only 3 or 4 whole taps below it, and centring moved it about 24 taps up,
+where it read **100%** own. READs every 8 PCLK instead of 40 trained nothing.
+Neither the starting tap nor the READ cadence is what keeps lanes out of the
+vendor's state. The vendor also pulses each unconfigured lane's HOLD during read
+calibration, which in Gowin's model resets the DQS FIFO control that produces
+RVALID -- and the lanes that never train show many RVALID cycles per READ. That
+is the next change (TOOL-041).
+
 ## The controller path: a spike, and seven pieces under it
 
 ### The spike, and what it settled
