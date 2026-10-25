@@ -414,6 +414,135 @@ def slip_line(lane: int, c: dict, ents: list) -> str:
             f"{'  WHOLE' if whole else ''}")
 
 
+def lane_pass(c: dict, ents: list, lane: int, tol: int) -> tuple:
+    """(vendor's state, whole bursts) for one lane from counters and a READ log."""
+    n = c["reads"]
+    state = n > 100 and abs(c["rv"][lane] - n) <= tol and abs(c["rb"][lane] - n) <= tol
+    if not state or not ents:
+        return state, False
+    own = sum(e["lanes"][lane]["pins"] and e["lanes"][lane]["pat"] == RC_PATTERNS[e["loc"]]
+              for e in ents) / len(ents)
+    _, _, srcs = beat_map(ents, lane)
+    return state, srcs is not None and all(srcs[b] == str(b) for b in range(8)) and own >= 0.99
+
+
+def vendor_search(core: "Core", args) -> tuple:
+    """The proven controller's read training (TOOL-036, TOOL-039).
+
+    For each gate position from earliest, nine RCLKSEL sweeps 0..7; after
+    every sweep that leaves a lane unlocked, one CALIB pulse on that lane's
+    eight DQ.  A lane passes a setting with one RVALID cycle and one RBURST
+    pulse per READ and, in this host version, with whole bursts in its READ
+    log where the vendor compares a fixed read-back word; it locks at the
+    second passing RCLKSEL in a row of one sweep.
+    """
+    core.request(0x26, args.log_lat)
+    core.request(0x32, args.log_skip)
+    locked = [None] * 4
+    tried = 0
+    for pos in range(args.max_pos + 1):
+        d, k = divmod(pos, 4)
+        for cal in range(9):
+            prev = [False] * 4
+            for rs in range(8):
+                sets = [locked[n] or (d, k, rs) for n in range(4)]
+                core.set_lanes([x[0] for x in sets], [x[1] for x in sets], [x[2] for x in sets])
+                core.mode(4)                    # arms the counters and the log
+                time.sleep(args.seconds)
+                core.mode(0)
+                c = core.train_counts()
+                tried += 1
+                states = [lane_pass(c, [], l, args.tol)[0] for l in range(4)]
+                ents = (core.read_log(pages=16)
+                        if any(states[l] and locked[l] is None for l in range(4)) else [])
+                for l in range(4):
+                    if locked[l] is not None:
+                        continue
+                    state, whole = lane_pass(c, ents, l, args.tol)
+                    if args.verbose and state:
+                        print(f"gate {pos:2d} CALIB {cal} rclksel {rs}: lane {l} in the vendor's "
+                              f"state, {'whole' if whole else 'not whole'}: " + slip_line(l, c, ents))
+                    if whole and prev[l]:
+                        locked[l] = (d, k, rs)
+                        print(f"lane {l} locked at gate {pos} (delay {d} k {k}) rclksel {rs} "
+                              f"after {cal} CALIB pulse(s) at this gate", flush=True)
+                    prev[l] = whole
+            if all(locked):
+                return locked, tried
+            for l in range(4):
+                if locked[l] is None:
+                    for pin in range(8):
+                        core.request(0x08, 8 * l + pin)
+    return locked, tried
+
+
+def center_delay(core: "Core", args, sets: list, locked: list, reach: int = 64):
+    """Centre each trained lane's read delay in its window of whole bursts.
+
+    From the trained point the delay is stepped down one RMOVE at a time to
+    the first setting that fails -- not the vendor's state, or not whole --
+    and back, then up the same way to at most `reach` steps.  The upward run
+    may end against the top of the delay's range, where RMOVE stops moving it
+    (on the board an unanchored return of 64 steps has landed below the lower
+    edge), so the lane is then stepped down again from wherever it is to the
+    lower edge, which is a physical place, and set relative to it, at the
+    middle of its window.  When no upper edge was found the window's top is
+    the highest setting the delay reached: on the board the calibration has
+    left lanes at the top of the delay's range, where up steps do not move it
+    at all.  The down steps to the lower edge, against those commanded,
+    measure that saturation.  The lane is checked where it is left.
+    """
+    core.request(0x26, args.log_lat)
+    core.request(0x32, args.log_skip)
+
+    def ok(lane):
+        c, ents = slip_point(core, args, sets)
+        return lane_pass(c, ents, lane, args.tol) == (True, True)
+
+    def down_to_edge(lane, limit):
+        steps = 0
+        while steps < limit:
+            core.move(lane, False)
+            steps += 1
+            if not ok(lane):
+                return steps                # now one below the lowest whole setting
+        return None
+
+    for lane in range(4):
+        if not locked[lane]:
+            continue
+        if not ok(lane):
+            print(f"lane {lane}: not whole at its trained delay; not centred")
+            continue
+        d1 = down_to_edge(lane, reach)
+        if d1 is None:
+            print(f"lane {lane}: whole for {reach} steps down; left {reach} below its trained delay "
+                  "and not centred")
+            continue
+        core.move(lane, True, d1)           # back to the trained point, the path just walked
+        up = 0
+        while up < reach:
+            core.move(lane, True)
+            if not ok(lane):
+                break
+            up += 1
+        commanded = up + (1 if up < reach else 0)
+        d2 = down_to_edge(lane, commanded + d1 + 8)
+        if d2 is None:
+            print(f"lane {lane}: lower edge not found again; left where it is")
+            continue
+        lost = commanded + d1 - d2          # up steps that did not move the delay
+        above = up if up < reach else up - lost       # whole settings reached above the trained one
+        width = d1 + above                  # whole settings from the lower edge to the top
+        target = (width + 1) // 2           # up from the first failing setting
+        core.move(lane, True, target)
+        good = ok(lane)
+        top = "upper edge" if up < reach else ("top of the delay's range" if lost else f"reach {reach}")
+        print(f"lane {lane}: whole {d1 - 1} below its trained delay and {above} above, to the {top}; "
+              f"{lost} up step(s) did not move the delay; centred {target - d1:+d}, "
+              f"{'whole' if good else 'NOT whole'} there", flush=True)
+
+
 def calib_fix(core: "Core", args, sets: list, locked: list, max_pulses: int = 16):
     """CALIB each trained lane until its log shows whole bursts in the vendor's state.
 
@@ -764,38 +893,71 @@ def other_pattern(pattern: int) -> int:
 
 
 def sweep_and_center(core: Core, pattern: int, write_s: float,
-                     ratio: float = 0.75) -> list[int]:
-    """Sweep signed delay positions with alternating data to reject stale words."""
+                     ratio: float = 0.75) -> list:
+    """Sweep signed delay positions with alternating data to reject stale words.
+
+    A lane whose passing run reaches the sweep's last position has met the top
+    of the delay's range, where RMOVE stops moving it (TOOL-040): the commanded
+    middle of that run would sit at the top, at the edge of the eye.  Such a
+    lane is walked down from the top, a step at a time, to its lower edge and
+    placed in the middle of what it can reach, and is kept as an offset below
+    the top, which RLOADN does not change: placed again by driving it up to the
+    top and back down.
+    """
+    def stream_pass(index, lane):
+        test_pattern = pattern if index % 2 == 0 else alternate
+        write_address(core, 0, 0, test_pattern, write_s)
+        core.mode(3)
+        s = core.settle()
+        core.mode(0)
+        return passing(s, lane, ratio)
+
+    def place(lane, where):
+        kind, n = where
+        if kind == "below top":
+            core.move(lane, True, 255)
+            core.move(lane, False, n)
+        else:
+            core.move(lane, n >= 0, abs(n))
+
     core.mode(0)
     alternate = other_pattern(pattern)
     centers = []
     for lane in range(4):
         core.request(0x0A)
-        for previous, center in enumerate(centers):
-            core.move(previous, center >= 0, abs(center))
+        for previous, where in enumerate(centers):
+            place(previous, where)
         core.move(lane, False, 128)
         results = []
         for index in range(256):
-            test_pattern = pattern if index % 2 == 0 else alternate
-            write_address(core, 0, 0, test_pattern, write_s)
-            core.mode(3)
-            s = core.settle()
-            results.append(passing(s, lane, ratio))
-            core.mode(0)
+            results.append(stream_pass(index, lane))
             if index != 255:
                 core.move(lane, True)
         start, width = longest_run(results)
         if width == 0:
             raise RuntimeError(f"lane {lane} has no passing read-delay position")
-        center = -128 + start + width // 2
-        centers.append(center)
         fails = 256 - sum(results)
-        print(f"lane {lane}: pass window start {start - 128:+d}, width {width}, "
-              f"center {center:+d}, "
-              f"failed positions {fails}")
+        if results[-1]:
+            # at the top now: walk down to the lower edge
+            core.move(lane, True, 255)
+            down = 0
+            while down < 255:
+                core.move(lane, False)
+                if not stream_pass(down + 1, lane):
+                    break
+                down += 1
+            below = (down + 1) // 2
+            centers.append(("below top", below))
+            print(f"lane {lane}: passes to the top of the delay's range, {down} step(s) down to "
+                  f"its lower edge; placed {below} below the top, failed positions {fails}")
+        else:
+            center = -128 + start + width // 2
+            centers.append(("from default", center))
+            print(f"lane {lane}: pass window start {start - 128:+d}, width {width}, "
+                  f"center {center:+d}, failed positions {fails}")
     core.request(0x0A)
-    for lane, center in enumerate(centers):
-        core.move(lane, center >= 0, abs(center))
+    for lane, where in enumerate(centers):
+        place(lane, where)
     return centers
 
 
@@ -948,6 +1110,13 @@ def main() -> int:
     tr.add_argument("--log-lat", type=int, default=20, help="the log's check offset")
     tr.add_argument("--log-skip", type=int, default=1,
                     help="READs passed over before the log, in 1024s")
+    tr.add_argument("--vendor-search", action="store_true",
+                    help="train as the proven controller does (TOOL-039): gate outer, CALIB 0..8, "
+                         "RCLKSEL inner, a lane passing only with one RVALID and one RBURST per READ "
+                         "and whole bursts in its READ log")
+    tr.add_argument("--center", action="store_true",
+                    help="after training, centre each trained lane's read delay in its window of "
+                         "whole bursts in the vendor's state")
     tr.add_argument("--calib-fix", action="store_true",
                     help="after training, CALIB each trained lane, one pulse at a time, until its "
                          "READ log shows whole bursts in the vendor's state; then the lag check")
@@ -1047,8 +1216,9 @@ def main() -> int:
             core.settle()
             align_framing(core, args.pattern)
             centers = sweep_and_center(core, args.pattern, 0.001, args.pass_ratio)
-            print("read-delay centers: " +
-                  " ".join(f"L{n}={v:+d}" for n, v in enumerate(centers)))
+            print("read-delay centers: " + " ".join(
+                f"L{n}={v:+d}" if kind == "from default" else f"L{n}=top-{v}"
+                for n, (kind, v) in enumerate(centers)))
             if args.sessions:
                 write_address(core, 0, 0, args.pattern, args.write_ms / 1000)
                 verify_sessions(core, args.pattern, args.sessions, args.pass_ratio)
@@ -1181,34 +1351,37 @@ def main() -> int:
             core.set_slips([0, 0, 0, 4])
             core.request(0x09, max(args.gap, 8))
             core.request(0x29, 1)
-            locked = [None] * 4
-            tried = 0
-            for pos in range(args.max_pos + 1):
-                d, k = divmod(pos, 4)
-                prev = [False] * 4
-                for rs in range(8):
-                    sets = [locked[n] if locked[n] else (d, k, rs) for n in range(4)]
-                    core.set_lanes([x[0] for x in sets], [x[1] for x in sets], [x[2] for x in sets])
-                    core.mode(4)                # entering random mode arms the counters
-                    time.sleep(args.seconds)
-                    core.mode(0)
-                    c = core.train_counts()
-                    tried += 1
-                    n = c["reads"]
-                    ok = [n > 100 and abs(c["rv"][l] - n) <= args.tol and abs(c["rb"][l] - n) <= args.tol
-                          for l in range(4)]
-                    if args.verbose:
-                        print(f"gate {pos:2d} (delay {d} k {k}) rclksel {rs}: {n} READs; "
-                              + "  ".join(f"L{l} rv {c['rv'][l] / max(n, 1):5.2f} rb {c['rb'][l] / max(n, 1):5.2f}"
-                                          f"{' pass' if ok[l] else '     '}" for l in range(4)))
-                    for l in range(4):
-                        if locked[l] is None:
-                            if ok[l] and prev[l]:
-                                locked[l] = (d, k, rs)
-                                print(f"lane {l} locked at gate {pos} (delay {d} k {k}) rclksel {rs}")
-                            prev[l] = ok[l]
-                if all(locked):
-                    break
+            if args.vendor_search:
+                locked, tried = vendor_search(core, args)
+            else:
+                locked = [None] * 4
+                tried = 0
+                for pos in range(args.max_pos + 1):
+                    d, k = divmod(pos, 4)
+                    prev = [False] * 4
+                    for rs in range(8):
+                        sets = [locked[n] if locked[n] else (d, k, rs) for n in range(4)]
+                        core.set_lanes([x[0] for x in sets], [x[1] for x in sets], [x[2] for x in sets])
+                        core.mode(4)                # entering random mode arms the counters
+                        time.sleep(args.seconds)
+                        core.mode(0)
+                        c = core.train_counts()
+                        tried += 1
+                        n = c["reads"]
+                        ok = [n > 100 and abs(c["rv"][l] - n) <= args.tol and abs(c["rb"][l] - n) <= args.tol
+                              for l in range(4)]
+                        if args.verbose:
+                            print(f"gate {pos:2d} (delay {d} k {k}) rclksel {rs}: {n} READs; "
+                                  + "  ".join(f"L{l} rv {c['rv'][l] / max(n, 1):5.2f} rb {c['rb'][l] / max(n, 1):5.2f}"
+                                              f"{' pass' if ok[l] else '     '}" for l in range(4)))
+                        for l in range(4):
+                            if locked[l] is None:
+                                if ok[l] and prev[l]:
+                                    locked[l] = (d, k, rs)
+                                    print(f"lane {l} locked at gate {pos} (delay {d} k {k}) rclksel {rs}")
+                                prev[l] = ok[l]
+                    if all(locked):
+                        break
             print(f"{tried} settings tried; trained (delay, k, rclksel) per lane: {locked}")
             # TOOL-037: often only some lanes lock in a load, and those are
             # the ones whose lag matters; an unlocked lane is checked at the
@@ -1221,6 +1394,8 @@ def main() -> int:
                 core.set_lanes([x[0] for x in sets], [x[1] for x in sets], [x[2] for x in sets])
                 if args.calib_fix:
                     calib_fix(core, args, sets, locked)
+                if args.center:
+                    center_delay(core, args, sets, locked)
                 own = [0.0] * 4
                 # per lane, the (share, lag, lat) of its most frequent class
                 # other than none, over every check offset

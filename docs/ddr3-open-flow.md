@@ -2610,6 +2610,31 @@ moving a lane's gate can lose the vendor's state even at its trained setting.
 What remains is that training reaches the vendor's state on only some lanes, and
 on none in some open loads (TOOL-039).
 
+## The vendor's search, the top of the read delay, and one lane per load
+
+`ddr3_write_probe.py train --vendor-search` now searches as the proven
+controller does: gate positions outer, nine RCLKSEL sweeps per position with a
+CALIB pulse on a still-unlocked lane after each, and a lane passes only in the
+vendor's RVALID/RBURST state **and** with whole bursts in its READ log. Over
+twelve loads it trained 10 of 48 lane-loads -- once three lanes in one load, more
+often one, and in five loads none.
+
+Centring the trained lanes exposed the top of the read delay: RMOVE up steps
+stop moving it, so a centring that walks up and back by count lands below the
+window (three trained lanes came back at 0 to 55%). Every lane's stream
+calibration passes up to the end of its sweep for the same reason, and walking
+down from the top the lower edge is 44 to 56 steps below it on the control and
+58 to 68 on the open image, the same in every load of an image. Calibration now
+parks each lane in the middle of that reachable window, and `--center` anchors
+on the lower edge and centres on the reachable window; every lane centred that
+way read **100.0%** own in the lag check.
+
+Parking the lanes mid-window did not make training reach the vendor's state any
+more often (0, 1, 1 and 1 lanes over four loads), so the read delay's position is
+not what limits it. The proven controller's remaining start-up step is the read
+delay it sets from the DLL code in `u_init_rmove_mod` before read calibration,
+being decoded next (TOOL-040).
+
 ## The controller path: a spike, and seven pieces under it
 
 ### The spike, and what it settled

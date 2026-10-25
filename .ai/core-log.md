@@ -2065,3 +2065,34 @@ Bring for approval a read training that copies the proven controller's search, g
 - User Test: N/A
 
 ---
+
+## 63 COMMIT Unreleased 2026-10-25T09:25:11-07:00
+
+#### Coming From:
+
+Unreleased 6e0d2f7
+
+#### Purpose:
+
+Train every DDR3 lane the way the proven controller does, with CALIB inside the search and whole read-back data as a pass condition, and centre each trained lane's read delay, so that isolated READs return their own data on all four lanes of a load.
+
+#### Outcome:
+
+`tools/ddr3_write_probe.py train --vendor-search` now searches gate positions outer, nine RCLKSEL sweeps per position with one CALIB pulse on a still-unlocked lane after each, and passes a lane only with one RVALID cycle and one RBURST pulse per READ and whole bursts in its 256-READ log; `--center` centres each trained lane's read delay. No image changed: the twelve loads ran the cycle-62 images `ddr3_log.bin` and `ddr3_log_vendor.bin` on the Tang through `tools/ddr3_boot_repeat.sh`, six of each, every one calibrating cleanly. The search trained 10 of 48 lane-loads, three lanes in one control load and one or none in most others, and every lane it locked was whole at that point. The first centring returned to its start by commanded steps after a 64-step upward scan and left three trained control lanes at 0%, 26.5% and 55.1% own and a fourth at 0%, which exposed that RMOVE stops moving the read delay at the top of its range: one trained lane moved by none of 64 up steps and another by 25. Centring now re-finds the lower edge from wherever the lane is and centres on the reachable window, and every lane it centred read 100.0% own in the lag check, four over four loads. The stream calibration's sweep passes up to its last position on every lane for the same reason, its lower edge 44 to 56 steps below the top on the control and 58 to 68 on the open image, identical between loads of an image, so `sweep_and_center` now walks down from the top to that edge and parks the lane in the middle, kept as an offset below the top across RLOADN; with it training still reached the vendor's state on 0, 1, 1 and 1 lanes over four loads. Each piece was dry-run against a scripted fake core before it touched the board. TOOL-040 was added, TOOL-022's reading of the passing +127 end revised, and `docs/ddr3-open-flow.md` gained the section. At the user's direction the second agent, Codex, is decoding the proven controller's `u_init_rmove_mod` read-only. The desktop core was restored after every load and answered `0x54`. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering and active-log capacity.
+
+#### Next Steps:
+
+Take Codex's decoding of `u_init_rmove_mod` and any other start-up step the proven controller applies to the DQS blocks before read calibration, check it against the netlist, apply it before `train --vendor-search --center`, and measure over several loads of both images whether all four lanes then reach the vendor's state; once every lane trains and returns 100% of isolated READs at a fixed latency with address-derived data, the acceptance gate for resuming controller work is met. Untrained lanes in the many-RVALID state that already read 100% are a fallback to examine only if the vendor's state stays out of reach. The first-load stall after a Tang reboot, the `D108` unused-pin contradiction and the `is_mipi` bug outside the DDR context remain open.
+
+#### Files Modified:
+
+- docs/ddr3-open-flow.md
+- tools/ddr3_write_probe.py
+
+#### Status:
+
+- Build: N/A
+- Deployment: PASS
+- User Test: N/A
+
+---
