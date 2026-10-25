@@ -57,7 +57,7 @@
 //   03        status
 //   04        snapshot every lane's eight DQ words at the next PCLK
 //   05        restart everything from the power-on reset
-//   06 n      RCLKSEL = n[2:0] on every lane
+//   06 n      RCLKSEL = n[2:0] on every lane (2E sets one lane)
 //   07 a      one RMOVE pulse on the lanes in a[7:4], RDIR = a[0]
 //   08 n      one CALIB pulse on DQ n[4:0]
 //   09 n      gap of max(n,1) PCLK between gated READ groups
@@ -70,13 +70,15 @@
 //   10+n v    lane n's WSTEP = v, then a WLOADN pulse
 //   20 v      active row[7:0]
 //   21 v      active row[14:8] = v[6:0]
-//   22 n      delay DQS READ gating n[2:0] PCLK after each READ command
+//   22 n      delay DQS READ gating n[2:0] PCLK after each READ command, on
+//             every lane (2C sets one lane)
 //   23        re-arm rd_align: discard every lane's locked rotation
 //   24 n      clear the RBURST counters; n = 0 lets them run and wrap, n
 //             = 1..23 counts for 2^n PCLK, saturating at 255, then holds
 //   25 k      open each READ's DQS gate k[1:0] memory clocks later: READ[i]
 //             follows the delayed READ of this PCLK for i >= k and of the
-//             previous PCLK for i < k (bit 0 is the earliest clock)
+//             previous PCLK for i < k (bit 0 is the earliest clock), on
+//             every lane (2D sets one lane)
 //   26 n      rd_check's check offset n[4:0]
 //   27        the checker's status
 //   28 s      rd_check's expected rotation advance per READ, s[2:0]
@@ -85,6 +87,18 @@
 //   2B        burst position: for every isolated READ, which of the two known
 //             capture offsets held it and the refresh phase at that check,
 //             answered with 34 payload bytes (see status3)
+//   2C v      lane v[7:6]'s READ gating delay = v[2:0] PCLK
+//   2D v      lane v[7:6]'s READ gate offset = v[1:0] memory clocks
+//   2E v      lane v[7:6]'s RCLKSEL = v[2:0]
+//   2F        lag and RBURST level: for every isolated READ with four
+//             distinct recent patterns, which READ's pattern each lane held
+//             at the check offset, and each lane's RBURST level count,
+//             answered with 109 payload bytes (see status4)
+//
+// The proven vendor controller drives READ, RCLKSEL and HOLD per lane and
+// trains each lane's gate on an RBURST level (TOOL-033), so this image gives
+// every lane its own gate delay, gate offset and RCLKSEL; the commands that
+// set all four keep their old meaning.  The status frames report lane 0's.
 //
 // The read data path ends in rd_align, the trained read-valid boundary: it
 // locks each lane's whole-word rotation from the live stream, derotates it,
@@ -103,7 +117,7 @@
 //    4  50 MHz counter, low        5  high
 //    6  PCLK counter, low          7  high
 //    8  eligible read cycles in the last window, low    9  high
-//   10  RCLKSEL                   11  READ group length in PCLK
+//   10  lane 0's RCLKSEL          11  READ group length in PCLK
 //   12+6n  lane n {4'b0, RVALID, RBURST, RFLAG, WFLAG}
 //   13+6n  lane n {2'b0, RPOINT[2:0], WPOINT[2:0]}
 //   14+6n  lane n count in the last 65535-cycle window -- mode 1: cycles its
@@ -131,7 +145,7 @@
 //   123-126  per-lane RBURST edge count since command 0x24
 //
 // Checker status bytes (command 0x27), 127 of them, counters since the arm:
-//    0  {locked, random mode, gate k[1:0], 1'b0, step[2:0]}
+//    0  {locked, random mode, lane 0's gate k[1:0], 1'b0, step[2:0]}
 //    1  {3'b0, check offset[4:0]}
 //    2-5   READs checked        6-9   good: all lanes at the expected rotation
 //   10-13  class_ok: all lanes hold the READ's pattern
@@ -167,11 +181,11 @@ module wr_core (
     input  wire [3:0]   burst_tog,
 
     input  wire         pclk,
-    output reg  [2:0]   rclksel = 3'd0,
+    output reg  [11:0]  rclksel = 12'd0,     // lane n at [3n +: 3]
     output reg          rloadn = 1'b1,
     output reg  [3:0]   rmove = 4'b0000,
     output reg          rdir = 1'b0,
-    output reg  [3:0]   read_en = 4'b0000,
+    output reg  [15:0]  read_en = 16'd0,     // lane n's READ[3:0] at [4n +: 4]
     output reg  [31:0]  calib = 32'd0,
     output reg          wloadn = 1'b1,
     output reg  [31:0]  wstep = 32'd0,
@@ -311,7 +325,7 @@ module wr_core (
     // Settings from the link into the PCLK domain
     // ------------------------------------------------------------------
     reg [2:0] mode_req = 3'd0;
-    reg [1:0] gate_req = 2'd0;
+    reg [7:0] gate_req = 8'd0;          // lane n at [2n +: 2]
     reg [4:0] lat_req = 5'd12;
     reg [2:0] rstep_req = 3'd0;
     reg [11:0] slip_req = 12'd0;
@@ -319,14 +333,14 @@ module wr_core (
     reg [4:0] bwin_req = 5'd0;
     reg [3:0] read_pat = 4'b1111;
     reg [7:0] pat_req = 8'h1d;
-    reg [2:0] rclksel_req = 3'd0;
+    reg [11:0] rclksel_req = 12'd0;     // lane n at [3n +: 3]
     reg rdir_req = 1'b0;
     reg [3:0] rmove_mask = 4'b0000;
     reg [31:0] wstep_req = 32'd0;
     reg [31:0] calib_mask = 32'd0;
     reg [7:0] read_run_req = 8'd32;
     reg [7:0] read_gap_req = 8'd8;
-    reg [2:0] read_delay_req = 3'd3;
+    reg [11:0] read_delay_req = {4{3'd3}};  // lane n at [3n +: 3]
     reg [2:0] bank_req = 3'd0;
     reg [14:0] row_req = 15'd0;
     reg rmove_tog = 1'b0, rload_tog = 1'b0, snap_tog = 1'b0, wload_tog = 1'b0,
@@ -336,7 +350,7 @@ module wr_core (
     reg [2:0] rmove_p = 3'b000, rload_p = 3'b000, snap_p = 3'b000,
               wload_p = 3'b000, calib_p = 3'b000, bclr_p = 3'b000;
     reg [2:0] mode_p1 = 3'd0, mode_p = 3'd0;
-    reg [1:0] gate_p1 = 2'd0, gate_p2 = 2'd0;
+    reg [7:0] gate_p1 = 8'd0, gate_p2 = 8'd0;
     reg [4:0] lat_p1 = 5'd12, lat_p2 = 5'd12;
     reg [2:0] rstep_p1 = 3'd0, rstep_p2 = 3'd0;
     reg [11:0] slip_p1 = 12'd0, slip_p2 = 12'd0;
@@ -344,14 +358,14 @@ module wr_core (
     reg [4:0] bwin_p1 = 5'd0, bwin_p2 = 5'd0;
     reg [3:0] pat_p1 = 4'b1111, pat_p2 = 4'b1111;
     reg [7:0] dpat_p1 = 8'h1d;
-    reg [2:0] sel_p1 = 3'd0;
+    reg [11:0] sel_p1 = 12'd0;
     reg rdir_p1 = 1'b0;
     reg [3:0] mask_p1 = 4'b0000, mask_p2 = 4'b0000;
     reg [31:0] wstep_p1 = 32'd0;
     reg [31:0] calib_p1 = 32'd0, calib_p2 = 32'd0;
     reg [7:0] read_run_p1 = 8'd32, read_run_p2 = 8'd32;
     reg [7:0] read_gap_p1 = 8'd8, read_gap_p2 = 8'd8;
-    reg [2:0] read_delay_p1 = 3'd3, read_delay_p2 = 3'd3;
+    reg [11:0] read_delay_p1 = {4{3'd3}}, read_delay_p2 = {4{3'd3}};
     reg [2:0] bank_p1 = 3'd0, bank_p2 = 3'd0;
     reg [14:0] row_p1 = 15'd0, row_p2 = 15'd0;
     always @(posedge pclk) begin
@@ -447,12 +461,25 @@ module wr_core (
     // The DQS gate of each READ: four memory clocks, k of them late.
     // READ[i] for i >= k follows this PCLK's delayed READ and for i < k the
     // previous PCLK's, so the window starts at clock k of the delayed PCLK.
-    wire g_now = read_pipe[read_delay_p2];
-    wire g_prev = read_pipe[read_delay_p2 + 4'd1];
-    wire [3:0] gate_win = {gate_p2 > 2'd3 ? g_prev : g_now,
-                           gate_p2 > 2'd2 ? g_prev : g_now,
-                           gate_p2 > 2'd1 ? g_prev : g_now,
-                           gate_p2 > 2'd0 ? g_prev : g_now};
+    // Each lane has its own delay and k, as the proven controller's read_i.
+    wire [15:0] gate_win;
+    wire [3:0]  g_lane;
+    genvar gl;
+    generate
+        for (gl = 0; gl < 4; gl = gl + 1) begin: lane_gate
+            wire [2:0] d = read_delay_p2[3*gl +: 3];
+            wire [1:0] k = gate_p2[2*gl +: 2];
+            wire now = read_pipe[d];
+            wire prev = read_pipe[d + 4'd1];
+            assign g_lane[gl] = now;
+            // bit 3, the latest clock, always follows this PCLK's READ
+            assign gate_win[4*gl +: 4] = {now,
+                                          k > 2'd2 ? prev : now,
+                                          k > 2'd1 ? prev : now,
+                                          k > 2'd0 ? prev : now};
+        end
+    endgenerate
+    wire g_now = g_lane[0];     // the stream bookkeeping follows lane 0
 
     localparam [9:0] TREFI = 10'd700;   // 7 us, under the 7.8 us tREFI
 
@@ -499,7 +526,7 @@ module wr_core (
         rmove <= rmove_pulse ? mask_p2 : 4'b0000;
         rc_issue <= 1'b0;
         read_pipe <= {read_pipe[7:0], 1'b0};
-        read_en <= (mode == M_READ || mode == M_RAND) ? (pat_p2 & gate_win) : 4'b0000;
+        read_en <= (mode == M_READ || mode == M_RAND) ? ({4{pat_p2}} & gate_win) : 16'd0;
         if (read_count == 8'd0) begin
             read_active <= 1'b1;
             read_count <= read_run_p2;
@@ -614,7 +641,7 @@ module wr_core (
                             step_no <= 4'd3;
                         end
                         4'd3: begin
-                            read_en <= 4'b1111;
+                            read_en <= 16'hffff;
                             if (mode_p != M_LEVEL) begin
                                 dqs_drive <= 1'b0;
                                 step_no <= 4'd4;
@@ -840,6 +867,8 @@ module wr_core (
     wire [31:0]  rc_n_both, rc_n_only11, rc_n_only19, rc_n_other;
     wire [127:0] rc_pos_range;
     wire [15:0]  rc_pos_cls;
+    wire [31:0]  rc_lag_eval;
+    wire [639:0] rc_lag_cnt;
     reg          rc_arm = 1'b0, mode_rand_d = 1'b0;
     always @(posedge pclk) begin
         mode_rand_d <= (mode == M_RAND);
@@ -853,11 +882,43 @@ module wr_core (
         .refi(refi),
         .n_both(rc_n_both), .n_only11(rc_n_only11), .n_only19(rc_n_only19),
         .n_other(rc_n_other), .pos_range(rc_pos_range), .pos_cls(rc_pos_cls),
+        .lag_eval(rc_lag_eval), .lag_cnt(rc_lag_cnt),
         .locked(rc_locked), .expect_rot(rc_expect), .last_rot(rc_last_rot),
         .last_cls(rc_last_cls), .total(rc_total), .good(rc_good), .class_ok(rc_class),
         .rot_moves(rc_moves), .hist_n(rc_hist_n), .hist(rc_hist),
         .fail_seen(rc_fail), .fail_lanes(rc_fail_lanes), .fail_pat(rc_fail_pat),
         .fail_addr(rc_fail_addr), .fail_rot(rc_fail_rot), .fail_words(rc_fail_words));
+
+    // ------------------------------------------------------------------
+    // RBURST as a level, the way the proven controller samples it
+    // ------------------------------------------------------------------
+    // Its per-lane read calibration takes RBURST high only when it is high
+    // at a PCLK rising edge and at two consecutive falling edges (TOOL-033).
+    // Here that level is counted per lane for every PCLK of random mode
+    // since rd_check's arm, beside the number of cycles counted.
+    reg  [3:0]   rb_pos = 4'd0, rb_neg = 4'd0, rb_neg_r = 4'd0, rb_lvl = 4'd0;
+    reg  [127:0] rb_cnt = 128'd0;       // lane n at [32n +: 32]
+    reg  [31:0]  rb_cyc = 32'd0;
+    reg          rb_on = 1'b0;
+    integer      rbl;
+    always @(negedge pclk) begin
+        rb_neg <= rburst;
+        rb_neg_r <= rb_neg;
+    end
+    always @(posedge pclk) begin
+        rb_pos <= rburst;
+        rb_lvl <= rb_pos & rb_neg & rb_neg_r;
+        rb_on <= (mode == M_RAND);
+        if (rc_arm) begin
+            rb_cnt <= 128'd0;
+            rb_cyc <= 32'd0;
+        end else if (rb_on) begin
+            rb_cyc <= rb_cyc + 32'd1;
+            for (rbl = 0; rbl < 4; rbl = rbl + 1)
+                if (rb_lvl[rbl])
+                    rb_cnt[32*rbl +: 32] <= rb_cnt[32*rbl +: 32] + 32'd1;
+        end
+    end
 
     // ------------------------------------------------------------------
     // Phase dynamics, PCLK: how the read stream's word rotation moves
@@ -1071,7 +1132,7 @@ module wr_core (
         lane_bytes(lane_s2, good_s2, wstep_req, moves, 2),
         lane_bytes(lane_s2, good_s2, wstep_req, moves, 1),
         lane_bytes(lane_s2, good_s2, wstep_req, moves, 0),
-        read_run_req, 5'd0, rclksel_req,
+        read_run_req, 5'd0, rclksel_req[2:0],
         elig_s2, pclk_s2, free_cnt,
         pat_req,
         st_s2[5:4], st_s2[6], 1'b0, st_s2[3:0],
@@ -1118,7 +1179,7 @@ module wr_core (
         rc_good_s,                                              // 6..9
         rc_total_s,                                             // 2..5
         {3'b000, lat_req},                                      // 1
-        {rc_locked_s, rand_s, gate_req, 1'b0, rstep_req}        // 0
+        {rc_locked_s, rand_s, gate_req[1:0], 1'b0, rstep_req}   // 0
     };
 
     // Burst position (command 0x2B), 34 payload bytes: which of the two known
@@ -1138,6 +1199,33 @@ module wr_core (
         rc_n_other, rc_n_only19, rc_n_only11, rc_n_both         // 12..15, 8..11, 4..7, 0..3
     };
 
+    // Lag and RBURST level (command 0x2F), 109 payload bytes, static once
+    // random mode is left.  Little-endian, byte 0 in the low bits.
+    //    0-3     READs classified: four distinct recent patterns
+    //    4+20l+4k  lane l, lag k: the lane held the pattern of the READ k
+    //            before (k = 0 its own), k = 4 none of the four
+    //   84+4l    lane l's PCLK cycles with RBURST high as a level
+    //  100-103   random-mode PCLK cycles those were counted over
+    //  104-105   per-lane READ gating delay, lane n at [3n +: 3]
+    //  106       per-lane READ gate offset, lane n at [2n +: 2]
+    //  107-108   per-lane RCLKSEL, lane n at [3n +: 3]
+    reg [31:0]  rc_lag_eval_s = 32'd0, rb_cyc_s = 32'd0;
+    reg [639:0] rc_lag_cnt_s = 640'd0;
+    reg [127:0] rb_cnt_s = 128'd0;
+    always @(posedge sys_clk) begin
+        rc_lag_eval_s <= rc_lag_eval;   rc_lag_cnt_s <= rc_lag_cnt;
+        rb_cnt_s <= rb_cnt;             rb_cyc_s <= rb_cyc;
+    end
+    wire [871:0] status4 = {
+        {4'b0000, rclksel_req},                                 // 107..108
+        gate_req,                                               // 106
+        {4'b0000, read_delay_req},                              // 104..105
+        rb_cyc_s,                                               // 100..103
+        rb_cnt_s,                                               // 84..99
+        rc_lag_cnt_s,                                           // 4..83
+        rc_lag_eval_s                                           // 0..3
+    };
+
     // ------------------------------------------------------------------
     // The link
     // ------------------------------------------------------------------
@@ -1155,8 +1243,8 @@ module wr_core (
     reg [7:0] cmd_byte = 8'h00;
     reg response_active = 1'b0;
     reg response_is_status = 1'b0;
-    reg response_is_check = 1'b0;
-    reg response_is_pos = 1'b0;
+    reg [7:0] response_type = 8'h04;    // frame type byte
+    reg [7:0] response_len = 8'h7f;     // payload bytes
     reg [7:0] response_index = 8'd0;
     reg [1015:0] frame = 1016'd0;
 
@@ -1170,7 +1258,8 @@ module wr_core (
                     (c == 8'h0f) || (c[7:2] == 6'b000100) || (c == 8'h20) ||
                     (c == 8'h21) || (c == 8'h22) || (c == 8'h23) || (c == 8'h24) ||
                     (c == 8'h25) || (c == 8'h26) || (c == 8'h27) || (c == 8'h28) ||
-                    (c == 8'h2a) || (c == 8'h2b);
+                    (c == 8'h2a) || (c == 8'h2b) || (c == 8'h2c) || (c == 8'h2d) ||
+                    (c == 8'h2e) || (c == 8'h2f);
         end
     endfunction
 
@@ -1197,12 +1286,16 @@ module wr_core (
                     if (!response_active) begin
                         response_active <= 1'b1;
                         response_is_status <= (cmd_byte == 8'h03) || (cmd_byte == 8'h27) ||
-                                              (cmd_byte == 8'h2b);
-                        response_is_check <= (cmd_byte == 8'h27);
-                        response_is_pos <= (cmd_byte == 8'h2b);
+                                              (cmd_byte == 8'h2b) || (cmd_byte == 8'h2f);
+                        response_type <= (cmd_byte == 8'h27) ? 8'h05 :
+                                         (cmd_byte == 8'h2b) ? 8'h00 :
+                                         (cmd_byte == 8'h2f) ? 8'h06 : 8'h04;
+                        response_len <= (cmd_byte == 8'h2b) ? 8'd34 :
+                                        (cmd_byte == 8'h2f) ? 8'd109 : 8'd127;
                         response_index <= 8'd0;
                         frame <= (cmd_byte == 8'h27) ? status2 :
-                                 (cmd_byte == 8'h2b) ? {744'd0, status3} : status;
+                                 (cmd_byte == 8'h2b) ? {744'd0, status3} :
+                                 (cmd_byte == 8'h2f) ? {144'd0, status4} : status;
                         case (cmd_byte)
                             8'h04: snap_tog <= ~snap_tog;
                             8'h05: begin
@@ -1210,7 +1303,7 @@ module wr_core (
                                 mode_req <= 3'd0;
                                 moves <= 32'd0;
                             end
-                            8'h06: rclksel_req <= rx_data[2:0];
+                            8'h06: rclksel_req <= {4{rx_data[2:0]}};
                             8'h07: begin
                                 rdir_req <= rx_data[0];
                                 rmove_mask <= rx_data[7:4];
@@ -1236,13 +1329,16 @@ module wr_core (
                             8'h0f: bank_req <= rx_data[2:0];
                             8'h20: row_req[7:0] <= rx_data;
                             8'h21: row_req[14:8] <= rx_data[6:0];
-                            8'h22: read_delay_req <= rx_data[2:0];
+                            8'h22: read_delay_req <= {4{rx_data[2:0]}};
                             8'h23: arm_tog <= ~arm_tog;
                             8'h24: begin
                                 bwin_req <= rx_data > 8'd23 ? 5'd23 : rx_data[4:0];
                                 bclr_tog <= ~bclr_tog;
                             end
-                            8'h25: gate_req <= rx_data[1:0];
+                            8'h25: gate_req <= {4{rx_data[1:0]}};
+                            8'h2c: read_delay_req[3 * rx_data[7:6] +: 3] <= rx_data[2:0];
+                            8'h2d: gate_req[2 * rx_data[7:6] +: 2] <= rx_data[1:0];
+                            8'h2e: rclksel_req[3 * rx_data[7:6] +: 3] <= rx_data[2:0];
                             8'h26: lat_req <= rx_data[4:0];
                             8'h28: rstep_req <= rx_data[2:0];
                             8'h2a: begin
@@ -1264,9 +1360,8 @@ module wr_core (
                 case (response_index)
                     8'd0: tx_data <= 8'haa;
                     8'd1: tx_data <= 8'h00;
-                    8'd2: tx_data <= response_is_pos ? 8'h00 :
-                                      (response_is_check ? 8'h05 : 8'h04);
-                    8'd3: tx_data <= response_is_pos ? 8'd34 : 8'h7f;    // payload bytes
+                    8'd2: tx_data <= response_type;
+                    8'd3: tx_data <= response_len;
                     default: begin
                         tx_data <= frame[7:0];
                         frame <= frame >> 8;
@@ -1282,8 +1377,7 @@ module wr_core (
                 endcase
             end
             tx_send <= 1'b1;
-            if (response_index == (response_is_pos ? 8'd37 :
-                                   (response_is_status ? 8'd130 : 8'd4)))
+            if (response_index == (response_is_status ? response_len + 8'd3 : 8'd4))
                 response_active <= 1'b0;
             else
                 response_index <= response_index + 8'd1;

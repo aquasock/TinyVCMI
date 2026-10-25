@@ -1790,3 +1790,41 @@ Make `rd_check` compare each READ's capture per lane against the expected patter
 - User Test: N/A
 
 ---
+
+## 55 COMMIT Unreleased 2026-10-24T20:13:55-07:00
+
+#### Coming From:
+
+Unreleased 5c038ba
+
+#### Purpose:
+
+Measure on hardware which READ each lane returns for isolated READs and whether per-lane READ gates and RCLKSEL, as the proven controller drives them, make isolated READs return their own data.
+
+#### Outcome:
+
+`fpga/ddr3_write/rd_check.v` gained a lag classifier that records, per lane at the check offset, whether the lane holds its own READ's pattern, one of the three before it, or none, counting only READs whose four recent patterns are distinct; `wr_core.v` now drives each DQS block's `READ[3:0]` and `RCLKSEL[2:0]` from per-lane settings (commands `0x2C`, `0x2D`, `0x2E`, the old all-lanes commands unchanged), counts each lane's RBURST as a level sampled at a PCLK rising edge and two falling edges, and returns both in frame `0x2F`; `tools/ddr3_write.py` wires each lane's slices, `tools/ddr3_write_probe.py lag` and the new `tools/ddr3_lag_sweep.py` drive them. The checker bench gained two lag cases that a lags-swapped mutant fails, and the image bench checks 635 per-lane gates, per-lane RCLKSEL and the new frame, after a bench fault where requests sent faster than the core's replies were dropped was fixed by waiting out each reply; a host reboot interrupted one simulation run and it was repeated. The open image, SHA-256 `2360774bc9c45a40f0ef7db3148edd0f6603df33d822c5803bc7dbf15cc73b45`, closes PCLK at 126.98 MHz and equals its Gowin build on all 306 DDR3 tables, and that build, `a6822db8e33357a9abcdf1ad450643e7872871219106c7b083d7351cd4dd8bcf`, closes PCLK at 109.973 MHz with no negative slack. On the Tang both were loaded, answered `0x56` and calibrated. At period 8 and the old shared setting lanes differed sharply, lane 3 holding a recent READ's burst nearly everywhere with its answer stepping one READ per 8 offsets and lane 1 holding none; at period 40 the best lane held its own READ in 51% of READs at two offsets of every three and 3% at the third, and over all 256 per-lane delay, gate and RCLKSEL settings each lane's best own-READ share was 51.6, 51.4, 51.5 and 44.6% at different settings, never more, with the Gowin build reaching 51.2, 51.2, 51.1 and 50.0% in the same three-PCLK pattern. RBURST as a level followed the gate on every lane alike in the open build and read 0% in the Gowin build, so it is not yet a training signal. The FPGA was once found answering core 0 mid-session for an undetermined reason, and the image was reloaded and recalibrated before the period-40 runs. Tracing the proven controller's netlist then found the missing mechanism: each lane registers its deserializer word and its DQS `RVALID` once on PCLK and its read FIFO accepts the word only where that registered `RVALID` is high, while this project reads the deserializers on every cycle. TOOL-033 was revised, TOOL-030 annotated and TOOL-034 added, and `docs/ddr3-open-flow.md` gained the measurements. The desktop core was restored and answered `0x54`. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering and active-log capacity.
+
+#### Next Steps:
+
+Bring for approval an RVALID-qualified capture: register each lane's `RVALID` beside its deserializer word as the vendor does, give `rd_check` and the lag classifier a per-lane word that updates only on cycles whose registered `RVALID` is high, behind a switch that leaves today's behaviour as the default, gate it in simulation and against the Gowin build, then repeat the period-40 lag sweep on the board; per-lane training on RBURST waits until that result is in. The acceptance gate before controller work resumes is unchanged: isolated random READs return each address's own data at a fixed trained latency, measured with address-derived data. The `D108` unused-pin contradiction and the `is_mipi` bug outside the DDR context remain open.
+
+#### Files Modified:
+
+- docs/ddr3-open-flow.md
+- fpga/ddr3_write/rd_check.v
+- fpga/ddr3_write/tb_check.v
+- fpga/ddr3_write/tb_wr.v
+- fpga/ddr3_write/top.v
+- fpga/ddr3_write/wr_core.v
+- tools/ddr3_lag_sweep.py
+- tools/ddr3_write.py
+- tools/ddr3_write_probe.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: N/A
+
+---

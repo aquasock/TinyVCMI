@@ -35,6 +35,12 @@ chosen over the link.  This tool opens TinyTang's `fpgapipe` once and:
   random      closed-page single READs to those rows (mode 4): rd_check's
               latency histogram and per-READ check; --sweep-gate repeats it
               at every read delay and gate offset
+  lag         closed-page single READs with each lane's own READ gate delay,
+              gate offset and RCLKSEL (commands 0x2C, 0x2D, 0x2E); at each
+              check offset in --lats, which READ's pattern every lane held --
+              its own, one, two or three READs before, or none (frame 0x2F)
+              -- and the fraction of PCLK each lane's RBURST was high as a
+              level
 
 The aligner trains per read session, so every align case re-enters read mode
 and the tool reports the raw rotation it observes beside the locked one.  A
@@ -155,6 +161,30 @@ class Core:
         seq = int.from_bytes(b[32:34], "little")
         s["classes"] = [(seq >> (2 * i)) & 3 for i in range(8)]
         return s
+
+    def lag(self) -> dict:
+        """Lag and RBURST level frame, command 0x2F: 109 payload bytes."""
+        r = self.request(0x2F, expect=4 + 109)
+        if r[2] != 0x06 or r[3] != 109:
+            raise RuntimeError(f"lag frame is {r[2]:#04x}/{r[3]}, expected 0x06/109")
+        b = r[4:]
+        u32 = lambda o: int.from_bytes(b[o:o + 4], "little")
+        delay = int.from_bytes(b[104:106], "little")
+        sel = int.from_bytes(b[107:109], "little")
+        return {"eval": u32(0),
+                "lag": [[u32(4 + 20 * lane + 4 * k) for k in range(5)] for lane in range(4)],
+                "rb": [u32(84 + 4 * lane) for lane in range(4)],
+                "cycles": u32(100),
+                "delay": [(delay >> (3 * n)) & 7 for n in range(4)],
+                "gate": [(b[106] >> (2 * n)) & 3 for n in range(4)],
+                "rclksel": [(sel >> (3 * n)) & 7 for n in range(4)]}
+
+    def set_lanes(self, delays, gates, rclksels):
+        """Each lane's READ gate delay, gate offset and RCLKSEL."""
+        for lane in range(4):
+            self.request(0x2C, lane << 6 | (delays[lane] & 7))
+            self.request(0x2D, lane << 6 | (gates[lane] & 3))
+            self.request(0x2E, lane << 6 | (rclksels[lane] & 7))
 
     def check(self) -> dict:
         """rd_check's frame, command 0x27."""
@@ -602,6 +632,19 @@ def main() -> int:
     ps.add_argument("--read-delay", type=int, default=1)
     ps.add_argument("--gate", type=int, default=2)
     ps.add_argument("--slips", type=int, nargs=4, default=[0, 0, 0, 4])
+    lg = sub.add_parser("lag", help="which READ's pattern each lane held, per lane gate (0x2F)")
+    lg.add_argument("--row", type=lambda x: int(x, 0), default=0)
+    lg.add_argument("--prewrite", action="store_true")
+    lg.add_argument("--seconds", type=float, default=0.2)
+    lg.add_argument("--lats", type=int, nargs="+", default=[11, 19],
+                    help="check offsets, in rd_check's hist units")
+    lg.add_argument("--delay", type=int, nargs=4, default=[1, 1, 1, 1],
+                    help="READ gate delay per lane, PCLK")
+    lg.add_argument("--gate", type=int, nargs=4, default=[2, 2, 2, 2],
+                    help="READ gate offset per lane, memory clocks")
+    lg.add_argument("--rclksel", type=int, nargs=4, default=[0, 0, 0, 0])
+    lg.add_argument("--gap", type=int, default=8, help="PCLK between READs, at least 8")
+    lg.add_argument("--slips", type=int, nargs=4, default=[0, 0, 0, 4])
     pw = sub.add_parser("prewrite")
     pw.add_argument("--row", type=lambda x: int(x, 0), default=0)
     pw.add_argument("--write-ms", type=float, default=5)
@@ -813,6 +856,33 @@ def main() -> int:
             core.request(0x22, args.read_delay)
             if failures and not args.sweep_gate:
                 raise RuntimeError(f"{failures} random session(s) failed")
+        elif args.cmd == "lag":
+            if args.prewrite:
+                prewrite(core, args.row, 0.2)
+            core.request(0x0E, RC_PATTERNS[0])
+            core.mode(3)                        # a read stream to align in
+            core.settle()
+            align_framing(core, RC_PATTERNS[0])
+            core.mode(0)
+            core.address(0, args.row & ~1)
+            core.set_slips(args.slips)
+            core.set_lanes(args.delay, args.gate, args.rclksel)
+            core.request(0x09, max(args.gap, 8))  # random mode's access period
+            for lat in args.lats:
+                core.request(0x26, lat)
+                core.mode(4)                    # entering random mode arms the counters
+                time.sleep(args.seconds)
+                core.mode(0)
+                g = core.lag()
+                if lat == args.lats[0]:
+                    print(f"delay {g['delay']} gate {g['gate']} rclksel {g['rclksel']}")
+                n = g["eval"] or 1
+                lanes = "  ".join(
+                    f"L{lane} " + " ".join(f"{100.0 * c / n:5.1f}" for c in g["lag"][lane])
+                    for lane in range(4))
+                rb = " ".join(f"{100.0 * c / (g['cycles'] or 1):5.1f}" for c in g["rb"])
+                print(f"lat {lat:2d}: {g['eval']} READs, % at lag 0 1 2 3 none: {lanes}"
+                      f"   RBURST level % {rb}")
         elif args.cmd == "pos":
             if args.prewrite:
                 prewrite(core, args.row, 0.2)

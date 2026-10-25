@@ -22,7 +22,10 @@
 //   * ODT high at every WRITE and low at every READ; DQ and strobes driven
 //     at every WRITE, and nothing driven at any READ or outside the write
 //     and leveling modes while RESET# is high; nothing ever driven high
-//     before RESET# rises.
+//     before RESET# rises;
+//   * each lane's DQS READ gate follows its own delay and offset and each
+//     lane's RCLKSEL its own setting (commands 2C, 2D, 2E over 22, 25, 06),
+//     and the lag and RBURST-level counters of frame 0x2F run in random mode.
 module tb;
     reg sys_clk = 1'b0;
     always #10 sys_clk = ~sys_clk;
@@ -199,6 +202,30 @@ module tb;
     endtask
 
     integer dq_driven_at_write = 0;
+
+    // Per-lane READ gates in random mode: lanes 0 and 1 at delay 2, k 0;
+    // lane 2 at delay 5; lane 3 at delay 2, k 3.  Every gate a lane opens is
+    // compared with lane 0's: lane 2 opens 3 PCLK later, lane 3 as
+    // 1000 with lane 0's 1111 and 0111 on the next PCLK.
+    reg [15:0] re_d1 = 16'd0, re_d2 = 16'd0, re_d3 = 16'd0;
+    integer gates_seen = 0;
+    always @(posedge dut.pclk) begin
+        re_d1 <= dut.read_en; re_d2 <= re_d1; re_d3 <= re_d2;
+        if (mode == 3'd4 && dut.core.read_delay_p2 == {3'd2, 3'd5, 3'd2, 3'd2} &&
+            dut.core.gate_p2 == {2'd3, 2'd0, 2'd0, 2'd0}) begin
+            if (dut.read_en[7:4] !== dut.read_en[3:0])
+                fail("lane 1's READ gate differs from lane 0's at the same setting");
+            if (dut.read_en[11:8] !== re_d3[3:0])
+                fail("lane 2's READ gate is not lane 0's three PCLK later");
+            if (dut.read_en[3:0] == 4'b1111) begin
+                gates_seen = gates_seen + 1;
+                if (dut.read_en[15:12] !== 4'b1000)
+                    fail("lane 3's READ gate does not open at its offset 3");
+            end
+            if (re_d1[3:0] == 4'b1111 && dut.read_en[15:12] !== 4'b0111)
+                fail("lane 3's READ gate does not close one PCLK after lane 0's");
+        end
+    end
     initial begin
         wait (dut.core.istate == 4'd8);
         $display("      t=%0t power-up done", $time);
@@ -216,12 +243,34 @@ module tb;
         #30000;
         request(8'h0c, 8'h00);
         #5000;
+        request(8'h22, 8'h02);                                  // every lane's delay 2
+        #30000;                                                 // its reply
+        request(8'h25, 8'h00);                                  // every lane's k 0
+        #30000;                                                 // its reply
+        request(8'h06, 8'h03);                                  // every lane's RCLKSEL 3
+        #30000;                                                 // its reply
+        request(8'h2c, 8'h85);                                  // lane 2 delay 5
+        #30000;                                                 // its reply
+        request(8'h2d, 8'hc3);                                  // lane 3 k 3
+        #30000;                                                 // its reply
+        request(8'h2e, 8'h46);                                  // lane 1 RCLKSEL 6
+        #30000;                                                 // its reply
         request(8'h0c, 8'h04);                                  // random single READs
         #30000;
         if (dut.core.istate != 4'd12 && dut.core.istate != 4'd6) fail("not in random mode");
         if (dut.core.rc_total == 0) fail("rd_check saw no READ");
+        if (dut.rclksel !== {3'd3, 3'd3, 3'd6, 3'd3}) fail("per-lane RCLKSEL not applied");
+        if (gates_seen < 100) fail("too few per-lane READ gates compared");
+        if (dut.core.rc_lag_eval == 0) fail("no READ classified for lag");
+        if (dut.core.rb_cyc == 0) fail("the RBURST level was not counted in random mode");
         request(8'h0c, 8'h00);
         #10000;
+        if (dut.core.status4[104*8 +: 12] !== {3'd2, 3'd5, 3'd2, 3'd2} ||
+            dut.core.status4[106*8 +: 8] !== {2'd3, 2'd0, 2'd0, 2'd0} ||
+            dut.core.status4[107*8 +: 12] !== {3'd3, 3'd3, 3'd6, 3'd3})
+            fail("frame 0x2F does not carry the per-lane settings");
+        $display("      per-lane gates: %0d compared; %0d READs classified for lag over %0d PCLK",
+                 gates_seen, dut.core.rc_lag_eval, dut.core.rb_cyc);
         if (dut.core.istate != 4'd8) fail("not back in idle");
         if (row_open) fail("a row left open");
         $display("      %0d ACTIVATE, %0d WRITE, %0d READ (%0d random), %0d REFRESH, %0d leveling entries; longest refresh interval %0d ns",

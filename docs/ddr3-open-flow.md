@@ -2395,6 +2395,51 @@ PCLK rising edge and at two consecutive falling edges -- rather than counting
 its edges. The window's shape is therefore not the difference; the per-lane
 gate and RCLKSEL trained on an RBURST level are (TOOL-033).
 
+## Which READ each lane returns
+
+### Per-lane gates and a lag classifier
+
+`fpga/ddr3_write` now drives each DQS block's `READ[3:0]` and `RCLKSEL[2:0]`
+from that lane's own settings (commands `0x2C`, `0x2D`, `0x2E`; the old `0x22`,
+`0x25` and `0x06` still set all four). `rd_check` classifies, per lane, which
+READ's pattern each lane holds at the check offset -- its own, one of the three
+before it, or none -- counting only READs whose four recent patterns are
+distinct, and `wr_core` counts each lane's RBURST as a level, high at a PCLK
+rising edge and two falling edges, as the vendor samples it. Frame `0x2F` returns
+both; `tools/ddr3_write_probe.py lag` and `tools/ddr3_lag_sweep.py` drive them.
+
+### What it showed
+
+At an access period of 8 PCLK and the old shared setting the lanes are not
+alike: lane 3 holds a recent READ's burst at nearly every offset, its answer
+stepping one READ every 8 offsets; lane 1 holds none. Period 8 cannot separate
+a lost burst from a second latency 8 later, so the rest was taken at period 40.
+There the best lane holds its own READ's pattern in about 51% of READs at two
+offsets of every three and in about 3% at the third -- a three-PCLK pattern
+locked to the READ. A burst that stayed on the deserializer outputs until the
+next one would read near 100%.
+
+Over all 256 per-lane (delay, gate, RCLKSEL) settings each lane's best own-READ
+share is 51.6, 51.4, 51.5 and 44.6%, at different settings per lane, never more;
+the Gowin build of the same source tops out at 51.2, 51.2, 51.1 and 50.0% with
+the same three-PCLK pattern. Per-lane gating moves where the best share appears
+and does not lift it (TOOL-034).
+
+RBURST as a level is high 76.1% of random-mode PCLK at period 8 and 95.2% at 40,
+identically on every lane -- about two PCLK low per READ, following the gate
+rather than the data -- and 0% on the Gowin build. It is not yet a signal.
+
+### The vendor takes a word only when RVALID says so
+
+The proven controller registers each lane's deserializer outputs and its DQS
+`RVALID` once on PCLK, and its per-lane read FIFO `fifo_ctrl_gen[n]` advances
+its write pointer only from that registered `RVALID`; read data is valid when the
+FIFO is not empty. This project reads the deserializers on every cycle and
+ignores `RVALID`, which a stream of one pattern can never expose and an isolated
+READ exposes as exactly the partial, cycle-dependent validity above (TOOL-033).
+The next read path takes a lane's word only where its registered `RVALID` is
+high, and the isolated-READ check is repeated on that.
+
 ## The controller path: a spike, and seven pieces under it
 
 ### The spike, and what it settled

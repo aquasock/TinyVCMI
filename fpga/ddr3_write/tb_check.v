@@ -19,7 +19,10 @@
 //     one counted move;
 //   * a frame that moves on every READ passes when `step` predicts it;
 //   * one mis-framed pin fails only its own lane;
-//   * a second latency and spacing is measured as well.
+//   * a second latency and spacing is measured as well;
+//   * a lane that answers with the burst of the READ one, two or three
+//     before is classified at that lag, every lane separately, and a lane
+//     holding no recent READ's pattern is classified as none.
 module tb_check;
     reg pclk = 1'b0;
     always #5 pclk = ~pclk;
@@ -46,6 +49,8 @@ module tb_check;
     wire [31:0]  n_both, n_only11, n_only19, n_other;
     wire [127:0] pos_range;
     wire [15:0]  pos_cls;
+    wire [31:0]  lag_eval;
+    wire [639:0] lag_cnt;
     reg  [9:0]   refi = 10'd0;
 
     rd_check dut (
@@ -54,6 +59,7 @@ module tb_check;
         .slip_enable(slip_enable), .slip(slip), .refi(refi),
         .n_both(n_both), .n_only11(n_only11), .n_only19(n_only19),
         .n_other(n_other), .pos_range(pos_range), .pos_cls(pos_cls),
+        .lag_eval(lag_eval), .lag_cnt(lag_cnt),
         .locked(locked), .expect_rot(expect_rot), .last_rot(last_rot),
         .last_cls(last_cls), .total(total), .good(good), .class_ok(class_ok),
         .rot_moves(rot_moves), .hist_n(hist_n), .hist(hist),
@@ -94,7 +100,9 @@ module tb_check;
     integer move_by = 0;
     integer move_each = 0;          // or move it by this much every READ
     integer bad_at = -1;            // mis-frame lane 2 pin 3 at this READ
+    integer lane_lag [0:3];         // answer lane l with READ n - lag; -1 a non-pattern word
     reg [7:0] pend_pat [0:1023];
+    reg [7:0] by_no [0:4095];       // every READ's pattern by its number
     integer   pend_no [0:1023];
     integer   seed = 32'h1234;
     integer   q, r;
@@ -105,6 +113,11 @@ module tb_check;
         begin
             for (ll = 0; ll < 4; ll = ll + 1) begin
                 w = rot_at(pat, (base_rot[ll] + frame) & 7);
+                if (lane_lag[ll] < 0)
+                    w = 8'h55;
+                else if (lane_lag[ll] > 0)
+                    w = rot_at(n >= lane_lag[ll] ? by_no[n - lane_lag[ll]] : 8'h55,
+                               (base_rot[ll] + frame) & 7);
                 for (pp = 0; pp < 8; pp = pp + 1)
                     dq_q[64*ll + 8*pp +: 8] <= (pp % 2) ? ~w : w;
             end
@@ -123,6 +136,7 @@ module tb_check;
             issue_col <= r[10:4];
             pend_pat[cyc % 1024] <= rom(r[3:0]);
             pend_no[cyc % 1024] <= nissued;
+            by_no[nissued % 4096] <= rom(r[3:0]);
             nissued <= nissued + 1;
         end else begin
             pend_no[cyc % 1024] <= -1;
@@ -153,6 +167,23 @@ module tb_check;
             @(posedge pclk) arm <= 1'b0;
             frame = 0;
             move_at = -1; move_by = 0; move_each = 0; bad_at = -1;
+            lane_lag[0] = 0; lane_lag[1] = 0; lane_lag[2] = 0; lane_lag[3] = 0;
+        end
+    endtask
+
+    function [31:0] lagc(input integer ll, input integer kk);
+        lagc = lag_cnt[32 * (5 * ll + kk) +: 32];
+    endfunction
+
+    // every classified READ of lane ll at lag want, none elsewhere
+    task expect_lag(input integer ll, input integer want);
+        integer kk;
+        begin
+            for (kk = 0; kk < 5; kk = kk + 1)
+                if (lagc(ll, kk) != (kk == want ? lag_eval : 32'd0)) begin
+                    $display("      lane %0d lag %0d: %0d of %0d", ll, kk, lagc(ll, kk), lag_eval);
+                    fail("a lane classified at the wrong lag");
+                end
         end
     endtask
 
@@ -187,6 +218,7 @@ module tb_check;
 
     initial begin
         base_rot[0] = 1; base_rot[1] = 3; base_rot[2] = 6; base_rot[3] = 0;
+        lane_lag[0] = 0; lane_lag[1] = 0; lane_lag[2] = 0; lane_lag[3] = 0;
         repeat (4) @(posedge pclk);
         rst <= 1'b0;
         rearm;
@@ -200,6 +232,9 @@ module tb_check;
         if (rot_moves != 0) fail("a move counted on a still frame");
         if (fail_seen) fail("a failure kept on a clean run");
         if (last_rot != {3'd0, 3'd6, 3'd3, 3'd1}) fail("the lanes' rotations not reported");
+        // about (15/16)(14/16)(13/16) of READs have four distinct patterns
+        if (lag_eval < total / 2 || lag_eval > total) fail("too few READs classified for lag");
+        expect_lag(0, 0); expect_lag(1, 0); expect_lag(2, 0); expect_lag(3, 0);
         $display("      1: hist from 10, %0d/%0d good, rot %h", good, total, last_rot);
 
         // 2: one offset early, the words are the previous READ's
@@ -258,8 +293,25 @@ module tb_check;
         $display("      7: two-word slips 0,2,4,7: %0d/%0d good", good, total);
         slip_enable <= 1'b0;
 
+        // 8: each lane answers with a different READ's burst
+        rearm;
+        delay = 7; spacing = 8; lat <= 5'd10;
+        lane_lag[0] = 0; lane_lag[1] = 1; lane_lag[2] = 2; lane_lag[3] = 3;
+        run(300);
+        if (lag_eval < 150) fail("too few READs classified for lag");
+        expect_lag(0, 0); expect_lag(1, 1); expect_lag(2, 2); expect_lag(3, 3);
+        $display("      8: lags 0,1,2,3: %0d READs classified, lane 3 at lag 3 in %0d",
+                 lag_eval, lagc(3, 3));
+
+        // 9: a lane holding no recent READ's pattern is none
+        rearm;
+        lane_lag[2] = -1;
+        run(300);
+        expect_lag(0, 0); expect_lag(1, 0); expect_lag(2, 4); expect_lag(3, 0);
+        $display("      9: lane 2 none in %0d of %0d", lagc(2, 4), lag_eval);
+
         if (errors == 0)
-            $display("PASS  latency, lock, jump, predicted move, pin faults and lane slips as specified");
+            $display("PASS  latency, lock, jump, predicted move, pin faults, lane slips and lag as specified");
         else
             $display("FAIL  %0d error(s)", errors);
         $finish;

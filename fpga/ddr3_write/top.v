@@ -69,8 +69,8 @@ module top (
     wire [3:0] dq_tx = {4{!dq_drive}};
     wire [3:0] dqs_tx = {4{!dqs_drive}};
     wire [7:0] step;
-    wire [2:0] rclksel;
-    wire [3:0] read_en;
+    wire [11:0] rclksel;
+    wire [15:0] read_en;
     wire [31:0] calib;
     wire ddr_rst_n, cke, cs_n, ras_n, cas_n, we_n;
     wire [2:0] ba;
@@ -97,7 +97,7 @@ module top (
     wire [2:0] rp_0, wp_0;
     DQS #(.FIFO_MODE_SEL(1'b0), .RD_PNTR(3'b000), .DQS_MODE("X4"), .HWL("true")) dqs_0 (
         .DQSIN(dqsi_0), .PCLK(pclk), .FCLK(mclk),
-        .RESET(phy_rst), .READ(read_en), .RCLKSEL(rclksel), .DLLSTEP(step),
+        .RESET(phy_rst), .READ(read_en[0+:4]), .RCLKSEL(rclksel[0+:3]), .DLLSTEP(step),
         .WSTEP(wstep[0+:8]), .RLOADN(rloadn), .RMOVE(rmove[0]), .RDIR(rdir),
         .WLOADN(wloadn), .WMOVE(1'b0), .WDIR(1'b0), .HOLD(hold),
         .DQSR90(r90_0), .DQSW0(w0_0), .DQSW270(w270_0),
@@ -274,7 +274,7 @@ module top (
     wire [2:0] rp_1, wp_1;
     DQS #(.FIFO_MODE_SEL(1'b0), .RD_PNTR(3'b000), .DQS_MODE("X4"), .HWL("true")) dqs_1 (
         .DQSIN(dqsi_1), .PCLK(pclk), .FCLK(mclk),
-        .RESET(phy_rst), .READ(read_en), .RCLKSEL(rclksel), .DLLSTEP(step),
+        .RESET(phy_rst), .READ(read_en[4+:4]), .RCLKSEL(rclksel[3+:3]), .DLLSTEP(step),
         .WSTEP(wstep[8+:8]), .RLOADN(rloadn), .RMOVE(rmove[1]), .RDIR(rdir),
         .WLOADN(wloadn), .WMOVE(1'b0), .WDIR(1'b0), .HOLD(hold),
         .DQSR90(r90_1), .DQSW0(w0_1), .DQSW270(w270_1),
@@ -451,7 +451,7 @@ module top (
     wire [2:0] rp_2, wp_2;
     DQS #(.FIFO_MODE_SEL(1'b0), .RD_PNTR(3'b000), .DQS_MODE("X4"), .HWL("true")) dqs_2 (
         .DQSIN(dqsi_2), .PCLK(pclk), .FCLK(mclk),
-        .RESET(phy_rst), .READ(read_en), .RCLKSEL(rclksel), .DLLSTEP(step),
+        .RESET(phy_rst), .READ(read_en[8+:4]), .RCLKSEL(rclksel[6+:3]), .DLLSTEP(step),
         .WSTEP(wstep[16+:8]), .RLOADN(rloadn), .RMOVE(rmove[2]), .RDIR(rdir),
         .WLOADN(wloadn), .WMOVE(1'b0), .WDIR(1'b0), .HOLD(hold),
         .DQSR90(r90_2), .DQSW0(w0_2), .DQSW270(w270_2),
@@ -628,7 +628,7 @@ module top (
     wire [2:0] rp_3, wp_3;
     DQS #(.FIFO_MODE_SEL(1'b0), .RD_PNTR(3'b000), .DQS_MODE("X4"), .HWL("true")) dqs_3 (
         .DQSIN(dqsi_3), .PCLK(pclk), .FCLK(mclk),
-        .RESET(phy_rst), .READ(read_en), .RCLKSEL(rclksel), .DLLSTEP(step),
+        .RESET(phy_rst), .READ(read_en[12+:4]), .RCLKSEL(rclksel[9+:3]), .DLLSTEP(step),
         .WSTEP(wstep[24+:8]), .RLOADN(rloadn), .RMOVE(rmove[3]), .RDIR(rdir),
         .WLOADN(wloadn), .WMOVE(1'b0), .WDIR(1'b0), .HOLD(hold),
         .DQSR90(r90_3), .DQSW0(w0_3), .DQSW270(w270_3),

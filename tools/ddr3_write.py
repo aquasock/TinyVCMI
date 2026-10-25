@@ -25,7 +25,8 @@ The rest of the MPR image's description holds:
   lock, `RESET` and `UPDNCNTL` from the core, its clock from the `CLKDIV`'s
   HCLK lane;
 * every `DQS` with `HOLD`, `READ`, `RCLKSEL`, `RLOADN`, `RMOVE` and `RDIR`
-  from the core and `WLOADN` with `RLOADN`;
+  from the core and `WLOADN` with `RLOADN`, its `READ` and `RCLKSEL` its own
+  lane's, as the proven controller drives them per lane;
 * every `IDES8_MEM.CALIB` independently controlled by the core so framing can
   be measured and corrected per DQ bit;
 * every DQ, DM and strobe serializer with its four `TX` inputs high, so the
@@ -82,8 +83,8 @@ CORE = """\
     wire [3:0] dq_tx = {4{!dq_drive}};
     wire [3:0] dqs_tx = {4{!dqs_drive}};
     wire [7:0] step;
-    wire [2:0] rclksel;
-    wire [3:0] read_en;
+    wire [11:0] rclksel;
+    wire [15:0] read_en;
     wire [31:0] calib;
     wire ddr_rst_n, cke, cs_n, ras_n, cas_n, we_n;
     wire [2:0] ba;
@@ -104,7 +105,7 @@ LANE = """\
     wire [2:0] rp_{l}, wp_{l};
     DQS #(.FIFO_MODE_SEL(1'b0), .RD_PNTR(3'b000), .DQS_MODE("X4"), .HWL("true")) dqs_{l} (
         .DQSIN(dqsi_{l}), .PCLK(pclk), .FCLK(mclk),
-        .RESET(phy_rst), .READ(read_en), .RCLKSEL(rclksel), .DLLSTEP(step),
+        .RESET(phy_rst), .READ(read_en[{l4}+:4]), .RCLKSEL(rclksel[{l3}+:3]), .DLLSTEP(step),
         .WSTEP(wstep[{w}+:8]), .RLOADN(rloadn), .RMOVE(rmove[{l}]), .RDIR(rdir),
         .WLOADN(wloadn), .WMOVE(1'b0), .WDIR(1'b0), .HOLD(hold),
         .DQSR90(r90_{l}), .DQSW0(w0_{l}), .DQSW270(w270_{l}),
@@ -183,7 +184,7 @@ def render() -> str:
            "    // lane n, DQ 8n+k, IDES8_MEM output b at 64n + 8k + b",
            "    wire [255:0] dq_q;"]
     for l in pads.LANES:
-        out.append(LANE.format(l=l, l3=3 * l, w=8 * l))
+        out.append(LANE.format(l=l, l3=3 * l, l4=4 * l, w=8 * l))
         out.append(OSER_MEM.format(n=f"st{l}", src='"DQSW270"', tclk=f"w270_{l}",
                                    d="dqs_d", t="dqs_tx"))
         out.append(f"    ELVDS_IOBUF st{l}_buf (.I(st{l}_o), .OEN(st{l}_t), "
