@@ -1758,3 +1758,35 @@ Model bank 7's serializer FCLK in the nextpnr fork by creating the wire and pips
 - User Test: N/A
 
 ---
+
+## 54 COMMIT Unreleased 2026-10-24T19:20:36-07:00
+
+#### Coming From:
+
+Unreleased f54c8f3
+
+#### Purpose:
+
+Re-scope the DDR3 work away from the controller until isolated READs return their own data, by settling whether the scatter-read failure lives in the open flow or in the RTL and by tracing how the proven vendor controller drives each lane's read side.
+
+#### Outcome:
+
+At the user's direction the controller track of entry 53 was paused and its Next Steps superseded, because every passing read test streams one repeated pattern, which cannot show which READ a burst came from, while the only test that can, closed-page scatter (TOOL-030), fails. On the Tang the Gowin build of the classifier source, SHA-256 `4de328a1b9c4d4f11fffe89bfa5617fb246134b01cda44f64c2fa7a6e7c71cf6`, whose `rd_check.v` and `rd_align.v` copies are identical to the committed files and which had never been loaded for a scatter run, and the open image `c15996cbcd87b4c42e6939fdc7f1d6b5150ee70fbe36f9dc8953d062e8d7816d` were placed on the card as `ddr3_pos_vendor.bin` and `ddr3_pos.bin`, loaded with `tangload` in turn, answered core `0x56` and calibrated every lane; the Gowin build classified 0 of 59,705,132 READs at delay 1 and gate 2 and no more than 39 of 189,708 at any of the 32 gate positions, while the open build classified 5.6% in the same session, so the failure is in the RTL both flows share and not in the open flow. The new `tools/ddr3_scatter_sweep.py` then ran the open image over all 256 shared RCLKSEL, delay and gate settings, every earlier scatter run having left RCLKSEL at 0, and the best was 3.0% with the sampled RVALID and RBURST levels not following the pass rate. Failing READs mostly carried clean patterns of other rows, `0x57` most often, sometimes a different row per lane in one READ with lanes 0/1 and 2/3 paired, which is consistent with lanes delivering an earlier READ's burst and is recorded as a hypothesis. Offline, the new `tools/vendor_read_gate_trace.py` cut lane 0's READ cone out of Tang-PSX's vendor netlist and simulated it with Gowin's models: the vendor gate is the same four-clock window with the same bit order as this project's `(delay, k)` gate, but READ, RCLKSEL and HOLD are per lane, selected by a per-lane `read_i` and trained on RBURST sampled as a level, where this project shares one READ and one RCLKSEL across all lanes. Re-reading entry 53's build also overturned TOOL-032: `tools/build_ddr3_ctrl.sh` reuses the write image's constraints, nextpnr reported `Cell ddr_pll not found`, `dll not found` and `fdiv not found` as Info lines, placed the PLL at X1Y81 instead of X1Y27, and the routed write image reaches the same bank-7 sink through `X0Y30/FCLKA/HCLK00`, so no fork change is needed and the constraint fix is untested. TOOL-024, TOOL-030 and TOOL-032 were revised, TOOL-033 added, and `docs/ddr3-open-flow.md` gained the A/B, the trace and the routing correction. No image was built in this cycle, and the desktop core was restored and answered `0x54`. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering and active-log capacity.
+
+#### Next Steps:
+
+Make `rd_check` compare each READ's capture per lane against the expected patterns of READs n to n-3, which either shows lanes consistently returning an earlier READ's burst, a read-FIFO pointer question for `RLOADN` and `RPOINT`, or rules it out; split READ and RCLKSEL per lane as the vendor does and add a per-lane RBURST level sampled at a PCLK rising edge and two falling edges; gate both in simulation and against the Gowin build, then bring one board session for approval. The acceptance gate before any controller work resumes is random isolated READs returning each address's own data at a fixed trained latency, measured with address-derived rather than repeated data; after that the controller resumes with its own constraint files and a build that fails on an unmatched `INS_LOC`, then the DM mask path. The `D108` unused-pin contradiction and the `is_mipi` bug outside the DDR context remain open.
+
+#### Files Modified:
+
+- docs/ddr3-open-flow.md
+- tools/ddr3_scatter_sweep.py
+- tools/vendor_read_gate_trace.py
+
+#### Status:
+
+- Build: N/A
+- Deployment: PASS
+- User Test: N/A
+
+---

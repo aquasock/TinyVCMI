@@ -2348,6 +2348,53 @@ continues on the stream path.
 
 The desktop `tinytang.bin` was restored afterwards and answered `0x54`.
 
+## Scatter reads fail in the vendor build too
+
+### The A/B
+
+The Gowin build of the classifier source (`build/ddr3_write/vendor_control.bin`,
+SHA-256 `4de328a1…`, its copies of `rd_check.v` and `rd_align.v` identical to the
+committed files) had never been loaded for a scatter run. In one board session
+it and the open image (`c15996cb…`) were loaded in turn; both answered `0x56`,
+calibrated every lane and streamed cleanly.
+
+| Build | `pos`, delay 1, gate 2 | best of 32 (delay, gate) at gap 255 |
+|---|---|---|
+| Gowin | 0 of 59,705,132 | 39 of 189,708 |
+| open | 5.6% of 59,705,092 | 22 of 189,708 |
+
+The vendor flow reproduces the failure, so it is in the RTL both flows build,
+not in the open flow, and TOOL-022's CK-route difference is not its cause.
+
+### RCLKSEL
+
+Every earlier scatter run left RCLKSEL at 0. `tools/ddr3_scatter_sweep.py` runs
+the open image over all 256 shared RCLKSEL, delay and gate settings; the best
+pass rate is 3.0%, and the per-lane RVALID and RBURST levels sampled in random
+mode do not follow it. A shared RCLKSEL does not recover scatter reads.
+
+### What the failing READs carry
+
+Classified by rotation against the sixteen row patterns, most failing captures
+are clean patterns of *other* rows -- `0x57`, the last row `prewrite` writes,
+more than any, then `0x35`, `0x2d`, `0x3b` -- sometimes a different row on each
+lane of one READ, with lanes 0/1 and 2/3 moving in pairs as the two x16 devices
+do. That is consistent with lanes delivering an earlier READ's burst, which a
+stream of one pattern can never show. It is a hypothesis.
+
+### How the proven controller does it
+
+`tools/vendor_read_gate_trace.py` cuts lane 0's `READ` cone out of the vendor
+netlist and simulates it with Gowin's models. Each lane has its own
+`READ[3:0]`, its own `RCLKSEL[2:0]` and its own `HOLD`; `RLOADN` is shared. A
+lane's `READ` is a registered mux over the read-command pipeline selected by a
+per-lane 4-bit `read_i`: four memory clocks per READ, sliding one clock per
+step over 13 positions, with the same bit order as this project's `(delay, k)`
+gate. The per-lane calibration block samples RBURST as a level -- high at a
+PCLK rising edge and at two consecutive falling edges -- rather than counting
+its edges. The window's shape is therefore not the difference; the per-lane
+gate and RCLKSEL trained on an RBURST level are (TOOL-033).
+
 ## The controller path: a spike, and seven pieces under it
 
 ### The spike, and what it settled
@@ -2406,3 +2453,17 @@ DM has no mask path yet: `ddr3_dm` is a TBUF fed from its own serializer pair.
 Every bench caught at least one of my own mistakes before it could reach RTL:
 a four-bit declaration for single-bit command pins, a wrong ZQCL vector twice,
 and two testbench assumptions that contradicted the proven design's contract.
+
+### Why the assembled controller did not route
+
+The first reading of the routing failure -- `ddr.sys4x_clk has no route to the
+FCLK of phy.ck_ser` at X0Y30 -- blamed a missing bank-7 FCLK model. The build
+log says otherwise. `tools/build_ddr3_ctrl.sh` reuses the write image's
+`top.cst` and `open.sdc`, which name `ddr_pll`, `dll`, `fdiv`, `mclk` and
+`pclk`; in the controller those are `phy.ddr_pll`, `phy.dll`, `phy.fdiv`.
+nextpnr logged `Cell ddr_pll not found` and the others as Info lines, placed the
+PLL at X1Y81 instead of `PLL_L[0]` at X1Y27, and from there every bank-7 FCLK
+sink and the DLL's clock input failed dedicated routing. The routed write image
+reaches the same sink through `X0Y30/FCLKA/HCLK00` with the PLL at X1Y27, so the
+pip exists. The controller needs its own constraints and a build that refuses an
+unmatched `INS_LOC`; whether it then routes is untested (TOOL-032).
