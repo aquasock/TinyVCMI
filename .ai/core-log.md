@@ -2199,3 +2199,38 @@ The acceptance gate is met in the diagnostic image, so controller work can resum
 - User Test: N/A
 
 ---
+
+## 67 COMMIT Unreleased 2026-10-25T15:44:15-07:00
+
+#### Coming From:
+
+Unreleased 962e0c1
+
+#### Purpose:
+
+Move the proven host-run DDR3 read and write training into hardware in the diagnostic image, as step A1 of the approved controller cycle A, and hand the unfinished work to another agent at the user's request.
+
+#### Outcome:
+
+`fpga/ddr3_write/wr_core.v` gained `ddr3_seq`, a 50 MHz sequencer that replays the probe's training as command and argument pairs through the core's own decoder, now the shared task `exec_cmd`: the sixteen-row prewrite, per-pin framing, the tap-4 start, the gate, CALIB and RCLKSEL search with HOLD on unlocked lanes and a pass on one RVALID and one RBURST per READ and every lag-classified READ's own pattern from the existing lag counters, centring from tap 4 to the middle of the passing window, and the 64-point write alignment with each lane's rotation; command `0x38` starts or aborts it, frame `0x39` reports it, and while it runs the link may only read. `fpga/ddr3_write/tb_seq.v` with `tools/sim_ddr3_seq.sh`, now in the build's simulation gate, runs it against a model with hidden per-lane answers and recovers every one in 487 trials, and mutants without HOLD or locking on the first pass fail it; `fpga/ddr3_write/tb_wr.v` adds a start, refuse, report and abort check and a 10 ms limit, not yet run to a pass on this source; `tools/ddr3_write_probe.py` gained `hwtrain`. Gowin timing fixes in `wr_core.v` register the mode-request compares, entering a mode through a one-PCLK pause, the refresh-due compares and the RBURST pulse event; the last Gowin control built, before the last two, missed PCLK at 92.0 MHz. The image does not build in the open flow: nextpnr's heap legalizer reports no legal placement for one register or LUT, a different one each run and nearly always in `rd_check` beside the DDR3 pins, at 17% LUT use, under seeds 2 to 4, `-nowidelut`, a smaller lag classifier, with the sequencer removed, with control sets ignored, lower density, timing weight 0 and other spreading, while the committed source places at every seed tried and an unrelated one-register change to it places; edits inside `rd_check` broke it on their own, so `rd_check.v` is back at its committed version and the sequencer reads the lag counters instead of new per-lane counts, and that source still fails. The SA placer segfaults and the static placer is unsupported. With the user's approval the investigation moved into the nextpnr fork's legalizer, `common/place/placer_heap.cc` `legalise_cell`, whose random search within a growing radius ends at 10,000 attempts, about a 45-tile window, and the gowin uarch's location validity rules were next to read when the user stopped the cycle for the handoff. Separately, at the user's request a throwaway LXMF identity in the session scratchpad reached the user's TinyNode and Sideband over Reticulum; nothing of it is in the repository. The Tang was not accessed in this cycle. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering and active-log capacity.
+
+#### Next Steps:
+
+Within the user's two-hour timebox, find why the nextpnr fork's heap legalizer rejects these cells: read the gowin uarch's bel location validity checks for DFF and LUT slots, rerun the failing netlist with `--debug-placer` or instrumentation to see which rule rejects every location near the left-edge read path, and fix the rule in `aquasock/nextpnr` if it is wrong; the failing netlist is reproduced by synthesizing the committed `fpga/ddr3_write` sources. If that does not pan out, build the training into a lean controller-facing image, step A2, as the fallback. Then rebuild the Gowin control, with `--vendor-sweep` if needed, run the image bench to a pass, and only then load the image and run `ddr3_write_probe.py hwtrain` on the Tang, which the user has said is free. The mid-calibration stall, the `D108` unused-pin contradiction and the `is_mipi` bug outside the DDR context remain open.
+
+#### Files Modified:
+
+- fpga/ddr3_write/tb_seq.v
+- fpga/ddr3_write/tb_wr.v
+- fpga/ddr3_write/wr_core.v
+- tools/build_ddr3_write.sh
+- tools/ddr3_write_probe.py
+- tools/sim_ddr3_seq.sh
+
+#### Status:
+
+- Build: FAIL
+- Deployment: NOT RUN
+- User Test: N/A
+
+---

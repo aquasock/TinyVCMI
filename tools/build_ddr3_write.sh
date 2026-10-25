@@ -8,7 +8,8 @@
 # first with `tools/ddr3_write.py --vendor`.  Steps:
 #
 #   1. the manifest and the generated sources are current;
-#   2. the aligner's and the checker's unit simulations pass, and the image's simulation
+#   2. the aligner's, the checker's and the training sequencer's unit
+#      simulations pass, and the image's simulation
 #      passes against Gowin's own primitive models;
 #   3. Yosys, nextpnr, and `gowin_pack --ddr3-context`;
 #   4. tools/ddr3_image_check.py --exact-lanes against the vendor build, and
@@ -44,6 +45,7 @@ if [[ ${TINYVCMI_SKIP_SIM:-0} == 1 ]]; then
 else
     "$root/tools/sim_rd_align.sh"
     "$root/tools/sim_rd_check.sh"
+    "$root/tools/sim_ddr3_seq.sh"
     "$root/tools/sim_ddr3_write.sh"
 fi
 

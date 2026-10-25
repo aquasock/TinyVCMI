@@ -35,7 +35,9 @@
 //   * command 35 holds exactly the lanes it names for 4 x (v[7:4] + 1) PCLK,
 //     or with code 15 until a command naming no lane releases them;
 //   * the fill writes each burst's address pattern back to back across a
-//     row, and command 36 moves that data d PCLK and b beats later.
+//     row, and command 36 moves that data d PCLK and b beats later;
+//   * command 38 starts the training sequencer, which the link may then only
+//     read (frame 39), and aborts it back to idle.
 module tb;
     reg sys_clk = 1'b0;
     always #10 sys_clk = ~sys_clk;
@@ -478,6 +480,37 @@ module tb;
         end
         $display("      fill: %0d WRITEs, a row's patterns at beat %0d and, at d 2 b 3, %0d",
                  fw, fk0, fk1);
+        // the training sequencer: started, the link refused a setting while it
+        // runs but still answered its frame, and aborted back to idle
+        request(8'h0e, 8'h1d);
+        #30000;
+        request(8'h38, 8'h01);
+        #30000;
+        if (dut.core.seq_busy !== 1'b1) fail("command 0x38 did not start the training");
+        request(8'h0e, 8'h5a);
+        #30000;
+        if (dut.core.pat_req === 8'h5a) fail("the link changed a setting while the training ran");
+        rx_n = 0;
+        listen = 1;
+        request(8'h39, 8'h00);
+        idle_wait = 0;
+        while (rx_n < 44 && idle_wait < 1200000) begin
+            #1000;
+            idle_wait = idle_wait + 1000;
+        end
+        #2000;
+        listen = 0;
+        if (rx_n != 44 || rx_buf[2] !== 8'h09 || rx_buf[3] !== 8'd40 || rx_buf[4][6] !== 1'b1)
+            fail("frame 0x39 did not report the running training");
+        request(8'h38, 8'h00);
+        idle_wait = 0;
+        while (dut.core.seq_busy && idle_wait < 2000000) begin
+            #1000;
+            idle_wait = idle_wait + 1000;
+        end
+        if (dut.core.seq_busy || dut.core.seq_err !== 4'd15 || dut.core.mode !== 3'd0)
+            fail("command 0x38 0 did not abort the training back to idle");
+        $display("      training: started, refused a setting, reported over the link, aborted to idle");
         // idle mode refreshes every 7 us and waits tRFC after each, so the
         // core is given up to 2 us to be seen in its idle state
         idle_wait = 0;
@@ -506,8 +539,9 @@ module tb;
     end
 
     initial begin
-        #6000000;
-        $display("FAIL  timeout: state %0d", dut.core.istate);
+        #10000000;
+        $display("FAIL  timeout: state %0d, training state %0d busy %0d", dut.core.istate,
+                 dut.core.seq.state, dut.core.seq_busy);
         $finish;
     end
 endmodule

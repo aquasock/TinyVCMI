@@ -47,6 +47,11 @@ chosen over the link.  This tool opens TinyTang's `fpgapipe` once and:
               lane's gate +/-3 memory clocks at every RCLKSEL, and then gives
               it 1 to 7 CALIB pulses at its trained setting, reporting at each
               point its RVALID and RBURST per READ, own share and beat map
+  hwtrain     run the image's own read and write training (command 0x38) with
+              nothing set from the host, report what it found (frame 0x39),
+              then check it independently: address-data READs on all four
+              lanes with the RVALID hold at offset 20 and without it at the
+              fixed latency's offset 11, and a READ log fitted per lane
   logreport   offline, from a saved READ log: per lane, the share of READs
               that returned their own burst by location, by burst bit, by
               position in the READ sequence, by refresh phase and by the
@@ -237,6 +242,26 @@ class Core:
         return {"reads": u32(0), "cycles": u32(4),
                 "rv": [u32(8 + 4 * lane) for lane in range(4)],
                 "rb": [u32(24 + 4 * lane) for lane in range(4)]}
+
+    def seq(self) -> dict:
+        """The hardware training's result, command 0x39: 40 payload bytes."""
+        r = self.request(0x39, expect=4 + 40)
+        if r[2] != 0x09 or r[3] != 40:
+            raise RuntimeError(f"training frame is {r[2]:#04x}/{r[3]}, expected 0x09/40")
+        b = r[4:]
+        u32 = lambda o: int.from_bytes(b[o:o + 4], "little")
+        cal = int.from_bytes(b[8:10], "little")
+        rot = int.from_bytes(b[14:16], "little")
+        return {"done": b[0] >> 7, "busy": b[0] >> 6 & 1, "err": b[0] & 15, "phase": b[1] & 63,
+                "locked": b[2] & 15, "centred": b[2] >> 4, "wfound": b[3] >> 7,
+                "walign": (b[3] & 63) >> 3, "wbeat": b[3] & 7,
+                "lanes": [(b[4 + l] >> 5, b[4 + l] >> 3 & 3, b[4 + l] & 7) for l in range(4)],
+                "cal": [(cal >> (4 * l)) & 15 for l in range(4)],
+                "u": [b[10 + l] for l in range(4)],
+                "rot": [(rot >> (3 * l)) & 7 for l in range(4)],
+                "wpass": [k for k in range(64) if int.from_bytes(b[16:24], "little") >> k & 1],
+                "total": u32(24), "class": u32(28),
+                "tried": int.from_bytes(b[32:34], "little"), "cycles": u32(34)}
 
     def log_page(self, page: int) -> dict:
         """Copy READ-log page `page` (0x33) and read it (0x34): 148 payload bytes."""
@@ -1272,6 +1297,9 @@ def main() -> int:
                          "READ log shows whole bursts in the vendor's state; then the lag check")
     tr.add_argument("--sweep", action="store_true",
                     help="then sweep each trained lane's gate, RCLKSEL and CALIB, logging each point")
+    hw = sub.add_parser("hwtrain", help="the image's own training (0x38, 0x39), then checks")
+    hw.add_argument("--timeout", type=float, default=120)
+    hw.add_argument("--log", metavar="FILE", help="save the address-data READ log as JSON")
     lr = sub.add_parser("logreport", help="offline: condition a saved READ log's results")
     lr.add_argument("file")
     pw = sub.add_parser("prewrite")
@@ -1600,6 +1628,57 @@ def main() -> int:
                     log_report(json.load(open(args.log)))
                 if args.sweep:
                     slip_sweep(core, args, sets, locked)
+        elif args.cmd == "hwtrain":
+            core.request(0x38, 1)
+            t0 = time.time()
+            q = core.seq()
+            last = None
+            while not q["done"] and time.time() - t0 < args.timeout:
+                if q["phase"] != last:
+                    last = q["phase"]
+                time.sleep(0.5)
+                q = core.seq()
+            if not q["done"]:
+                core.request(0x38, 0)
+                raise RuntimeError(f"the training did not finish in {args.timeout} s, at state {q['phase']}")
+            print(f"training done in {q['cycles'] / 50e6:.2f} s, {q['tried']} trials, error {q['err']}")
+            for l in range(4):
+                d, k, rs = q["lanes"][l]
+                print(f"  lane {l}: {'locked' if q['locked'] >> l & 1 else 'NOT locked'} at delay {d} k {k} "
+                      f"rclksel {rs} after {q['cal'][l]} CALIB pulse(s) at its gate; "
+                      f"{q['u'][l]} passing taps above tap 4, "
+                      f"{'whole' if q['centred'] >> l & 1 else 'NOT whole'} centred; rotation {q['rot'][l]}")
+            print(f"  write alignment {'d %d b %d' % (q['walign'], q['wbeat']) if q['wfound'] else 'none'}; "
+                  f"passing alignments {[(k >> 3, k & 7) for k in q['wpass']]}; "
+                  f"there {q['class']} of {q['total']} READs right on all four lanes")
+            if q["err"] or q["locked"] != 15 or not q["wfound"]:
+                raise RuntimeError("the training did not complete")
+            # independent checks, at what the training left: address data on
+            for lat, rv, name in ((20, 1, "RVALID-held at offset 20"), (11, 0, "raw at offset 11"),
+                                  (12, 0, "raw at offset 12")):
+                core.request(0x29, rv)
+                core.request(0x26, lat)
+                core.mode(4)
+                time.sleep(0.3)
+                core.mode(0)
+                c = core.check()
+                print(f"  check {name}: {c['class_ok']} of {c['total']} READs held their address's "
+                      f"pattern on all four lanes")
+            core.request(0x29, 1)
+            core.request(0x26, 20)
+            core.request(0x32, 1)
+            core.mode(4)
+            time.sleep(0.3)
+            core.mode(0)
+            ents = core.read_log(adata=True)
+            for lane in range(4):
+                own = sum(e["lanes"][lane]["pins"] and e["lanes"][lane]["pat"] == exp_pat(e) for e in ents)
+                det, R, srcs = beat_map(ents, lane)
+                m = f"R={R} bits 7..0 from " + " ".join(reversed(srcs)) if srcs else "no single map"
+                print(f"  log lane {lane}: {own} of {len(ents)} READs own, {m}")
+            if args.log:
+                json.dump({"lat": 20, "skip": 1, "adata": True, "hwtrain": q, "entries": ents},
+                          open(args.log, "w"))
         elif args.cmd == "lag":
             if args.prewrite:
                 prewrite(core, args.row, 0.2)

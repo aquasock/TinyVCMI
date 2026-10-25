@@ -106,6 +106,9 @@
 //   36 v      the fill's write data, d = v[6:4] whole PCLK and b = v[2:0] beats
 //             later than its earliest place, which is a PCLK ahead of its WRITE
 //             (TOOL-043)
+//   38 v      v[0] = 1 runs the read and write training in hardware, v[0] = 0
+//             aborts it; while it runs the link may only read (TOOL-044)
+//   39        the training's result, 40 payload bytes (see status7)
 //   37 v      v[0]: address data in random mode -- bank, four row bits and the
 //             burst from the address source, and rd_check expects each READ's
 //             pattern from its whole address, as the fill writes it
@@ -499,6 +502,20 @@ module wr_core (
     reg [16:0] wcount = 17'd0;
     reg [1:0] mr_idx = 2'd0;
     reg [2:0] mode = M_IDLE;
+    // The mode request's compares, registered: in front of every pause they
+    // put the Gowin control 1.25 ns short of PCLK.  A mode is entered through
+    // a one-PCLK pause, so mode_chg has caught up with it before it is read.
+    reg mode_chg = 1'b0, mode_go = 1'b0, mode_lvl_off = 1'b0;
+    reg [3:0] mode_next = 4'd12;
+    always @(posedge pclk) begin
+        mode_chg <= (mode_p != mode);
+        mode_go <= (mode_p != M_IDLE);
+        mode_lvl_off <= (mode_p != M_LEVEL);
+        mode_next <= (mode_p == M_LEVEL) ? R_LEVEL :
+                     (mode_p == M_WRITE) ? R_WRITE :
+                     (mode_p == M_READ) ? R_READ :
+                     (mode_p == M_FILL) ? R_FILL : R_RAND;
+    end
     reg [3:0] rload_cnt = 4'd0;
     reg [3:0] wload_cnt = 4'd0;
     reg [9:0] refi = 10'd0;
@@ -609,6 +626,14 @@ module wr_core (
     wire g_now = g_lane[0];     // the stream bookkeeping follows lane 0
 
     localparam [9:0] TREFI = 10'd700;   // 7 us, under the 7.8 us tREFI
+    // The refresh compares, registered: in front of the command address they
+    // cost the Gowin control.  Every REFRESH is followed by a pause of at
+    // least 30 PCLK, so the flags have caught up before they are read again.
+    reg refi_due = 1'b0, refi_due_fill = 1'b0;
+    always @(posedge pclk) begin
+        refi_due <= (refi >= TREFI);
+        refi_due_fill <= (refi >= TREFI - 10'd160);
+    end
 
     // MR2, MR3, MR1, MR0, in issue order: {BA, A}
     function [18:0] mr_word;
@@ -741,17 +766,15 @@ module wr_core (
                 // banks precharged: refresh, or enter the requested mode
                 R_IDLE: begin
                     step_no <= 4'd0;
-                    if (refi >= TREFI) begin
+                    if (refi_due) begin
                         issue(C_REF, 3'd0, 16'h0000);
                         refi <= 10'd0;
                         pause(17'd30, R_IDLE);                  // tRFC 260 ns
-                    end else if (mode_p != M_IDLE) begin
+                    end else if (mode_go) begin
                         mode <= mode_p;
                         xs <= XS_SEED;
-                        istate <= mode_p == M_LEVEL ? R_LEVEL :
-                                  mode_p == M_WRITE ? R_WRITE :
-                                  mode_p == M_READ ? R_READ :
-                                  mode_p == M_FILL ? R_FILL : R_RAND;
+                        // through a PCLK so mode_chg compares with the new mode
+                        pause(17'd1, mode_next);
                     end
                 end
 
@@ -774,7 +797,7 @@ module wr_core (
                         end
                         4'd3: begin
                             read_en <= 16'hffff;
-                            if (mode_p != M_LEVEL) begin
+                            if (mode_lvl_off) begin
                                 dqs_drive <= 1'b0;
                                 step_no <= 4'd4;
                                 pause(17'd4, R_LEVEL);
@@ -809,7 +832,7 @@ module wr_core (
                             pause(17'd8, istate);               // tRCD, and the bus settles
                         end
                         4'd1: begin
-                            if (mode_p != mode || refi >= TREFI) begin
+                            if (mode_chg || refi_due) begin
                                 step_no <= 4'd2;
                                 pause(17'd8, istate);           // tWR / tRTP and the burst tail
                             end else if (istate == R_WRITE || read_active) begin
@@ -826,7 +849,7 @@ module wr_core (
                             pause(17'd4, istate);               // tRP
                         end
                         4'd3: begin
-                            if (mode_p != mode) begin
+                            if (mode_chg) begin
                                 // release the bus first: the serializers
                                 // carry their last beats out for a few
                                 // clocks after their enables drop
@@ -858,10 +881,10 @@ module wr_core (
                 // and tRC, and one ACTIVATE in 8 PCLK keeps tRRD and tFAW
                 R_RAND: begin
                     if (step_no == 4'd0) begin
-                        if (mode_p != mode) begin
+                        if (mode_chg) begin
                             mode <= M_IDLE;
                             istate <= R_IDLE;
-                        end else if (refi >= TREFI) begin
+                        end else if (refi_due) begin
                             issue(C_REF, 3'd0, 16'h0000);
                             refi <= 10'd0;
                             pause(17'd30, R_RAND);              // tRFC
@@ -910,13 +933,13 @@ module wr_core (
                             pause(17'd8, R_FILL);               // the bus settles
                         end
                         4'd1: begin
-                            if (mode_p != mode) begin
+                            if (mode_chg) begin
                                 dq_drive <= 1'b0;
                                 dqs_drive <= 1'b0;
                                 odt <= 1'b0;
                                 step_no <= 4'd4;
                                 pause(17'd4, R_FILL);
-                            end else if (refi >= TREFI - 10'd160) begin
+                            end else if (refi_due_fill) begin
                                 // a row takes about 150 PCLK and refreshes
                                 // wait for its end, so one is due a row early
                                 issue(C_REF, 3'd0, 16'h0000);
@@ -1127,6 +1150,10 @@ module wr_core (
     wire [3:0]   rb_t = rb_pos & rb_neg & rb_neg_r;
     reg  [31:0]  rb_cyc = 32'd0;
     reg          rb_on = 1'b0;
+    // a pulse's end, from the registered level and registered before it is
+    // counted: rb_t comes off the falling-edge flops, which left half a PCLK
+    // for its compare into all 128 counter enables in the Gowin control
+    reg  [3:0]   rb_lvl_d = 4'd0, rb_fev = 4'd0;
     integer      rbl;
     always @(negedge pclk) begin
         rb_neg <= rburst;
@@ -1135,6 +1162,8 @@ module wr_core (
     always @(posedge pclk) begin
         rb_pos <= rburst;
         rb_lvl <= rb_pos & rb_neg & rb_neg_r;
+        rb_lvl_d <= rb_lvl;
+        rb_fev <= rb_lvl_d & ~rb_lvl;
         rv_r <= rvalid;
         rb_on <= (mode == M_RAND);
         if (rc_arm) begin
@@ -1152,7 +1181,7 @@ module wr_core (
                     rb_cnt[32*rbl +: 32] <= rb_cnt[32*rbl +: 32] + 32'd1;
                 if (rv_r[rbl])
                     rv_cnt[32*rbl +: 32] <= rv_cnt[32*rbl +: 32] + 32'd1;
-                if (rb_lvl[rbl] && !rb_t[rbl])
+                if (rb_fev[rbl])
                     rb_fall[32*rbl +: 32] <= rb_fall[32*rbl +: 32] + 32'd1;
             end
         end
@@ -1495,6 +1524,58 @@ module wr_core (
     end
     wire [319:0] status5 = {rb_fall_s, rv_cnt_s, rb_cyc_s, tr_reads_s};
 
+    // ------------------------------------------------------------------
+    // The training in hardware (command 0x38 v: v[0] 1 starts, 0 aborts)
+    // ------------------------------------------------------------------
+    // The data check per lane: READs whose lane held their own pattern among
+    // those the lag classifier counts (nine distinct recent patterns, about
+    // 6% of READs), against how many it counted.  Taken from the existing
+    // counters, so rd_check is unchanged: edits there have stopped nextpnr
+    // finding a legal placement (TOOL-044).
+    wire [127:0] seq_lane_own = {rc_lag_cnt_s[32*30 +: 32], rc_lag_cnt_s[32*20 +: 32],
+                                 rc_lag_cnt_s[32*10 +: 32], rc_lag_cnt_s[0 +: 32]};
+    reg  seq_start = 1'b0, seq_abort = 1'b0, seq_ack = 1'b0;
+    wire seq_busy, seq_done, seq_req, seq_wfound;
+    wire [7:0] seq_cmd, seq_arg;
+    wire [3:0] seq_err, seq_locked, seq_centred;
+    wire [5:0] seq_phase, seq_walign;
+    wire [31:0] seq_lane_set, seq_lane_u, seq_fin_total, seq_fin_class, seq_cycles;
+    wire [15:0] seq_lane_cal, seq_tried;
+    wire [63:0] seq_wpass;
+    wire [11:0] seq_rot;
+    ddr3_seq seq (
+        .clk(sys_clk), .start(seq_start && ready), .abort(seq_abort),
+        .busy(seq_busy), .done(seq_done), .err(seq_err), .phase(seq_phase),
+        .req(seq_req), .cmd(seq_cmd), .arg(seq_arg), .ack(seq_ack),
+        .st(st_s2), .step(step_s2), .snap(snap_s2), .tr_reads(tr_reads_s),
+        .rv_cnt(rv_cnt_s), .rb_fall(rb_fall_s), .rc_total(rc_total_s), .rc_class(rc_class_s),
+        .lag_eval(rc_lag_eval_s), .lane_own(seq_lane_own), .last_rot(rc_last_rot_s),
+        .locked(seq_locked), .lane_set(seq_lane_set), .lane_cal(seq_lane_cal),
+        .lane_u(seq_lane_u), .centred(seq_centred), .wpass(seq_wpass), .walign(seq_walign),
+        .wfound(seq_wfound), .rot(seq_rot), .fin_total(seq_fin_total),
+        .fin_class(seq_fin_class), .tried(seq_tried), .cycles(seq_cycles));
+
+    // Training result (command 0x39), 40 payload bytes, little-endian.
+    //    0     {done, busy, 2'b0, err[3:0]}  (err 1/2 framing, 3 no write
+    //          alignment, 15 aborted)
+    //    1     the sequencer's state, for progress
+    //    2     {centred[3:0], locked[3:0]}
+    //    3     {write alignment found, 1'b0, alignment 8d + b}
+    //    4+l   lane l's lock {d[2:0], k[1:0], RCLKSEL[2:0]}
+    //    8-9   lane l's CALIB pulses at its gate, at [4l +: 4]
+    //   10+l   lane l's passing taps above tap 4
+    //   14-15  the lanes' read rotations at the write alignment, [3l +: 3]
+    //   16-23  the write alignments that passed, bit 8d + b
+    //   24-27  READs checked at the chosen alignment   28-31 all four lanes right
+    //   32-33  trials in the read search
+    //   34-37  sys_clk cycles since the start
+    //   38-39  0
+    wire [319:0] status7 = {16'd0, seq_cycles, seq_tried, seq_fin_class, seq_fin_total,
+                            seq_wpass, {4'd0, seq_rot}, seq_lane_u, seq_lane_cal,
+                            seq_lane_set, {seq_wfound, 1'b0, seq_walign},
+                            {seq_centred, seq_locked}, {2'd0, seq_phase},
+                            {seq_done, seq_busy, 2'b00, seq_err}};
+
     // READ log page (command 0x34), 148 payload bytes, static once random
     // mode is left and the copy (command 0x33) has finished, a few PCLK
     // after it.  Little-endian, byte 0 in the low bits.
@@ -1548,14 +1629,102 @@ module wr_core (
                     (c == 8'h29) || (c == 8'h2a) || (c == 8'h2b) || (c == 8'h2c) || (c == 8'h2d) ||
                     (c == 8'h2e) || (c == 8'h2f) || (c == 8'h31) || (c == 8'h32) ||
                     (c == 8'h33) || (c == 8'h34) || (c == 8'h35) || (c == 8'h36) ||
-                    (c == 8'h37);
+                    (c == 8'h37) || (c == 8'h38) || (c == 8'h39);
         end
     endfunction
 
     integer m;
+    // A command's effect, from the link or from the training sequencer
+    task exec_cmd(input [7:0] c, input [7:0] a);
+        begin
+                case (c)
+                    8'h04: snap_tog <= ~snap_tog;
+                    8'h05: begin
+                        restart <= 1'b1;
+                        mode_req <= 3'd0;
+                        moves <= 32'd0;
+                    end
+                    8'h06: rclksel_req <= {4{a[2:0]}};
+                    8'h07: begin
+                        rdir_req <= a[0];
+                        rmove_mask <= a[7:4];
+                        rmove_tog <= ~rmove_tog;
+                        for (m = 0; m < 4; m = m + 1)
+                            if (a[4 + m])
+                                moves[8 * m +: 8] <= a[0] ? moves[8 * m +: 8] + 8'd1
+                                                                 : moves[8 * m +: 8] - 8'd1;
+                    end
+                    8'h08: begin
+                        calib_mask <= 32'b1 << a[4:0];
+                        calib_tog <= ~calib_tog;
+                    end
+                    8'h09: read_gap_req <= a == 8'd0 ? 8'd1 : a;
+                    8'h0a: begin
+                        rload_tog <= ~rload_tog;
+                        moves <= 32'd0;
+                    end
+                    8'h0b: read_pat <= a[3:0];
+                    8'h0c: mode_req <= a[2:0] > 3'd5 ? 3'd0 : a[2:0];
+                    8'h0d: read_run_req <= a == 8'd0 ? 8'd1 : a;
+                    8'h0e: pat_req <= a;
+                    8'h0f: bank_req <= a[2:0];
+                    8'h20: row_req[7:0] <= a;
+                    8'h21: row_req[14:8] <= a[6:0];
+                    8'h22: read_delay_req <= {4{a[2:0]}};
+                    8'h23: arm_tog <= ~arm_tog;
+                    8'h24: begin
+                        bwin_req <= a > 8'd23 ? 5'd23 : a[4:0];
+                        bclr_tog <= ~bclr_tog;
+                    end
+                    8'h25: gate_req <= {4{a[1:0]}};
+                    8'h2c: read_delay_req[3 * a[7:6] +: 3] <= a[2:0];
+                    8'h2d: gate_req[2 * a[7:6] +: 2] <= a[1:0];
+                    8'h2e: rclksel_req[3 * a[7:6] +: 3] <= a[2:0];
+                    8'h29: rv_en_req <= a[0];
+                    8'h32: log_skip_req <= a;
+                    8'h36: walign_req <= {a[6:4], 1'b0, a[2:0]};
+                    8'h37: adata_req <= a[0];
+                    8'h35: begin
+                        hold_mask_req <= a[3:0];
+                        hold_len_req <= a[7:4];
+                        hold_tog <= ~hold_tog;
+                    end
+                    8'h33: begin
+                        log_page_req <= a[5:0];
+                        log_tog <= ~log_tog;
+                    end
+                    8'h26: lat_req <= a[4:0];
+                    8'h28: rstep_req <= a[2:0];
+                    8'h2a: begin
+                        slip_req[3 * a[4:3] +: 3] <= a[2:0];
+                        slip_en_req <= a[7];
+                    end
+                    default: if (c[7:2] == 6'b000100) begin
+                        wstep_req[8 * c[1:0] +: 8] <= a;
+                        wload_tog <= ~wload_tog;
+                    end
+                endcase
+        end
+    endtask
+
+    // the requests the link may still make while the sequencer runs: reads
+    function readonly;
+        input [7:0] c;
+        readonly = (c == 8'h01) || (c == 8'h03) || (c == 8'h27) || (c == 8'h2b) ||
+                   (c == 8'h2f) || (c == 8'h31) || (c == 8'h34) || (c == 8'h39);
+    endfunction
+
     always @(posedge sys_clk) begin
         tx_send <= 1'b0;
         restart <= 1'b0;
+        seq_start <= 1'b0;
+        seq_abort <= 1'b0;
+        // the sequencer's requests, in a cycle the link is not using
+        seq_ack <= 1'b0;
+        if (seq_req && !seq_ack && !rx_valid) begin
+            exec_cmd(seq_cmd, seq_arg);
+            seq_ack <= 1'b1;
+        end
 
         if (rx_valid) begin
             case (request_state)
@@ -1576,89 +1745,31 @@ module wr_core (
                         response_active <= 1'b1;
                         response_is_status <= (cmd_byte == 8'h03) || (cmd_byte == 8'h27) ||
                                               (cmd_byte == 8'h2b) || (cmd_byte == 8'h2f) ||
-                                              (cmd_byte == 8'h31) || (cmd_byte == 8'h34);
+                                              (cmd_byte == 8'h31) || (cmd_byte == 8'h34) ||
+                                              (cmd_byte == 8'h39);
                         response_type <= (cmd_byte == 8'h27) ? 8'h05 :
                                          (cmd_byte == 8'h2b) ? 8'h00 :
                                          (cmd_byte == 8'h2f) ? 8'h06 :
                                          (cmd_byte == 8'h31) ? 8'h07 :
-                                         (cmd_byte == 8'h34) ? 8'h08 : 8'h04;
+                                         (cmd_byte == 8'h34) ? 8'h08 :
+                                         (cmd_byte == 8'h39) ? 8'h09 : 8'h04;
                         response_len <= (cmd_byte == 8'h2b) ? 8'd34 :
                                         (cmd_byte == 8'h2f) ? 8'd206 :
                                         (cmd_byte == 8'h31) ? 8'd40 :
-                                        (cmd_byte == 8'h34) ? 8'd148 : 8'd127;
+                                        (cmd_byte == 8'h34) ? 8'd148 :
+                                        (cmd_byte == 8'h39) ? 8'd40 : 8'd127;
                         response_index <= 8'd0;
                         frame <= (cmd_byte == 8'h27) ? {632'd0, status2} :
                                  (cmd_byte == 8'h2b) ? {1376'd0, status3} :
                                  (cmd_byte == 8'h2f) ? status4 :
                                  (cmd_byte == 8'h31) ? {1328'd0, status5} :
-                                 (cmd_byte == 8'h34) ? {464'd0, status6} : {632'd0, status};
-                        case (cmd_byte)
-                            8'h04: snap_tog <= ~snap_tog;
-                            8'h05: begin
-                                restart <= 1'b1;
-                                mode_req <= 3'd0;
-                                moves <= 32'd0;
-                            end
-                            8'h06: rclksel_req <= {4{rx_data[2:0]}};
-                            8'h07: begin
-                                rdir_req <= rx_data[0];
-                                rmove_mask <= rx_data[7:4];
-                                rmove_tog <= ~rmove_tog;
-                                for (m = 0; m < 4; m = m + 1)
-                                    if (rx_data[4 + m])
-                                        moves[8 * m +: 8] <= rx_data[0] ? moves[8 * m +: 8] + 8'd1
-                                                                         : moves[8 * m +: 8] - 8'd1;
-                            end
-                            8'h08: begin
-                                calib_mask <= 32'b1 << rx_data[4:0];
-                                calib_tog <= ~calib_tog;
-                            end
-                            8'h09: read_gap_req <= rx_data == 8'd0 ? 8'd1 : rx_data;
-                            8'h0a: begin
-                                rload_tog <= ~rload_tog;
-                                moves <= 32'd0;
-                            end
-                            8'h0b: read_pat <= rx_data[3:0];
-                            8'h0c: mode_req <= rx_data[2:0] > 3'd5 ? 3'd0 : rx_data[2:0];
-                            8'h0d: read_run_req <= rx_data == 8'd0 ? 8'd1 : rx_data;
-                            8'h0e: pat_req <= rx_data;
-                            8'h0f: bank_req <= rx_data[2:0];
-                            8'h20: row_req[7:0] <= rx_data;
-                            8'h21: row_req[14:8] <= rx_data[6:0];
-                            8'h22: read_delay_req <= {4{rx_data[2:0]}};
-                            8'h23: arm_tog <= ~arm_tog;
-                            8'h24: begin
-                                bwin_req <= rx_data > 8'd23 ? 5'd23 : rx_data[4:0];
-                                bclr_tog <= ~bclr_tog;
-                            end
-                            8'h25: gate_req <= {4{rx_data[1:0]}};
-                            8'h2c: read_delay_req[3 * rx_data[7:6] +: 3] <= rx_data[2:0];
-                            8'h2d: gate_req[2 * rx_data[7:6] +: 2] <= rx_data[1:0];
-                            8'h2e: rclksel_req[3 * rx_data[7:6] +: 3] <= rx_data[2:0];
-                            8'h29: rv_en_req <= rx_data[0];
-                            8'h32: log_skip_req <= rx_data;
-                            8'h36: walign_req <= {rx_data[6:4], 1'b0, rx_data[2:0]};
-                            8'h37: adata_req <= rx_data[0];
-                            8'h35: begin
-                                hold_mask_req <= rx_data[3:0];
-                                hold_len_req <= rx_data[7:4];
-                                hold_tog <= ~hold_tog;
-                            end
-                            8'h33: begin
-                                log_page_req <= rx_data[5:0];
-                                log_tog <= ~log_tog;
-                            end
-                            8'h26: lat_req <= rx_data[4:0];
-                            8'h28: rstep_req <= rx_data[2:0];
-                            8'h2a: begin
-                                slip_req[3 * rx_data[4:3] +: 3] <= rx_data[2:0];
-                                slip_en_req <= rx_data[7];
-                            end
-                            default: if (cmd_byte[7:2] == 6'b000100) begin
-                                wstep_req[8 * cmd_byte[1:0] +: 8] <= rx_data;
-                                wload_tog <= ~wload_tog;
-                            end
-                        endcase
+                                 (cmd_byte == 8'h34) ? {464'd0, status6} :
+                                 (cmd_byte == 8'h39) ? {1328'd0, status7} : {632'd0, status};
+                        if (cmd_byte == 8'h38) begin
+                            seq_start <= rx_data[0];
+                            seq_abort <= !rx_data[0];
+                        end else if (!seq_busy || readonly(cmd_byte))
+                            exec_cmd(cmd_byte, rx_data);
                     end
                 end
             endcase
@@ -1778,3 +1889,499 @@ module uart_tx_2mbaud (
 endmodule
 
 `default_nettype wire
+
+// The read and write training in hardware (TOOL-044): what
+// tools/ddr3_write_probe.py train --vendor-delay --vendor-search --hold vendor
+// --center --write-train does from the host, as (command, argument) pairs fed
+// to wr_core's own decoder, judged from the same counters the host reads.
+//
+//   1. prewrite the sixteen rd_check rows, bank 0..7, row 0 and 1, each with
+//      its pattern, streamed so the write alignment does not matter;
+//   2. per-bit framing on a read stream of 0x0b: each lane's pins are pulsed
+//      with CALIB until they agree with its first pin that holds a rotation
+//      of the pattern (the probe takes the lanes' majority; any common framing
+//      serves, since the search frames each lane as a whole);
+//   3. the proven controller's start: RLOADN, then STEP - 4 RMOVE pulses at
+//      RDIR = 1 on every lane, read tap 4 (TOOL-041);
+//   4. its search (TOOL-036, TOOL-039, TOOL-042): gate positions 0..31 outer,
+//      nine RCLKSEL sweeps each, every lane not yet locked held (HOLD) while
+//      its settings change between trials, one CALIB pulse on its eight DQ
+//      after each sweep that leaves it unlocked; a lane passes a setting with
+//      one RVALID cycle and one RBURST pulse per READ, within two, and its
+//      own pattern on every READ the lag classifier counts, and locks at its
+//      second pass in a row;
+//   5. centring: from tap 4 a locked lane is stepped up a tap at a time while
+//      it passes, then set to the middle of the window from tap 0 to the last
+//      passing tap, which needs no step past the bottom (TOOL-040, TOOL-041);
+//   6. the fill's write alignment over d 0..7, b 0..7 with address data,
+//      choosing the first of two passing neighbours (TOOL-043), and at it the
+//      lanes' read rotations; the core is left filled, with address data on.
+//
+// Waits are in sys_clk cycles; the defaults are the probe's, shortened where
+// a batch of random READs is long enough at about 6,500 READs.
+module ddr3_seq #(
+    parameter integer BATCH = 131072,   // random mode per trial, 2.6 ms
+    parameter integer FILLW = 50000,    // fill mode per alignment, 1 ms
+    parameter integer STREAMW = 100000, // a read stream settles, 2 ms
+    parameter integer PWW = 1000,       // write mode per prewritten row, 20 us
+    parameter integer CALW = 2500,      // after a framing CALIB pulse, 50 us
+    parameter integer SETTLE = 16       // after any command, for its synchronizers
+) (
+    input  wire         clk,
+    input  wire         start,          // one cycle: begin (ignored while busy)
+    input  wire         abort,          // one cycle: stop where it is
+    output reg          busy = 1'b0,
+    output reg          done = 1'b0,
+    output reg  [3:0]   err = 4'd0,     // 1/2 framing, 3 no write alignment, 15 aborted
+    output reg  [5:0]   phase = 6'd0,   // the state, for progress
+    // a request to wr_core's decoder, held until acknowledged
+    output reg          req = 1'b0,
+    output reg  [7:0]   cmd = 8'h00,
+    output reg  [7:0]   arg = 8'h00,
+    input  wire         ack,
+    // what the host would read, sys_clk copies
+    input  wire [8:0]   st,             // {cke, reset_n, mode[2:0], istate[3:0]}
+    input  wire [7:0]   step,
+    input  wire [255:0] snap,
+    input  wire [31:0]  tr_reads,
+    input  wire [127:0] rv_cnt,
+    input  wire [127:0] rb_fall,
+    input  wire [31:0]  rc_total,
+    input  wire [31:0]  rc_class,
+    input  wire [31:0]  lag_eval,       // READs the lag classifier counted
+    input  wire [127:0] lane_own,       // lane l at [32l +: 32]: of those, its own pattern
+    input  wire [11:0]  last_rot,
+    // the result
+    output reg  [3:0]   locked = 4'd0,
+    output reg  [31:0]  lane_set = 32'd0,   // lane l at [8l +: 8]: {d[2:0], k[1:0], rclksel[2:0]}
+    output reg  [15:0]  lane_cal = 16'd0,   // lane l at [4l +: 4]: CALIB pulses at its gate
+    output reg  [31:0]  lane_u = 32'd0,     // lane l at [8l +: 8]: passing taps above tap 4
+    output reg  [3:0]   centred = 4'd0,     // the lane passed where it was set
+    output reg  [63:0]  wpass = 64'd0,      // alignment 8d + b passed
+    output reg  [5:0]   walign = 6'd0,
+    output reg          wfound = 1'b0,
+    output reg  [11:0]  rot = 12'd0,
+    output reg  [31:0]  fin_total = 32'd0,
+    output reg  [31:0]  fin_class = 32'd0,
+    output reg  [15:0]  tried = 16'd0,
+    output reg  [31:0]  cycles = 32'd0     // since start
+);
+    function [7:0] rcpat(input [3:0] i);
+        case (i)
+            4'd0:  rcpat = 8'h0b;  4'd1:  rcpat = 8'h0d;  4'd2:  rcpat = 8'h13;  4'd3:  rcpat = 8'h15;
+            4'd4:  rcpat = 8'h17;  4'd5:  rcpat = 8'h19;  4'd6:  rcpat = 8'h1b;  4'd7:  rcpat = 8'h1d;
+            4'd8:  rcpat = 8'h25;  4'd9:  rcpat = 8'h27;  4'd10: rcpat = 8'h2b;  4'd11: rcpat = 8'h2d;
+            4'd12: rcpat = 8'h35;  4'd13: rcpat = 8'h37;  4'd14: rcpat = 8'h3b;  default: rcpat = 8'h57;
+        endcase
+    endfunction
+    function isrot(input [7:0] w);      // a rotation of the framing pattern 0x0b
+        integer r;
+        begin
+            isrot = 1'b0;
+            for (r = 0; r < 8; r = r + 1)
+                if (w == (((8'h0b << r) | (8'h0b >> (8 - r))) & 8'hff))
+                    isrot = 1'b1;
+        end
+    endfunction
+    function [31:0] adiff(input [31:0] a, input [31:0] b);
+        adiff = (a > b) ? a - b : b - a;
+    endfunction
+
+    // per lane, the trial just read passes; and an alignment passes
+    reg [3:0] pass_now;
+    integer pl;
+    always @(*) begin
+        for (pl = 0; pl < 4; pl = pl + 1)
+            pass_now[pl] = (tr_reads > 32'd100) && (lag_eval > 32'd50) &&
+                           (adiff(rv_cnt[32*pl +: 32], tr_reads) <= 32'd2) &&
+                           (adiff(rb_fall[32*pl +: 32], tr_reads) <= 32'd2) &&
+                           (lane_own[32*pl +: 32] == lag_eval);
+    end
+    wire wpass_now = (rc_total > 32'd100) && (rc_class == rc_total);
+
+    // the snapshot's normalized word of lane sl, pin p: odd pins carry ~P
+    reg  [1:0] li = 2'd0;
+    reg  [2:0] pi = 3'd0;
+    wire [7:0] wsel = snap[64 * li + 8 * pi +: 8];
+    wire [7:0] wnorm = pi[0] ? ~wsel : wsel;
+    reg  [7:0] tgt = 8'h00;
+    reg        tgt_ok;
+    reg  [7:0] tgt_w;
+    integer tp;
+    reg [7:0] tw;
+    always @(*) begin
+        tgt_ok = 1'b0;
+        tgt_w = 8'h00;
+        for (tp = 7; tp >= 0; tp = tp - 1) begin
+            tw = snap[64 * li + 8 * tp +: 8];
+            if (tp % 2 == 1) tw = ~tw;
+            if (isrot(tw)) begin
+                tgt_ok = 1'b1;
+                tgt_w = tw;
+            end
+        end
+    end
+
+    localparam [5:0] S_IDLE = 6'd0, S_SEND = 6'd1, S_SENT = 6'd2, S_WAIT = 6'd3, S_MODEW = 6'd4,
+                     S_B1 = 6'd5, S_B2 = 6'd6, S_B3 = 6'd7,
+                     S_PW1 = 6'd8, S_PW2 = 6'd9, S_PW3 = 6'd10, S_PW4 = 6'd11, S_PW5 = 6'd12,
+                     S_PW6 = 6'd13, S_PW7 = 6'd14, S_PW8 = 6'd15, S_PW9 = 6'd16,
+                     S_AD1 = 6'd17, S_AD2 = 6'd18,
+                     S_FR0 = 6'd19, S_FR1 = 6'd20, S_FR2 = 6'd21, S_FR4 = 6'd22, S_FR5 = 6'd23,
+                     S_FR6 = 6'd24, S_FR8 = 6'd25,
+                     S_ST0 = 6'd26, S_ST1 = 6'd27, S_ST2 = 6'd28, S_ST3 = 6'd29, S_ST4 = 6'd30,
+                     S_T0 = 6'd31, S_T1 = 6'd32,
+                     S_S1 = 6'd33, S_S3 = 6'd34, S_S5 = 6'd35, S_S6 = 6'd36, S_S7 = 6'd37,
+                     S_S9 = 6'd38, S_S11 = 6'd39,
+                     S_C1 = 6'd40, S_C2 = 6'd41, S_C3 = 6'd42, S_C4 = 6'd43, S_C5 = 6'd44,
+                     S_C6 = 6'd45, S_C7 = 6'd46,
+                     S_W0 = 6'd47, S_W1 = 6'd48, S_W2 = 6'd49, S_W3 = 6'd50, S_W4 = 6'd51,
+                     S_W5 = 6'd52, S_W6 = 6'd53, S_W7 = 6'd54, S_W8 = 6'd55, S_W9 = 6'd56,
+                     S_W10 = 6'd57, S_W11 = 6'd58, S_W12 = 6'd59, S_W13 = 6'd60,
+                     S_FAIL = 6'd61, S_FIN = 6'd62;
+    reg [5:0]  ret = S_IDLE, mret = S_IDLE, bret = S_IDLE;
+    reg [23:0] wcnt = 24'd0;
+    reg [2:0]  mtgt = 3'd0;
+    reg [4:0]  pw = 5'd0;               // prewrite row
+    reg [4:0]  pc = 5'd0;               // framing pulses on this pin
+    reg [7:0]  tcnt = 8'd0;
+    reg [4:0]  pos = 5'd0;
+    reg [3:0]  cal = 4'd0;
+    reg [2:0]  rs = 3'd0;
+    reg [1:0]  sub = 2'd0;
+    reg [3:0]  prev = 4'd0;
+    reg [7:0]  u = 8'd0;
+    reg [7:0]  cnt = 8'd0;
+    reg [6:0]  widx = 7'd0;
+    reg        up_failed = 1'b0;
+
+    task go_send(input [7:0] c, input [7:0] a, input [5:0] r);
+        begin
+            cmd <= c;
+            arg <= a;
+            ret <= r;
+            phase <= r;
+            state <= S_SEND;
+        end
+    endtask
+    task go_mode(input [2:0] m, input [5:0] r);
+        begin
+            mtgt <= m;
+            mret <= r;
+            go_send(8'h0c, {5'd0, m}, S_MODEW);
+        end
+    endtask
+    task go_wait(input [23:0] n, input [5:0] r);
+        begin
+            wcnt <= n;
+            ret <= r;
+            state <= S_WAIT;
+        end
+    endtask
+    task go_batch(input [5:0] r);
+        begin
+            bret <= r;
+            go_mode(3'd4, S_B1);
+        end
+    endtask
+
+    reg [5:0] state = S_IDLE;
+    reg [3:0] nl;
+    integer q;
+    always @(posedge clk) begin
+        if (busy)
+            cycles <= cycles + 32'd1;
+        if (abort && busy) begin
+            err <= 4'd15;
+            req <= 1'b0;
+            go_mode(3'd0, S_FAIL);
+        end else case (state)
+            S_IDLE: if (start) begin
+                busy <= 1'b1;
+                done <= 1'b0;
+                err <= 4'd0;
+                locked <= 4'd0;
+                centred <= 4'd0;
+                lane_set <= 32'd0;
+                lane_cal <= 16'd0;
+                lane_u <= 32'd0;
+                wpass <= 64'd0;
+                wfound <= 1'b0;
+                tried <= 16'd0;
+                cycles <= 32'd0;
+                pw <= 5'd0;
+                go_mode(3'd0, S_PW2);
+            end
+            // ---- the subroutines
+            S_SEND: begin
+                req <= 1'b1;
+                if (ack) begin
+                    req <= 1'b0;
+                    wcnt <= SETTLE;
+                    state <= S_SENT;
+                end
+            end
+            S_SENT, S_WAIT: begin
+                if (wcnt == 24'd0)
+                    state <= ret;
+                else
+                    wcnt <= wcnt - 24'd1;
+            end
+            S_MODEW: if (st[6:4] == mtgt && (mtgt != 3'd0 || st[3:0] == 4'd8))
+                state <= mret;
+            S_B1: go_wait(BATCH, S_B2);
+            S_B2: go_mode(3'd0, S_B3);
+            S_B3: go_wait(24'd8, bret);         // the counters reach their copies
+            // ---- 1. prewrite
+            S_PW2: go_send(8'h0f, {5'd0, pw[2:0]}, S_PW3);
+            S_PW3: go_send(8'h20, {7'd0, pw[3]}, S_PW4);
+            S_PW4: go_send(8'h21, 8'h00, S_PW5);
+            S_PW5: go_send(8'h0e, rcpat(pw[3:0]), S_PW6);
+            S_PW6: go_mode(3'd2, S_PW7);
+            S_PW7: go_wait(PWW, S_PW8);
+            S_PW8: go_mode(3'd0, S_PW9);
+            S_PW9: if (pw == 5'd15) begin
+                go_send(8'h0f, 8'h00, S_AD1);
+            end else begin
+                pw <= pw + 5'd1;
+                state <= S_PW2;
+            end
+            S_AD1: go_send(8'h20, 8'h00, S_AD2);
+            S_AD2: go_send(8'h21, 8'h00, S_FR0);
+            // ---- 2. per-bit framing
+            S_FR0: go_send(8'h0e, 8'h0b, S_FR1);
+            S_FR1: go_mode(3'd3, S_FR2);
+            S_FR2: begin
+                li <= 2'd0;
+                go_wait(STREAMW, S_FR4);
+            end
+            S_FR4: if (!tgt_ok) begin
+                err <= 4'd1;
+                go_mode(3'd0, S_FAIL);
+            end else begin
+                tgt <= tgt_w;
+                pi <= 3'd0;
+                pc <= 5'd0;
+                state <= S_FR5;
+            end
+            S_FR5: if (wnorm == tgt) begin
+                pc <= 5'd0;
+                if (pi == 3'd7) begin
+                    if (li == 2'd3)
+                        go_mode(3'd0, S_ST0);
+                    else begin
+                        li <= li + 2'd1;
+                        state <= S_FR4;
+                    end
+                end else
+                    pi <= pi + 3'd1;
+            end else if (pc == 5'd16) begin
+                err <= 4'd2;
+                go_mode(3'd0, S_FAIL);
+            end else begin
+                pc <= pc + 5'd1;
+                go_send(8'h08, {3'd0, li, pi}, S_FR6);
+            end
+            S_FR6: go_wait(CALW, S_FR5);
+            // ---- the checker's settings, as the probe leaves them
+            S_ST0: go_send(8'h2a, 8'h00, S_ST1);        // two-word reassembler off
+            S_ST1: go_send(8'h09, 8'd40, S_ST2);        // access period
+            S_ST2: go_send(8'h29, 8'h01, S_ST3);        // RVALID-held capture
+            S_ST3: go_send(8'h26, 8'd20, S_ST4);        // check offset
+            S_ST4: go_send(8'h37, 8'h00, S_T0);         // the sixteen rows
+            // ---- 3. read tap 4
+            S_T0: begin
+                tcnt <= (step > 8'd4) ? step - 8'd4 : 8'd0;
+                go_send(8'h0a, 8'h00, S_T1);
+            end
+            S_T1: if (tcnt == 8'd0) begin
+                pos <= 5'd0;
+                cal <= 4'd0;
+                rs <= 3'd0;
+                prev <= 4'd0;
+                state <= S_S1;
+            end else begin
+                tcnt <= tcnt - 8'd1;
+                go_send(8'h07, 8'hf1, S_T1);
+            end
+            // ---- 4. the search
+            S_S1: begin
+                li <= 2'd0;
+                sub <= 2'd0;
+                if (tried != 16'd0)
+                    go_send(8'h35, {4'hf, ~locked}, S_S3);
+                else
+                    state <= S_S3;
+            end
+            S_S3: begin
+                if (locked[li] || sub == 2'd3) begin
+                    sub <= 2'd0;
+                    if (li == 2'd3) begin
+                        if (tried != 16'd0)
+                            go_send(8'h35, 8'h00, S_S5);
+                        else
+                            state <= S_S5;
+                    end else
+                        li <= li + 2'd1;
+                end else begin
+                    sub <= sub + 2'd1;
+                    case (sub)
+                        2'd0: go_send(8'h2c, {li, 3'd0, pos[4:2]}, S_S3);
+                        2'd1: go_send(8'h2d, {li, 4'd0, pos[1:0]}, S_S3);
+                        default: go_send(8'h2e, {li, 3'd0, rs}, S_S3);
+                    endcase
+                end
+            end
+            S_S5: go_batch(S_S7);
+            S_S7: begin
+                nl = locked | (pass_now & prev & ~locked);
+                for (q = 0; q < 4; q = q + 1)
+                    if (!locked[q] && pass_now[q] && prev[q]) begin
+                        lane_set[8*q +: 8] <= {pos, rs};
+                        lane_cal[4*q +: 4] <= cal;
+                    end
+                prev <= pass_now & ~locked;
+                locked <= nl;
+                tried <= tried + 16'd1;
+                if (nl == 4'hf) begin
+                    li <= 2'd0;
+                    state <= S_C1;
+                end else if (rs == 3'd7) begin
+                    li <= 2'd0;
+                    pi <= 3'd0;
+                    state <= S_S9;
+                end else begin
+                    rs <= rs + 3'd1;
+                    state <= S_S1;
+                end
+            end
+            S_S9: begin                         // CALIB on every lane still unlocked
+                if (locked[li]) begin
+                    pi <= 3'd0;
+                    if (li == 2'd3) state <= S_S11; else li <= li + 2'd1;
+                end else begin
+                    if (pi == 3'd7) begin
+                        pi <= 3'd0;
+                        go_send(8'h08, {3'd0, li, pi}, (li == 2'd3) ? S_S11 : S_S9);
+                        li <= li + 2'd1;
+                    end else begin
+                        pi <= pi + 3'd1;
+                        go_send(8'h08, {3'd0, li, pi}, S_S9);
+                    end
+                end
+            end
+            S_S11: begin
+                rs <= 3'd0;
+                prev <= 4'd0;
+                if (cal == 4'd8) begin
+                    cal <= 4'd0;
+                    if (pos == 5'd31) begin
+                        li <= 2'd0;
+                        state <= S_C1;          // search exhausted: centre what locked
+                    end else begin
+                        pos <= pos + 5'd1;
+                        state <= S_S1;
+                    end
+                end else begin
+                    cal <= cal + 4'd1;
+                    state <= S_S1;
+                end
+            end
+            // ---- 5. centring, lane by lane
+            S_C1: if (!locked[li]) begin
+                if (li == 2'd3) state <= S_W0; else li <= li + 2'd1;
+            end else begin
+                u <= 8'd0;
+                state <= S_C2;
+            end
+            S_C2: go_send(8'h07, {(4'd1 << li), 4'h0}, S_C3);   // RDIR = 0: a tap up
+            S_C3: go_batch(S_C4);
+            S_C4: if (pass_now[li] && u != 8'd96) begin
+                u <= u + 8'd1;
+                state <= S_C2;
+            end else begin
+                // now at tap 4 + u + 1 after a failure, or 4 + u at the limit;
+                // the window is taps 0 .. 4 + u, its middle (4 + u) / 2
+                lane_u[8*li +: 8] <= u;
+                cnt <= (8'd4 + u + (pass_now[li] ? 8'd0 : 8'd1)) - ((8'd4 + u) >> 1);
+                state <= S_C5;
+            end
+            S_C5: if (cnt == 8'd0)
+                go_batch(S_C7);
+            else begin
+                cnt <= cnt - 8'd1;
+                go_send(8'h07, {(4'd1 << li), 4'h1}, S_C5);      // RDIR = 1: a tap down
+            end
+            S_C7: begin
+                centred[li] <= pass_now[li];
+                if (li == 2'd3) state <= S_W0; else begin
+                    li <= li + 2'd1;
+                    state <= S_C1;
+                end
+            end
+            // ---- 6. the write alignment, then the lanes' read rotations
+            S_W0: begin
+                widx <= 7'd0;
+                go_send(8'h37, 8'h01, S_W1);
+            end
+            S_W1: go_send(8'h36, {1'b0, widx[5:3], 1'b0, widx[2:0]}, S_W2);
+            S_W2: go_mode(3'd5, S_W3);
+            S_W3: go_wait(FILLW, S_W4);
+            S_W4: go_mode(3'd0, S_W5);
+            S_W5: go_batch(S_W6);
+            S_W6: begin
+                wpass[widx[5:0]] <= wpass_now;
+                if (widx == 7'd63) begin
+                    widx <= 7'd0;
+                    state <= S_W7;
+                end else begin
+                    widx <= widx + 7'd1;
+                    state <= S_W1;
+                end
+            end
+            S_W7: begin                         // the first of two passing neighbours
+                if (wpass[widx[5:0]] && widx != 7'd63 && wpass[widx[5:0] + 6'd1]) begin
+                    walign <= widx[5:0];
+                    wfound <= 1'b1;
+                    state <= S_W9;
+                end else if (widx == 7'd63) begin
+                    widx <= 7'd0;
+                    state <= S_W8;
+                end else
+                    widx <= widx + 7'd1;
+            end
+            S_W8: begin                         // else the first that passed
+                if (wpass[widx[5:0]]) begin
+                    walign <= widx[5:0];
+                    wfound <= 1'b1;
+                    state <= S_W9;
+                end else if (widx == 7'd63) begin
+                    err <= 4'd3;
+                    go_send(8'h37, 8'h00, S_FIN);
+                end else
+                    widx <= widx + 7'd1;
+            end
+            S_W9: go_send(8'h36, {1'b0, walign[5:3], 1'b0, walign[2:0]}, S_W10);
+            S_W10: go_mode(3'd5, S_W11);
+            S_W11: go_wait(FILLW, S_W12);
+            S_W12: go_mode(3'd0, S_W13);
+            S_W13: go_batch(S_FIN);             // left with address data on
+            S_FIN: begin
+                if (wfound) begin
+                    rot <= last_rot;
+                    fin_total <= rc_total;
+                    fin_class <= rc_class;
+                end
+                busy <= 1'b0;
+                done <= 1'b1;
+                state <= S_IDLE;
+            end
+            S_FAIL: begin
+                busy <= 1'b0;
+                done <= 1'b1;
+                state <= S_IDLE;
+            end
+            default: state <= S_IDLE;
+        endcase
+    end
+endmodule
