@@ -1898,3 +1898,34 @@ Bring for approval a read-training cycle in `fpga/ddr3_write`: count each lane's
 - User Test: N/A
 
 ---
+
+## 58 COMMIT Unreleased 2026-10-24T21:58:07-07:00
+
+#### Coming From:
+
+Unreleased bf611b0
+
+#### Purpose:
+
+Rule out the Tang's start state as the reason the RVALID-held per-lane results changed, by repeating the same check across Tang reboots at the user's request.
+
+#### Outcome:
+
+The new `tools/ddr3_boot_repeat.sh` loads the RVALID-held write image of entry 56 (`bb809c5b80dc83b3d26c15776e679431c6974c76cad2233baa6cfae7d93e5605`), calibrates, runs the lag classifier with RVALID capture at the old shared setting and at one per-lane combination over check offsets 14 to 25, re-enters random mode five times at offset 20 and restores the desktop core. The user rebooted the Tang three times. In every completed load the five re-entries were identical, but the lanes reaching 100% own-READ changed from load to load at identical settings, including between two loads within one boot: at the shared setting none, lanes 0 and 1, and lane 2, and at the per-lane combination lanes 0 and 2, lane 1, and none. The Tang's boot state does not decide the result; the right per-lane setting is fixed at each FPGA load and PHY start-up, which supersedes entry 56's reading of a change between read sessions and matches the proven controller calibrating at every initialization (TOOL-036). Separately, in two of the three boots the first load after the reboot stopped answering mid-calibration, no reply to command `0x07` and then no core, and a reload recovered; the cause is not determined. TOOL-035 was revised and `docs/ddr3-open-flow.md` gained the result. The desktop core was restored after every run and answered `0x54`. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering and active-log capacity.
+
+#### Next Steps:
+
+Bring for approval the read-training cycle of entry 57's Next Steps, now known to be needed at every start: count each lane's RVALID-high cycles and RBURST pulses per READ, train RCLKSEL and then the gate position per lane to one of each by the vendor's rule, keep the RVALID-held capture, gate it offline, then check on the board with `tools/ddr3_boot_repeat.sh` across several loads that training reaches 100% own-READ on every lane each time. Watch for the first-load stall after a Tang reboot while doing so. The acceptance gate before controller work resumes is unchanged, and the `D108` unused-pin contradiction and the `is_mipi` bug outside the DDR context remain open.
+
+#### Files Modified:
+
+- docs/ddr3-open-flow.md
+- tools/ddr3_boot_repeat.sh
+
+#### Status:
+
+- Build: N/A
+- Deployment: PASS
+- User Test: N/A
+
+---

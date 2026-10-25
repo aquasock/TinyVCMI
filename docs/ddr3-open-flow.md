@@ -2478,6 +2478,18 @@ start-up here -- so the next step is putting them into a known state at each
 session, after the proven controller's `init_rmove` and `rpoint`/`wpoint` logic,
 before training per lane (TOOL-035).
 
+### Per load, not per session or per boot
+
+`tools/ddr3_boot_repeat.sh` repeated the RVALID-held check across three Tang
+reboots. Within a load, five re-entries into random mode are identical; between
+loads -- even two loads in one boot -- the lanes that reach 100% at the same
+setting change (shared setting: none, lanes 0 and 1, lane 2; one per-lane
+combination: lanes 0 and 2, lane 1, none). The state is set at FPGA load and PHY
+start-up, so the settings have to be trained at every start, as the proven
+controller does. Separately, in two of three boots the first load after the
+reboot stopped answering mid-calibration and a reload recovered; not yet
+explained.
+
 ## How the proven controller calibrates reads
 
 The vendor never resets the DQS read FIFO from the fabric -- `RPOINT` and
