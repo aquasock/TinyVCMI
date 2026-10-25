@@ -69,9 +69,11 @@ MODES = ["idle", "level", "write", "read", "random"]
 #: rd_check.v's sixteen patterns, by {row bit, bank}
 RC_PATTERNS = [0x0B, 0x0D, 0x13, 0x15, 0x17, 0x19, 0x1B, 0x1D,
                0x25, 0x27, 0x2B, 0x2D, 0x35, 0x37, 0x3B, 0x57]
-#: rd_check's own pipeline: hist[j] means the burst reached dq_q j - 3
-#: PCLK after the cycle its READ left the core
-RC_PIPE = 3
+#: rd_check's own pipeline: hist[j] means the burst reached dq_q j - 4
+#: PCLK after the cycle its READ left the core.  It was 3 until rd_check
+#: registered the deserializer words and RVALID first, so offsets recorded
+#: before then are one lower for the same arrival.
+RC_PIPE = 4
 PAYLOAD = 127
 TOTAL = 4 + PAYLOAD
 
@@ -163,10 +165,10 @@ class Core:
         return s
 
     def lag(self) -> dict:
-        """Lag and RBURST level frame, command 0x2F: 109 payload bytes."""
-        r = self.request(0x2F, expect=4 + 109)
-        if r[2] != 0x06 or r[3] != 109:
-            raise RuntimeError(f"lag frame is {r[2]:#04x}/{r[3]}, expected 0x06/109")
+        """Lag, RBURST level and RVALID frame, command 0x2F: 126 payload bytes."""
+        r = self.request(0x2F, expect=4 + 126)
+        if r[2] != 0x06 or r[3] != 126:
+            raise RuntimeError(f"lag frame is {r[2]:#04x}/{r[3]}, expected 0x06/126")
         b = r[4:]
         u32 = lambda o: int.from_bytes(b[o:o + 4], "little")
         delay = int.from_bytes(b[104:106], "little")
@@ -177,7 +179,9 @@ class Core:
                 "cycles": u32(100),
                 "delay": [(delay >> (3 * n)) & 7 for n in range(4)],
                 "gate": [(b[106] >> (2 * n)) & 3 for n in range(4)],
-                "rclksel": [(sel >> (3 * n)) & 7 for n in range(4)]}
+                "rclksel": [(sel >> (3 * n)) & 7 for n in range(4)],
+                "rv": [u32(109 + 4 * lane) for lane in range(4)],
+                "rv_held": b[125] & 1}
 
     def set_lanes(self, delays, gates, rclksels):
         """Each lane's READ gate delay, gate offset and RCLKSEL."""
@@ -636,7 +640,7 @@ def main() -> int:
     lg.add_argument("--row", type=lambda x: int(x, 0), default=0)
     lg.add_argument("--prewrite", action="store_true")
     lg.add_argument("--seconds", type=float, default=0.2)
-    lg.add_argument("--lats", type=int, nargs="+", default=[11, 19],
+    lg.add_argument("--lats", type=int, nargs="+", default=[12, 20],
                     help="check offsets, in rd_check's hist units")
     lg.add_argument("--delay", type=int, nargs=4, default=[1, 1, 1, 1],
                     help="READ gate delay per lane, PCLK")
@@ -644,6 +648,8 @@ def main() -> int:
                     help="READ gate offset per lane, memory clocks")
     lg.add_argument("--rclksel", type=int, nargs=4, default=[0, 0, 0, 0])
     lg.add_argument("--gap", type=int, default=8, help="PCLK between READs, at least 8")
+    lg.add_argument("--rvalid", action="store_true",
+                    help="check each lane's word held from its last RVALID cycle (0x29)")
     lg.add_argument("--slips", type=int, nargs=4, default=[0, 0, 0, 4])
     pw = sub.add_parser("prewrite")
     pw.add_argument("--row", type=lambda x: int(x, 0), default=0)
@@ -868,6 +874,7 @@ def main() -> int:
             core.set_slips(args.slips)
             core.set_lanes(args.delay, args.gate, args.rclksel)
             core.request(0x09, max(args.gap, 8))  # random mode's access period
+            core.request(0x29, 1 if args.rvalid else 0)
             for lat in args.lats:
                 core.request(0x26, lat)
                 core.mode(4)                    # entering random mode arms the counters
@@ -875,14 +882,16 @@ def main() -> int:
                 core.mode(0)
                 g = core.lag()
                 if lat == args.lats[0]:
-                    print(f"delay {g['delay']} gate {g['gate']} rclksel {g['rclksel']}")
+                    print(f"delay {g['delay']} gate {g['gate']} rclksel {g['rclksel']} "
+                          f"RVALID-held {g['rv_held']}")
                 n = g["eval"] or 1
                 lanes = "  ".join(
                     f"L{lane} " + " ".join(f"{100.0 * c / n:5.1f}" for c in g["lag"][lane])
                     for lane in range(4))
                 rb = " ".join(f"{100.0 * c / (g['cycles'] or 1):5.1f}" for c in g["rb"])
+                rv = " ".join(f"{100.0 * c / (g['cycles'] or 1):5.1f}" for c in g["rv"])
                 print(f"lat {lat:2d}: {g['eval']} READs, % at lag 0 1 2 3 none: {lanes}"
-                      f"   RBURST level % {rb}")
+                      f"   RBURST level % {rb}   RVALID % {rv}")
         elif args.cmd == "pos":
             if args.prewrite:
                 prewrite(core, args.row, 0.2)

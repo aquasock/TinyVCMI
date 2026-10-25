@@ -2440,6 +2440,44 @@ READ exposes as exactly the partial, cycle-dependent validity above (TOOL-033).
 The next read path takes a lane's word only where its registered `RVALID` is
 high, and the isolated-READ check is repeated on that.
 
+## Taking a word only when RVALID says so
+
+### The change, and what it costs in offsets
+
+`rd_check` now registers the deserializer words and RVALID before any selection
+and, with command `0x29` set, checks each lane's word held from its last
+RVALID-high cycle. The input register makes `PIPE` 4: **every offset from here
+on is one higher than the same arrival recorded earlier** -- the burst positions
+formerly at 11 and 19 are at 12 and 20. Frame `0x2F` also reports each lane's
+share of cycles with RVALID high.
+
+Getting the Gowin control to meet PCLK took structure, not options: with the
+hold first added it missed at 99.363 MHz, and no Gowin place/route option
+(`tools/ddr3_write.py --vendor-sweep`) cleared it. Registering the inputs first,
+one copy of each lane's pin-0 word per comparator pair of the rotation search,
+and a registered copy of the refresh counter for the checker brought the default
+build to 104.469 MHz with no negative slack.
+
+### What it does
+
+At period 40, delay 1, gate 2, RCLKSEL 0, lanes 1 and 2 go from at most 51.5%
+own-READ to **100.0%** at offsets 20 and 26, with nothing classified as none.
+With the hold on, the 256-setting per-lane sweep finds 100.0% on lane 0 (e.g.
+RCLKSEL 3, delay 1, gate 3), lane 1 (RCLKSEL 3, delay 1, gate 1) and lane 2
+(RCLKSEL 3, delay 1, gate 0); lane 3 reaches 60%. Every full score comes with
+that lane's RVALID high two cycles in three.
+
+### What it does not yet do
+
+The settings do not hold across read sessions. Applied together, lane 1 stays at
+100% while lane 2 scores 100% only at some offsets and lane 0 drops to 23%, and
+lane 2's RVALID share at identical settings changes between random-mode entries
+(2.4%, 67.4%, 100%). The RVALID pattern a lane settles into is set when a read
+session starts -- the DQS read FIFO's pointers are never re-aligned after
+start-up here -- so the next step is putting them into a known state at each
+session, after the proven controller's `init_rmove` and `rpoint`/`wpoint` logic,
+before training per lane (TOOL-035).
+
 ## The controller path: a spike, and seven pieces under it
 
 ### The spike, and what it settled

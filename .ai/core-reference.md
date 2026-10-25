@@ -151,6 +151,7 @@ Topic IDs are the `record_id` prefix. An entry reserves a namespace; it does not
 | Why does the controller not route? | TOOL | TOOL-032 |
 | How does the proven controller gate and clock each lane's reads? | TOOL | TOOL-033 |
 | Which READ does each lane return, and do per-lane gates fix it? | TOOL | TOOL-034 |
+| Does taking a word only on RVALID return isolated READs whole? | TOOL | TOOL-035 |
 | Why did the Gowin control miss PCLK timing? | TOOL | TOOL-028 |
 | Which sources and licenses constrain reuse? | PROV | PROV-001 |
 
@@ -207,6 +208,7 @@ TOOL-029: "A single read burst straddles two captured words: cycle 11 with slips
 TOOL-032: "The controller did not route because its build reused the write image's constraints, whose INS_LOC cells and clock nets it does not have; the bank-7 FCLK pip exists"
 TOOL-033: "The proven controller drives READ, RCLKSEL and HOLD per lane, gates each READ with the same four-clock window as ours selected by a per-lane read_i, and trains it on an RBURST level; it takes read data only on cycles whose registered RVALID is high"
 TOOL-034: "Isolated READs: each lane holds its own READ's burst in at most about 51% of READs at any per-lane gate and RCLKSEL, in both builds, valid on two PCLK of every three"
+TOOL-035: "With RVALID-held capture a lane returns 100% of isolated READs' own bursts at its own setting, but the RVALID pattern and so the right setting change between read sessions"
 TOOL-031: "LiteDRAM's control layer alone generates, synthesises and places in the open flow at ~1% of the LUTs, with none of TOOL-025's three gaps"
 TOOL-030: "Closed-page scatter READs do not reach the read capture in the open or the vendor build of the same RTL; no cadence, gate position or shared RCLKSEL recovers them, and failing READs return other rows' patterns"
 PROV-001: "Reuse source and interface ideas with their original license boundaries and attribution intact"
@@ -890,6 +892,19 @@ PROV-001: "Reuse source and interface ideas with their original license boundari
     - "TinyVCMI tools/ddr3_write_probe.py lag and tools/ddr3_lag_sweep.py"
     - "TinyVCMI docs/ddr3-open-flow.md: Which READ each lane returns"
   verification: "The open image, .bin SHA-256 2360774bc9c45a40f0ef7db3148edd0f6603df33d822c5803bc7dbf15cc73b45, closing PCLK at 126.98 MHz and equal on all 306 DDR3 tables to its Gowin build, and that build, .bin SHA-256 a6822db8e33357a9abcdf1ad450643e7872871219106c7b083d7351cd4dd8bcf, closing PCLK at 109.973 MHz with no negative slack, were loaded on the Tang Console 138K on 2026-10-24, answered core 0x56 and were calibrated, with every lane within one cycle of all eligible cycles, and the sixteen rows prewritten. Mid-session the FPGA was found answering core 0, configuration lost for a reason not determined, and the open image was reloaded, recalibrated and rewritten before the period-40 runs. The unit bench's lag cases pass and a mutant with lags 1 and 2 swapped fails them; the image simulation compares 635 per-lane gates and confirms per-lane RCLKSEL and frame 0x2F. The desktop core was restored and answered 0x54."
+
+- record_id: TOOL-035
+  topic_id: TOOL
+  title: "RVALID-held capture returns isolated READs whole on a lane, but which settings do so changes from one read session to the next"
+  status: VERIFIED
+  verified_date: 2026-10-24
+  statement: "fpga/ddr3_write's rd_check now registers each lane's deserializer word and RVALID before any selection and, with command 0x29 set, checks a word held from that lane's last RVALID-high cycle, as the proven controller's read FIFO takes it (TOOL-033); frame 0x2F reports each lane's share of PCLK with RVALID high. The input register makes the checker's PIPE 4, so every offset is one higher than the same arrival recorded before this record. On the open image, closed-page single READs every 40 PCLK at delay 1, gate 2, RCLKSEL 0 gave lanes 1 and 2 at most 51.5% own-READ without the hold and 100.0% with it at offsets 20 and 26, 98% at 14, none classified as none, while lane 0, whose RVALID was high in 2.4% of cycles against 67.4% on the others, reached 18.8% and lane 3 57%. Over all 256 per-lane delay, gate and RCLKSEL settings with the hold, at offsets 18 to 23, lane 0 reached 100.0% at six settings, among them RCLKSEL 3 delay 1 gate 3, lane 1 at three, among them RCLKSEL 3 delay 1 gate 1, lane 2 at two, among them RCLKSEL 3 delay 1 gate 0, and lane 3 at most 60.4%; every full score came with that lane's RVALID high in two of every three cycles, and the full score falls at one offset in three. Applying those settings together, lane 1 held 100.0% at offsets 17, 20, 23, 26 and 29, lane 2 only at 17 and 29, and lane 0 23%, and lane 2's RVALID share changed between random-mode entries at identical settings, 2.4%, 67.4% and 100%. The Gowin build of the same source with the hold, at the old shared setting, reached at most 17% with RVALID high in 59.4% of cycles on every lane."
+  consequence: "Taking a lane's word only where RVALID is high is the missing mechanism: it turns a lane that never exceeded half of isolated READs into one that returns every READ's own burst. What remains is that the RVALID pattern a lane settles into is fixed at the start of a read session and differs from one session to the next, so a per-lane setting found in one session does not hold in the next; the DQS read FIFO's pointer relationship needs to be put into a known state at each session, which the proven controller's init_rmove and rpoint/wpoint logic is the reference for, before per-lane training can produce a stable result. Settings found on one build do not carry to the other."
+  sources:
+    - "TinyVCMI fpga/ddr3_write/rd_check.v (dq_in, rv_in, dq_held, rv_enable, PIPE 4), fpga/ddr3_write/wr_core.v (command 0x29, rv_cnt, status4), fpga/ddr3_write/tb_check.v case 10"
+    - "TinyVCMI tools/ddr3_write_probe.py lag --rvalid and tools/ddr3_lag_sweep.py --rvalid"
+    - "TinyVCMI docs/ddr3-open-flow.md: Taking a word only when RVALID says so"
+  verification: "The open image, .bin SHA-256 bb809c5b80dc83b3d26c15776e679431c6974c76cad2233baa6cfae7d93e5605, closing PCLK at 110.93 MHz, and its Gowin build, .bin SHA-256 d55b007fb30b598e5fc1400f3f3f2c1627a1600954c5c2b6ef8c5b5febc3c750, closing PCLK at 104.469 MHz with no negative slack, equal on all 306 DDR3 tables, were loaded on the Tang Console 138K on 2026-10-24 and calibrated, every lane within one cycle of all eligible cycles. The first calibration attempt of the open image stopped with no reply to command 0x0f and the FPGA was then found unconfigured; after a reload it held configuration idle for 30 s of status polls and calibrated cleanly. TinyTang's own fpga query gets no answer while the probe holds the fpgapipe link, so it was not used mid-session. The checker bench's case 10 holds a burst valid for one PCLK with RVALID marking it in 300 of 300 READs and fails all 300 without the hold. The desktop core was restored and answered 0x54."
 
 - record_id: PROV-001
   topic_id: PROV

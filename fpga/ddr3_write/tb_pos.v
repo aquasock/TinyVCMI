@@ -23,6 +23,8 @@ module tb_pos;
     reg  [3:0]  issue_idx = 4'd0;
     reg  [6:0]  issue_col = 7'd0;
     reg  [255:0] dq_q = 256'd0;
+    reg  [3:0]   rvalid = 4'b1111;
+    reg          rv_enable = 1'b0;
     reg  [9:0]  refi = 10'd0;
     reg  [4:0]  lat = 5'd11;
     reg  [2:0]  step = 3'd0;
@@ -43,6 +45,7 @@ module tb_pos;
 
     rd_check dut (
         .pclk(pclk), .rst(rst), .arm(arm), .dq_q(dq_q), .issue(issue),
+        .rvalid(rvalid), .rv_enable(rv_enable),
         .issue_idx(issue_idx), .issue_col(issue_col), .lat(lat), .step(step),
         .slip_enable(slip_enable), .slip(slip), .refi(refi),
         .n_both(n_both), .n_only11(n_only11), .n_only19(n_only19),

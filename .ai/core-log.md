@@ -1828,3 +1828,41 @@ Bring for approval an RVALID-qualified capture: register each lane's `RVALID` be
 - User Test: N/A
 
 ---
+
+## 56 COMMIT Unreleased 2026-10-24T21:26:22-07:00
+
+#### Coming From:
+
+Unreleased a634105
+
+#### Purpose:
+
+Make the read checker take each lane's word only on cycles whose RVALID is high, as the proven controller does, and measure on hardware whether isolated READs then return their own data.
+
+#### Outcome:
+
+`fpga/ddr3_write/rd_check.v` now registers each lane's deserializer word and RVALID before any selection and, behind command `0x29`, checks a word held from that lane's last RVALID-high cycle; frame `0x2F` grew to 126 bytes with each lane's RVALID-high count and the switch, and `tools/ddr3_write_probe.py lag --rvalid` and `tools/ddr3_lag_sweep.py --rvalid` drive it. The input register makes the checker's pipeline four deep, so every check offset from this entry on is one higher than the same arrival recorded before it, the classifier's positions formerly at 11 and 19 now at 12 and 20; the benches, the probe's `RC_PIPE` and the source comments follow. The Gowin control first missed PCLK at 99.363 MHz and no place or route option cleared it in the new `tools/ddr3_write.py --vendor-sweep`; registering the inputs first, giving each comparator pair of the rotation search its own copy of the pin-0 word and handing the checker a registered copy of the refresh counter brought the default build to 104.469 MHz with no negative slack. An image-bench failure turned out to be the bench sampling idle state during a refresh's tRFC wait, and the bench now allows 2 us. The checker bench's new case holds a burst valid for one PCLK in 300 of 300 READs and fails all 300 without the hold. The open image, SHA-256 `bb809c5b80dc83b3d26c15776e679431c6974c76cad2233baa6cfae7d93e5605`, closes PCLK at 110.93 MHz and equals its Gowin build, `d55b007fb30b598e5fc1400f3f3f2c1627a1600954c5c2b6ef8c5b5febc3c750`, on all 306 DDR3 tables. On the Tang, after a first calibration that stopped with no reply and left the FPGA unconfigured, a reload held for 30 s idle and calibrated cleanly; at period 40 lanes 1 and 2 went from at most 51.5% own-READ to 100.0% with the hold, and over 256 per-lane settings lanes 0, 1 and 2 each reached 100.0% at their own RCLKSEL 3 settings while lane 3 reached 60.4%, every full score with that lane's RVALID high two cycles in three. Applied together, lane 1 held 100% but lanes 0 and 2 did not, and lane 2's RVALID share changed between read sessions at identical settings, so the right setting is fixed per session rather than per lane. The Gowin control at the old shared setting reached at most 17%. TOOL-035 was added and `docs/ddr3-open-flow.md` gained the measurements. The desktop core was restored and answered `0x54`. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering and active-log capacity.
+
+#### Next Steps:
+
+Bring for approval a cycle that puts each lane's DQS read FIFO pointers into a known state at the start of every read session, after tracing the proven controller's `u_init_rmove_mod` and `rpoint`/`wpoint` handling from its netlist, then repeat the RVALID-held per-lane sweep across several sessions to show that one per-lane setting holds; lane 3's 60% ceiling is examined there. Only then does per-lane training get designed, against the unchanged acceptance gate of isolated random READs returning each address's own data at a fixed trained latency with address-derived data. The `D108` unused-pin contradiction and the `is_mipi` bug outside the DDR context remain open.
+
+#### Files Modified:
+
+- docs/ddr3-open-flow.md
+- fpga/ddr3_write/rd_check.v
+- fpga/ddr3_write/tb_check.v
+- fpga/ddr3_write/tb_pos.v
+- fpga/ddr3_write/tb_wr.v
+- fpga/ddr3_write/wr_core.v
+- tools/ddr3_lag_sweep.py
+- tools/ddr3_write.py
+- tools/ddr3_write_probe.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: N/A
+
+---

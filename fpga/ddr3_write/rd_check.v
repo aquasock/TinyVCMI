@@ -37,17 +37,30 @@
 //            earlier READ's burst shows here as a steady non-zero lag, which
 //            a stream of one pattern could never reveal.
 //
+// RVALID: the proven controller takes a lane's deserializer word only on a
+// cycle whose DQS RVALID is high (TOOL-033).  With rv_enable set, each lane's
+// input here is a word held from the last such cycle instead of the raw
+// deserializer output, one PCLK later than the raw word would arrive; with
+// it clear, nothing changes.
+//
 // PIPE is this module's own depth: the burst on dq_q in cycle c + D, for a
-// READ marked by `issue` in cycle c, is compared with that READ in hist[D + 3].
+// READ marked by `issue` in cycle c, is compared with that READ in hist[D + 4].
+// The first of the four stages registers the deserializer words and RVALID
+// before any selection, as the proven controller does; before 2026-10-24
+// PIPE was 3, so every offset recorded until then is one lower than the same
+// arrival measured now.  The two burst positions of the classifier are
+// 8 + PIPE and 16 + PIPE, the arrivals formerly reported as 11 and 19.
 // Offsets below 1 are checked at 1.  The check runs three stages behind the
 // capture, which READs at least eight cycles apart leave room for.
 module rd_check #(
-    parameter integer PIPE = 3      // documented above; not a knob
+    parameter integer PIPE = 4      // documented above; not a knob
 ) (
     input  wire         pclk,
     input  wire         rst,
     input  wire         arm,        // clear counters, lock, hist and failure
     input  wire [255:0] dq_q,       // lane l, pin p, beat b at 64l + 8p + b
+    input  wire [3:0]   rvalid,     // each lane's DQS RVALID, same cycle as dq_q
+    input  wire         rv_enable,  // take each lane's word only where RVALID is high
     input  wire         issue,      // a READ leaves the core this cycle
     input  wire [3:0]   issue_idx,  // its location: {row bit, bank}
     input  wire [6:0]   issue_col,  // its burst within the row
@@ -117,18 +130,31 @@ module rd_check #(
     // register would drive both from wherever it lands, so this copy stays.
     (* syn_preserve = 1, keep = 1 *) reg [255:0] dq_r = 256'd0;
     reg [255:0] dq_prev = 256'd0;
+    reg [255:0] dq_in = 256'd0;     // the deserializer words, registered first
+    reg [3:0]   rv_in = 4'd0;       // and RVALID, the same cycle
+    reg [255:0] dq_held = 256'd0;   // lane l's word from its last RVALID cycle
+    reg         rv_en_r = 1'b0;
+    wire [255:0] dq_src = rv_en_r ? dq_held : dq_in;
     wire [255:0] dq_slipped;
     genvar gl, gp;
     generate
         for (gl = 0; gl < 4; gl = gl + 1) begin: lane_slip
+            always @(posedge pclk)
+                if (rv_in[gl])
+                    dq_held[64*gl +: 64] <= dq_in[64*gl +: 64];
             for (gp = 0; gp < 8; gp = gp + 1) begin: pin_slip
-                wire [15:0] pair = {dq_q[64*gl + 8*gp +: 8],
+                wire [15:0] pair = {dq_src[64*gl + 8*gp +: 8],
                                     dq_prev[64*gl + 8*gp +: 8]};
                 assign dq_slipped[64*gl + 8*gp +: 8] = pair >> slip[3*gl +: 3];
             end
         end
     endgenerate
-    wire [255:0] dq_selected = slip_enable ? dq_slipped : dq_q;
+    wire [255:0] dq_selected = slip_enable ? dq_slipped : dq_src;
+    // Each lane's pin-0 word again, one copy per comparator pair of the
+    // least-rotation search: in dq_r it also feeds the pin check, and that
+    // fanout put a 7 ns route in front of the search in the Gowin control.
+    // Lane l, pair i at 32l + 8i; the same cycle as dq_r.
+    (* syn_preserve = 1, keep = 1 *) reg [127:0] w0_r = 128'd0;
     reg [255:0] dq_b1 = 256'd0, dq_b2 = 256'd0, dq_b3 = 256'd0;
     reg [3:0]   pins_b1 = 4'd0, pins_b2 = 4'd0, pins_b3 = 4'd0;
     reg [127:0] pmin_b1 = 128'd0;   // lane l, pair i: least of the pair at 32l + 8i
@@ -143,8 +169,14 @@ module rd_check #(
     reg [10:0] e0, e1, e2, e3, q0, q1;
 
     always @(posedge pclk) begin
-        dq_prev <= dq_q;
+        rv_en_r <= rv_enable;
+        dq_in <= dq_q;
+        rv_in <= rvalid;
+        dq_prev <= dq_src;
         dq_r <= dq_selected;
+        for (l = 0; l < 4; l = l + 1)
+            for (i = 0; i < 4; i = i + 1)
+                w0_r[32*l + 8*i +: 8] <= dq_selected[64*l +: 8];
         dq_b1 <= dq_r;
         dq_b2 <= dq_b1;
         dq_b3 <= dq_b2;
@@ -159,8 +191,8 @@ module rd_check #(
             pins_b1[l] <= ok;
             // first half of the least-rotation search: four pairs
             for (i = 0; i < 4; i = i + 1) begin
-                ca = derot(w0, 2*i);
-                cb = derot(w0, 2*i + 1);
+                ca = derot(w0_r[32*l + 8*i +: 8], 2*i);
+                cb = derot(w0_r[32*l + 8*i +: 8], 2*i + 1);
                 pmin_b1[32*l + 8*i +: 8] <= (cb < ca) ? cb : ca;
                 pidx_b1[12*l + 3*i +: 3] <= (cb < ca) ? 2*i + 1 : 2*i;
             end
@@ -235,6 +267,9 @@ module rd_check #(
     reg [511:0] hcnt = 512'd0;
     integer j, hl;
     reg all, all_any;
+    // the two positions an isolated burst lands in, named for their PIPE 3
+    // offsets: m11 at 8 + PIPE, m19 at 16 + PIPE
+    localparam integer POS_A = 8 + PIPE, POS_B = 16 + PIPE;
     reg m11 = 1'b0, m19 = 1'b0;     // this READ matched at that offset
     always @(posedge pclk) begin
         for (j = 0; j < 32; j = j + 1) begin
@@ -246,8 +281,8 @@ module rd_check #(
             hit[j] <= all && !clr;
             // The two positions an isolated burst lands in, for every READ,
             // not only the ones the histogram counts.
-            if (j == 11) m11 <= all_any && ex_v[11] && !clr;
-            if (j == 19) m19 <= all_any && ex_v[19] && !clr;
+            if (j == POS_A) m11 <= all_any && ex_v[POS_A] && !clr;
+            if (j == POS_B) m19 <= all_any && ex_v[POS_B] && !clr;
         end
         if (clr)
             hcnt <= 512'd0;
@@ -273,7 +308,7 @@ module rd_check #(
     wire [1:0] cls_w = {m19, m11_d[7]};
     always @(posedge pclk) begin
         m11_d <= {m11_d[6:0], m11};
-        ev19  <= ex_v[19] && !clr;
+        ev19  <= ex_v[POS_B] && !clr;
         if (clr) begin
             n_both <= 32'd0;
             n_only11 <= 32'd0;

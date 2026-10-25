@@ -9,7 +9,7 @@
 // own rotation, and holds the words until the next answer, as the
 // deserializers do.  The test asserts that:
 //
-//   * hist is full exactly from D + 3 for as many cycles as the READs are
+//   * hist is full exactly from D + 4 for as many cycles as the READs are
 //     apart, and empty for as many cycles before, so the latency reads off it;
 //   * at the right offset every READ is class_ok and good, the lock takes
 //     each lane's own rotation and nothing is counted as a move;
@@ -22,17 +22,22 @@
 //   * a second latency and spacing is measured as well;
 //   * a lane that answers with the burst of the READ one, two or three
 //     before is classified at that lag, every lane separately, and a lane
-//     holding no recent READ's pattern is classified as none.
+//     holding no recent READ's pattern is classified as none;
+//   * with rv_enable, a burst presented for one PCLK with RVALID high and
+//     noise on every other cycle is held and checked one offset later, and
+//     without it the same READs fail.
 module tb_check;
     reg pclk = 1'b0;
     always #5 pclk = ~pclk;
 
     reg          rst = 1'b1, arm = 1'b0;
     reg  [255:0] dq_q = 256'd0;
+    reg  [3:0]   rvalid = 4'b1111;
+    reg          rv_enable = 1'b0;
     reg          issue = 1'b0;
     reg  [3:0]   issue_idx = 4'd0;
     reg  [6:0]   issue_col = 7'd0;
-    reg  [4:0]   lat = 5'd10;
+    reg  [4:0]   lat = 5'd11;
     reg  [2:0]   step = 3'd0;
     reg          slip_enable = 1'b0;
     reg  [11:0]  slip = 12'd0;
@@ -55,6 +60,7 @@ module tb_check;
 
     rd_check dut (
         .pclk(pclk), .rst(rst), .arm(arm), .dq_q(dq_q), .issue(issue),
+        .rvalid(rvalid), .rv_enable(rv_enable),
         .issue_idx(issue_idx), .issue_col(issue_col), .lat(lat), .step(step),
         .slip_enable(slip_enable), .slip(slip), .refi(refi),
         .n_both(n_both), .n_only11(n_only11), .n_only19(n_only19),
@@ -100,6 +106,7 @@ module tb_check;
     integer move_by = 0;
     integer move_each = 0;          // or move it by this much every READ
     integer bad_at = -1;            // mis-frame lane 2 pin 3 at this READ
+    integer rv_mode = 0;            // present each burst one PCLK, RVALID high, noise otherwise
     integer lane_lag [0:3];         // answer lane l with READ n - lag; -1 a non-pattern word
     reg [7:0] pend_pat [0:1023];
     reg [7:0] by_no [0:4095];       // every READ's pattern by its number
@@ -142,7 +149,14 @@ module tb_check;
             pend_no[cyc % 1024] <= -1;
         end
         q = (cyc - delay) % 1024;
+        if (rv_mode) begin
+            rvalid <= 4'b0000;
+            dq_q <= {$random(seed), $random(seed), $random(seed), $random(seed),
+                     $random(seed), $random(seed), $random(seed), $random(seed)};
+        end
         if (cyc >= delay && pend_no[q] >= 0) begin
+            if (rv_mode)
+                rvalid <= 4'b1111;
             if (pend_no[q] == move_at)
                 frame = frame + move_by;
             if (move_each != 0 && pend_no[q] > 0)
@@ -168,6 +182,7 @@ module tb_check;
             frame = 0;
             move_at = -1; move_by = 0; move_each = 0; bad_at = -1;
             lane_lag[0] = 0; lane_lag[1] = 0; lane_lag[2] = 0; lane_lag[3] = 0;
+            rv_mode = 0; rvalid <= 4'b1111;
         end
     endtask
 
@@ -223,9 +238,9 @@ module tb_check;
         rst <= 1'b0;
         rearm;
 
-        // 1: latency 7, spacing 8, checked at 10
+        // 1: latency 7, spacing 8, checked at 11
         run(300);
-        expect_hist(10, 8);
+        expect_hist(11, 8);
         if (!locked) fail("never locked");
         if (total < 290 || good != total || class_ok != total)
             fail("a READ at the right offset was not good");
@@ -235,15 +250,15 @@ module tb_check;
         // about (15/16)(14/16)(13/16) of READs have four distinct patterns
         if (lag_eval < total / 2 || lag_eval > total) fail("too few READs classified for lag");
         expect_lag(0, 0); expect_lag(1, 0); expect_lag(2, 0); expect_lag(3, 0);
-        $display("      1: hist from 10, %0d/%0d good, rot %h", good, total, last_rot);
+        $display("      1: hist from 11, %0d/%0d good, rot %h", good, total, last_rot);
 
         // 2: one offset early, the words are the previous READ's
         rearm;
-        lat <= 5'd9;
+        lat <= 5'd10;
         run(300);
         if (class_ok > total / 8) fail("class_ok one offset early");
         $display("      2: one early: %0d/%0d class_ok", class_ok, total);
-        lat <= 5'd10;
+        lat <= 5'd11;
 
         // 3: the frame jumps once by -2
         rearm;
@@ -274,11 +289,11 @@ module tb_check;
 
         // 6: latency 5, spacing 12
         rearm;
-        delay = 5; spacing = 12; lat <= 5'd8;
+        delay = 5; spacing = 12; lat <= 5'd9;
         run(300);
-        expect_hist(8, 12);
-        if (good != total || total < 290) fail("latency 5 not good at 8");
-        $display("      6: hist from 8, %0d/%0d good", good, total);
+        expect_hist(9, 12);
+        if (good != total || total < 290) fail("latency 5 not good at 9");
+        $display("      6: hist from 9, %0d/%0d good", good, total);
 
         // 7: the two-word reassembler applies one lane-wide beat slip to
         // every DQ word.  Once both halves hold the new response, every
@@ -286,7 +301,7 @@ module tb_check;
         rearm;
         slip <= {3'd7, 3'd4, 3'd2, 3'd0};
         slip_enable <= 1'b1;
-        lat <= 5'd9;
+        lat <= 5'd10;
         run(300);
         if (good != total || total < 290 || fail_seen)
             fail("the configured two-word lane slips did not reassemble every READ");
@@ -295,7 +310,7 @@ module tb_check;
 
         // 8: each lane answers with a different READ's burst
         rearm;
-        delay = 7; spacing = 8; lat <= 5'd10;
+        delay = 7; spacing = 8; lat <= 5'd11;
         lane_lag[0] = 0; lane_lag[1] = 1; lane_lag[2] = 2; lane_lag[3] = 3;
         run(300);
         if (lag_eval < 150) fail("too few READs classified for lag");
@@ -310,8 +325,29 @@ module tb_check;
         expect_lag(0, 0); expect_lag(1, 0); expect_lag(2, 4); expect_lag(3, 0);
         $display("      9: lane 2 none in %0d of %0d", lagc(2, 4), lag_eval);
 
+        // 10: a burst valid for one PCLK only, RVALID marking it
+        rearm;
+        lane_lag[2] = 0;
+        rv_mode = 1;
+        rv_enable <= 1'b1;
+        lat <= 5'd12;
+        run(300);
+        if (good != total || total < 290 || fail_seen)
+            fail("RVALID-held words did not pass every READ one offset later");
+        expect_lag(0, 0); expect_lag(1, 0); expect_lag(2, 0); expect_lag(3, 0);
+        $display("     10: RVALID held: %0d/%0d good at 12", good, total);
+        rearm;
+        rv_mode = 1;
+        rv_enable <= 1'b0;
+        run(300);
+        if (class_ok > total / 8)
+            fail("one-PCLK bursts passed without RVALID holding them");
+        $display("     10: without RVALID: %0d/%0d class_ok", class_ok, total);
+        rv_mode = 0;
+        lat <= 5'd11;
+
         if (errors == 0)
-            $display("PASS  latency, lock, jump, predicted move, pin faults, lane slips and lag as specified");
+            $display("PASS  latency, lock, jump, predicted move, pin faults, lane slips, lag and RVALID as specified");
         else
             $display("FAIL  %0d error(s)", errors);
         $finish;

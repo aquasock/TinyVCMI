@@ -238,26 +238,88 @@ GENERATED = {"top.v": render, "top.cst": bringup.cst,
              "open.sdc": lambda: SDC_OPEN, "vendor.sdc": lambda: bringup.SDC_VENDOR}
 
 
-def vendor_build() -> int:
+def tcl(place=None, route=None) -> str:
+    """The vendor script, with Gowin's place and route options when given."""
+    opts = ""
+    if place is not None:
+        opts += f"set_option -place_option {place}\n"
+    if route is not None:
+        opts += f"set_option -route_option {route}\n"
+    return TCL.replace("run all", opts + "run all")
+
+
+def vendor_build(dest=VENDOR, place=None, route=None, quiet=False) -> int:
     if not os.path.isdir(os.path.join(base.GOWIN, "IDE")):
         print(f"missing Gowin EDA at {base.GOWIN}", file=sys.stderr)
         return 2
-    if os.path.isdir(VENDOR):
-        shutil.rmtree(VENDOR)
-    os.makedirs(VENDOR)
+    if os.path.isdir(dest):
+        shutil.rmtree(dest)
+    os.makedirs(dest)
     for fn in ("top.v", "wr_core.v", "rd_align.v", "rd_check.v", "top.cst"):
-        shutil.copy(os.path.join(SRC, fn), VENDOR)
-    shutil.copy(os.path.join(SRC, "vendor.sdc"), os.path.join(VENDOR, "top.sdc"))
-    with open(os.path.join(VENDOR, "run.tcl"), "w") as f:
-        f.write(TCL)
-    ok = base.build(VENDOR)
-    rel = os.path.relpath(VENDOR, base.ROOT)
+        shutil.copy(os.path.join(SRC, fn), dest)
+    shutil.copy(os.path.join(SRC, "vendor.sdc"), os.path.join(dest, "top.sdc"))
+    with open(os.path.join(dest, "run.tcl"), "w") as f:
+        f.write(tcl(place, route))
+    ok = base.build(dest)
+    rel = os.path.relpath(dest, base.ROOT)
     if not ok:
-        with open(os.path.join(VENDOR, "gw_sh.log")) as f:
+        with open(os.path.join(dest, "gw_sh.log")) as f:
             errors = [l.strip() for l in f if "ERROR" in l]
         print(f"{rel}: REFUSED -- " + (errors[0] if errors else "no ERROR line in gw_sh.log"))
         return 1
-    print(f"{rel}: built, impl/pnr/probe.fs")
+    if not quiet:
+        print(f"{rel}: built, impl/pnr/probe.fs")
+    return 0
+
+
+def vendor_timing(d: str):
+    """PCLK Fmax in MHz and the summed negative slack of a Gowin build."""
+    import html
+    import re
+    path = os.path.join(d, "impl/pnr/probe_tr_content.html")
+    text = re.sub(r"\s+", " ", html.unescape(re.sub(r"<[^>]+>", " ", open(path).read())))
+    fmax = text[text.find("Max Frequency Summary"):text.find("Total Negative Slack Summary")]
+    tns = text[text.find("Total Negative Slack Summary"):text.find("Timing Details")]
+    m = re.search(r"pclk \d+\.\d+\(MHz\) (\d+\.\d+)\(MHz\)", fmax)
+    neg = sum(float(r[2]) for r in re.findall(r"(\S+) (Setup|Hold) (-?\d+\.\d+) (\d+)", tns))
+    return (float(m.group(1)) if m else 0.0), neg
+
+
+def vendor_sweep(jobs: int) -> int:
+    """Gowin's analogue of a seed sweep: its defaults, then place_option 0..3 x
+    route_option 0..1.
+
+    Each variant builds in its own directory under build/ddr3_write/vendor_sweep;
+    the best clean one -- no negative slack, highest PCLK Fmax -- is installed
+    as the vendor control, and its options are printed so --vendor can rebuild it.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+    root = os.path.join(base.ROOT, "build/ddr3_write/vendor_sweep")
+    combos = [(None, None)] + [(p, r) for p in range(4) for r in range(2)]
+    dirs = {c: os.path.join(root, "default" if c[0] is None else f"p{c[0]}r{c[1]}")
+            for c in combos}
+    with ThreadPoolExecutor(max_workers=jobs) as ex:
+        rcs = dict(zip(combos, ex.map(lambda c: vendor_build(dirs[c], c[0], c[1], True), combos)))
+    results = []
+    for c in combos:
+        name = "defaults" if c[0] is None else f"place {c[0]} route {c[1]}"
+        if rcs[c] != 0:
+            print(f"{name}: REFUSED")
+            continue
+        fmax, neg = vendor_timing(dirs[c])
+        results.append((neg == 0.0, fmax, c))
+        print(f"{name}: PCLK {fmax:.3f} MHz, negative slack {neg:.3f}")
+    clean = [r for r in results if r[0]]
+    if not clean:
+        print("no variant meets timing; the vendor control is left as it was")
+        return 1
+    _, fmax, (pl, rt) = max(clean, key=lambda r: r[1])
+    if os.path.isdir(VENDOR):
+        shutil.rmtree(VENDOR)
+    shutil.copytree(dirs[(pl, rt)], VENDOR)
+    how = "--vendor" if pl is None else f"--vendor --place-option {pl} --route-option {rt}"
+    print(f"installed {'defaults' if pl is None else f'place {pl} route {rt}'} "
+          f"({fmax:.3f} MHz) as {os.path.relpath(VENDOR, base.ROOT)}; rebuild with {how}")
     return 0
 
 
@@ -268,9 +330,19 @@ def main() -> int:
                     help="fail unless the committed sources equal fresh ones")
     ap.add_argument("--vendor", action="store_true",
                     help="build the committed sources with Gowin EDA")
+    ap.add_argument("--place-option", type=int, choices=range(5), default=None,
+                    help="Gowin -place_option for --vendor")
+    ap.add_argument("--route-option", type=int, choices=range(3), default=None,
+                    help="Gowin -route_option for --vendor")
+    ap.add_argument("--vendor-sweep", action="store_true",
+                    help="build place_option 0..3 x route_option 0..1 and install the "
+                         "best variant that meets timing as the vendor control")
+    ap.add_argument("--jobs", type=int, default=4, help="parallel Gowin builds in a sweep")
     args = ap.parse_args()
+    if args.vendor_sweep:
+        return vendor_sweep(args.jobs)
     if args.vendor:
-        return vendor_build()
+        return vendor_build(place=args.place_option, route=args.route_option)
     bad = []
     for fn, make in GENERATED.items():
         path = os.path.join(SRC, fn)

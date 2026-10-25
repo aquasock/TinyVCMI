@@ -25,7 +25,8 @@
 //     before RESET# rises;
 //   * each lane's DQS READ gate follows its own delay and offset and each
 //     lane's RCLKSEL its own setting (commands 2C, 2D, 2E over 22, 25, 06),
-//     and the lag and RBURST-level counters of frame 0x2F run in random mode.
+//     and the lag and RBURST-level counters of frame 0x2F run in random mode,
+//     with the RVALID-held capture switched on by command 29.
 module tb;
     reg sys_clk = 1'b0;
     always #10 sys_clk = ~sys_clk;
@@ -202,6 +203,7 @@ module tb;
     endtask
 
     integer dq_driven_at_write = 0;
+    integer idle_wait = 0;
 
     // Per-lane READ gates in random mode: lanes 0 and 1 at delay 2, k 0;
     // lane 2 at delay 5; lane 3 at delay 2, k 3.  Every gate a lane opens is
@@ -255,6 +257,8 @@ module tb;
         #30000;                                                 // its reply
         request(8'h2e, 8'h46);                                  // lane 1 RCLKSEL 6
         #30000;                                                 // its reply
+        request(8'h29, 8'h01);                                  // RVALID-held capture
+        #30000;                                                 // its reply
         request(8'h0c, 8'h04);                                  // random single READs
         #30000;
         if (dut.core.istate != 4'd12 && dut.core.istate != 4'd6) fail("not in random mode");
@@ -263,15 +267,27 @@ module tb;
         if (gates_seen < 100) fail("too few per-lane READ gates compared");
         if (dut.core.rc_lag_eval == 0) fail("no READ classified for lag");
         if (dut.core.rb_cyc == 0) fail("the RBURST level was not counted in random mode");
+        if (dut.core.rv_en_p2 !== 1'b1) fail("RVALID-held capture not enabled");
         request(8'h0c, 8'h00);
         #10000;
         if (dut.core.status4[104*8 +: 12] !== {3'd2, 3'd5, 3'd2, 3'd2} ||
             dut.core.status4[106*8 +: 8] !== {2'd3, 2'd0, 2'd0, 2'd0} ||
-            dut.core.status4[107*8 +: 12] !== {3'd3, 3'd3, 3'd6, 3'd3})
+            dut.core.status4[107*8 +: 12] !== {3'd3, 3'd3, 3'd6, 3'd3} ||
+            dut.core.status4[125*8] !== 1'b1)
             fail("frame 0x2F does not carry the per-lane settings");
         $display("      per-lane gates: %0d compared; %0d READs classified for lag over %0d PCLK",
                  gates_seen, dut.core.rc_lag_eval, dut.core.rb_cyc);
-        if (dut.core.istate != 4'd8) fail("not back in idle");
+        // idle mode refreshes every 7 us and waits tRFC after each, so the
+        // core is given up to 2 us to be seen in its idle state
+        idle_wait = 0;
+        while (dut.core.istate != 4'd8 && idle_wait < 2000) begin
+            #10;
+            idle_wait = idle_wait + 10;
+        end
+        if (dut.core.istate != 4'd8 || dut.core.mode != 3'd0) begin
+            $display("      state %0d mode %0d", dut.core.istate, dut.core.mode);
+            fail("not back in idle");
+        end
         if (row_open) fail("a row left open");
         $display("      %0d ACTIVATE, %0d WRITE, %0d READ (%0d random), %0d REFRESH, %0d leveling entries; longest refresh interval %0d ns",
                  nact, nwr, nrd, nrand, nref, nlevel, max_refi);

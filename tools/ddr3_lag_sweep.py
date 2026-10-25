@@ -9,7 +9,8 @@ once.  For each setting it runs closed-page single READs (mode 4) at the
 access period --gap and, at each check offset in --lats, reads which READ's
 pattern each lane held.  One line per setting: per lane, the largest share of
 READs holding their own pattern over those offsets and the offset it came
-at, and the RBURST level share.
+at, the RBURST level share and the RVALID share.  --rvalid checks each lane's
+word held from its last RVALID cycle (command 0x29).
 
     tools/ddr3_lag_sweep.py [--prewrite] [--gap 40] [--lats 12 16 20 24 28]
                             [--rclksel 0 .. 7] [--delays 0 .. 7] [--gates 0 .. 3]
@@ -37,6 +38,8 @@ def main() -> int:
     ap.add_argument("--gates", type=int, nargs="+", default=list(range(4)))
     ap.add_argument("--seconds", type=float, default=0.08)
     ap.add_argument("--slips", type=int, nargs=4, default=[0, 0, 0, 4])
+    ap.add_argument("--rvalid", action="store_true",
+                    help="check each lane's word held from its last RVALID cycle (0x29)")
     args = ap.parse_args()
 
     core = probe.Core(args.port)
@@ -51,12 +54,14 @@ def main() -> int:
         core.address(0, args.row & ~1)
         core.set_slips(args.slips)
         core.request(0x09, max(args.gap, 8))
+        core.request(0x29, 1 if args.rvalid else 0)
         for rs in args.rclksel:
             for d in args.delays:
                 for g in args.gates:
                     core.set_lanes([d] * 4, [g] * 4, [rs] * 4)
                     best = [(0.0, 0)] * 4
                     rb = [0.0] * 4
+                    rv = [0.0] * 4
                     for lat in args.lats:
                         core.request(0x26, lat)
                         core.mode(4)            # entering random mode arms the counters
@@ -69,10 +74,12 @@ def main() -> int:
                             if own > best[lane][0]:
                                 best[lane] = (own, lat)
                         rb = [100.0 * c / (f["cycles"] or 1) for c in f["rb"]]
+                        rv = [100.0 * c / (f["cycles"] or 1) for c in f["rv"]]
                     lanes = "  ".join(f"L{lane} {best[lane][0]:5.1f}@{best[lane][1]:2d}"
                                       for lane in range(4))
                     print(f"rclksel {rs} delay {d} gate {g}: own {lanes}   RB "
-                          + " ".join(f"{v:5.1f}" for v in rb), flush=True)
+                          + " ".join(f"{v:5.1f}" for v in rb) + "   RV "
+                          + " ".join(f"{v:5.1f}" for v in rv), flush=True)
     finally:
         core.mode(0)
         core.close()
