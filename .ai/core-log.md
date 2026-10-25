@@ -1674,3 +1674,49 @@ Build the controller on the stream-proven read path: a read command interface wi
 - User Test: N/A
 
 ---
+
+## 52 COMMIT Unreleased 2026-10-24T18:40:00-07:00
+
+#### Coming From:
+
+Unreleased 35ed882
+
+#### Purpose:
+
+Establish whether LiteDRAM's control layer can carry TinyVCMI's controller in the open flow, and build the boundary pieces that port needs, before committing a cycle to either that path or a hand-written one.
+
+#### Outcome:
+
+The spike `tools/litedram_ctrl_spike.sh` instantiated LiteDRAM's core against a stub PHY providing only a `PhySettings` object and a DFI interface, and it generates, synthesises for GW5AST-138C and places at 1,958 LUT4, 883 DFF and 308 ALU cells, about 1% of the device; none of TOOL-025's three gaps reappears, because all three belong to the upstream PHY and its constraints rather than to the control layer. `tools/litedram_ctrl_gen.py` then emits the same core at this board's geometry, 8 banks, 15 rows and 10 columns, as one module with the DFI at its ports, and correcting one measurement mattered: LiteDRAM's own GW5 PHY sets `dfi_databits` to `(8 // nphases) * databits`, so 64 bits and not 32, and four phases then carry the 256 bits of one BL8 burst, which is what the hand-written PHY captures per PCLK. The PHY extraction is `fpga/ddr3_ctrl/ddr3_phy.v`, 928 body lines lifted unchanged from the hardware-proven `fpga/ddr3_write/top.v` with only the 17 boundary declarations promoted to ports, and it synthesises standalone. Two properties of that PHY shape the port: its write path broadcast one eight-bit pattern to all 32 DQ pins, so it is repointed at `ddr3_wdata`, a burst fan-out whose pattern mode keeps the old behaviour bit-identical and whose permutation a one-hot walk over all 256 bits proves; and its read path locks rotations of a known pattern, so `ddr3_derot` applies that transpose and rotation statically from a frozen vector, letting calibration happen once at start-up through the pattern path that already measures 100% on streams. The remaining pieces are `ddr3_init.v`, the power-up in TOOL-019's order with a passing bench; `ddr3_sync.v`, the PLL wait, DLL release, LOCK, settle, HOLD-wrapped UPDNCNTL pulse and clock-stopped divider reset, also passing; `dfi_adapter.v`, which takes commands from any of the four DFI phases through a two-deep queue, slices a burst two beats per phase and raises `rd_underflow` when a burst never arrives, which is TOOL-030 made countable at a boundary; and `ddr3_cmdmux.v`, which gives the power-up the command pins until it is done and then the adapter, in the proven op encoding. Every bench caught at least one of my own errors before it reached RTL: single-bit command pins declared four bits wide, a ZQCL vector written in the wrong bit order twice, and two testbench assumptions that contradicted the proven design's contract. DM has no mask path yet. No image was written, nothing was packed, and the Tang was not accessed in this cycle; the hardware-proven designs are untouched, since `ddr3_phy.v` is an extracted copy and `fpga/ddr3_write/top.v` still carries its own inline wiring. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering and active-log capacity.
+
+#### Next Steps:
+
+Build the controller top level that instantiates the seven verified pieces with the generated core, export the memory clock from the PHY for the core's `sys4x` domain, add the boot training pass that freezes the rotation vector and delays before the write path leaves pattern mode, then gate the whole design with simulation, nextpnr, a clean vendor control and the 306-table image comparison; the DM mask path and TOOL-030's scatter limitation remain open.
+
+#### Files Modified:
+
+- docs/ddr3-open-flow.md
+- fpga/ddr3_ctrl/ddr3_cmdmux.v
+- fpga/ddr3_ctrl/ddr3_derot.v
+- fpga/ddr3_ctrl/ddr3_init.v
+- fpga/ddr3_ctrl/ddr3_phy.v
+- fpga/ddr3_ctrl/ddr3_sync.v
+- fpga/ddr3_ctrl/ddr3_wdata.v
+- fpga/ddr3_ctrl/dfi_adapter.v
+- fpga/ddr3_ctrl/tb_ddr3_cmdmux.v
+- fpga/ddr3_ctrl/tb_ddr3_derot.v
+- fpga/ddr3_ctrl/tb_ddr3_init.v
+- fpga/ddr3_ctrl/tb_ddr3_sync.v
+- fpga/ddr3_ctrl/tb_ddr3_wdata.v
+- fpga/ddr3_ctrl/tb_dfi_adapter.v
+- tools/litedram_ctrl_gen.py
+- tools/litedram_ctrl_spike.sh
+- tools/sim_dfi_adapter.sh
+
+#### Status:
+
+- Build: PASS
+- Deployment: N/A
+- User Test: N/A
+
+---

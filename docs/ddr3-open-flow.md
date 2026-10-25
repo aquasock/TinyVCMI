@@ -2347,3 +2347,62 @@ that serves memory in streams is unaffected, which is why the controller work
 continues on the stream path.
 
 The desktop `tinytang.bin` was restored afterwards and answered `0x54`.
+
+## The controller path: a spike, and seven pieces under it
+
+### The spike, and what it settled
+
+The Open question was whether LiteDRAM's control layer could be built by this
+open flow at all, since its *full* design stops on three gaps (TOOL-025). A
+stub PHY that provides only `phy.settings` and `phy.dfi` answers it:
+`tools/litedram_ctrl_spike.sh` generates the core against that stub, synthesises
+it for GW5AST-138C and **places** it — 1,958 LUT4, 883 DFF, about 1% of the
+device. None of the three gaps reappears, because all three belong to the PHY
+and its constraints, not to the control layer.
+
+`tools/litedram_ctrl_gen.py` then emits the same core at **this board's
+geometry** — 8 banks, 15 rows, 10 columns, DFI 64 bits over 4 phases, DDR3-800
+timings — as one Verilog module with the DFI at its ports (71 top-level
+signals). LiteDRAM's own GW5 PHY sets `dfi_databits = (8 // nphases) * databits`,
+so 64 and not 32: four phases then carry the 256 bits of one BL8 burst, which is
+exactly what the hand-written PHY captures in one PCLK. Getting that wrong would
+have put the adapter's data path out by a factor of two.
+
+### What the extraction found
+
+`fpga/ddr3_ctrl/ddr3_phy.v` is the pin-level PHY lifted out of the proven
+`fpga/ddr3_write/top.v`: 928 body lines unchanged, and only the 17 boundary
+declarations promoted to ports. It synthesises standalone.
+
+Two facts about it matter more than the extraction itself. Its **write path is a
+pattern generator**: all 32 DQ serializers took one eight-bit pattern broadcast
+to every pin, so it is now repointed at `ddr3_wdata`, a 256-bit burst fan-out
+with a pattern mode that keeps the old behaviour bit-identical. And its **read
+path is pattern-locked**: `rd_align` discovers each lane's rotation by comparing
+against a known pattern, which a controller does not have. `ddr3_derot` is the
+answer — the same transpose and three-stage byte rotation as `rd_align`, driven
+by a frozen rotation vector, so the calibration happens once at start-up with
+the pattern path (which measures 100% on streams) and every arbitrary burst
+afterwards is derotated statically.
+
+DM has no mask path yet: `ddr3_dm` is a TBUF fed from its own serializer pair.
+
+### The pieces, each with a unit test
+
+- `ddr3_init.v` — RESET#, CKE, MR2/MR3/MR1/MR0 and ZQCL in the order TOOL-019
+  records, with the DDR3-800 values the proven controller uses.
+- `ddr3_sync.v` — PLL wait, DLL release, LOCK, settle, the HOLD-wrapped
+  UPDNCNTL pulse, the memory-clock stop with the divider reset inside it, ready.
+- `dfi_adapter.v` — DFI on one side, the PHY on the other: commands from any of
+  the four phases, a two-deep queue, two beats per phase on the way back out,
+  and `rd_underflow` when a burst the controller expects never arrives — the
+  scatter limitation of TOOL-030 turned into a counter at a boundary.
+- `ddr3_wdata.v` — the burst-to-pin permutation, proven with a one-hot walk over
+  all 256 bits.
+- `ddr3_derot.v` — every lane rotation 0 to 7 undone, lanes independent.
+- `ddr3_cmdmux.v` — the power-up owns the command pins until it is done, then
+  the adapter does, with the proven op encoding.
+
+Every bench caught at least one of my own mistakes before it could reach RTL:
+a four-bit declaration for single-bit command pins, a wrong ZQCL vector twice,
+and two testbench assumptions that contradicted the proven design's contract.

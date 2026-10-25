@@ -147,6 +147,7 @@ Topic IDs are the `record_id` prefix. An entry reserves a namespace; it does not
 | Do single closed-page READs return their burst? | TOOL | TOOL-027 |
 | Does a single read burst straddle two captured words? | TOOL | TOOL-029 |
 | Do closed-page scatter READs reach the read capture? | TOOL | TOOL-030 |
+| Can LiteDRAM's control layer be built without its PHY? | TOOL | TOOL-031 |
 | Why did the Gowin control miss PCLK timing? | TOOL | TOOL-028 |
 | Which sources and licenses constrain reuse? | PROV | PROV-001 |
 
@@ -200,6 +201,7 @@ TOOL-026: "The READ gate's memory-clock offset k sets the frame move per read ga
 TOOL-027: "Single closed-page READs to sixteen pattern rows pass at no gate position; at the stream-stable one the right burst is whole in 12.5% of READs, 7 PCLK after the command"
 TOOL-028: "GowinSynthesis packs two-flop setting synchronizers into counter-addressed LUT-RAM shift registers unless syn_srlstyle = registers, which cost the Gowin control PCLK timing"
 TOOL-029: "A single read burst straddles two captured words: cycle 11 with slips 0,0,0,4 in a raw capture, and a runtime per-lane beat slip lifts the best-position pass rate from 5.5% to 25.4%"
+TOOL-031: "LiteDRAM's control layer alone generates, synthesises and places in the open flow at ~1% of the LUTs, with none of TOOL-025's three gaps"
 TOOL-030: "Closed-page scatter READs do not reach the read capture: 97.9% match nowhere, and neither cadence (1.17% to 0.64% over gap 8 to 255) nor any of the 32 gate positions (best 0.40%) recovers them, while streams match every cycle"
 PROV-001: "Reuse source and interface ideas with their original license boundaries and attribution intact"
 ```
@@ -827,6 +829,20 @@ PROV-001: "Reuse source and interface ideas with their original license boundari
     - "TinyVCMI fpga/ddr3_write/tb_pos.v and tools/sim_rd_check.sh"
     - "TinyVCMI docs/ddr3-open-flow.md: Which position a lone burst lands in"
   verification: "Measured on the Tang Console 138K on 2026-10-24 with the image whose .bin is c15996cbcd87b4c42e6939fdc7f1d6b5150ee70fbe36f9dc8953d062e8d7816d, equal on all 306 DDR3 tables to its Gowin build. calibrate aligned all 32 DQ bits on every lane at 24,957 of 24,958 eligible cycles before the classifier ran. The cadence sweep used the core's own rand_wait derivation rather than a new register, so it needed no rebuild. One sweep was discarded: a memtest over banks 0 to 3, rows 0 to 2 overwrote three of the sixteen pattern rows the classifier compares against, and the gate sweep taken next read 2.03%; it was repeated after prewrite, and only the clean 0.40% figure is recorded. The desktop core was restored afterwards and answered 0x54."
+
+- record_id: TOOL-031
+  topic_id: TOOL
+  title: "LiteDRAM's control layer builds in the open flow without its PHY"
+  status: VERIFIED
+  verified_date: 2026-10-24
+  statement: "Instantiated against a stub PHY that provides only a PhySettings object and a DFI interface, LiteDRAM's control layer -- DFI injector, controller, crossbar, bank machines and refresher -- generates as one Verilog module, synthesises for GW5AST-138C with the open-flow cell library and places and routes with nextpnr-himbaechel at 1,958 LUT4, 883 DFF and 308 ALU cells. None of TOOL-025's three gaps reappears: no generated clock, no differential IO_LOC pair and no OSER8.FCLK sink exists in the control layer, so all three belong to the upstream PHY and its constraints. Generated at this board's geometry the core has 8 banks, 15 row bits, 10 column bits and a DFI of 64 bits over 4 phases, because LiteDRAM's own GW5 PHY sets dfi_databits to (8 // nphases) * databits; four phases then carry the 256 bits of one BL8 burst, which is what the hand-written PHY captures per PCLK."
+  consequence: "Porting the control layer is a flow-viable path and does not require the three constraint gaps to be closed first, which makes it a candidate for the controller in place of a hand-written one. The cost moves to the PHY boundary: the hand-written PHY writes a single eight-bit pattern broadcast to all 32 DQ pins, has no write-mask path, and its read calibration locks rotations of a known pattern rather than arbitrary data. A controller therefore needs a per-pin write burst, a DM mask, and a start-up calibration whose frozen result is applied statically to later traffic."
+  sources:
+    - "TinyVCMI tools/litedram_ctrl_spike.sh and tools/litedram_ctrl_gen.py"
+    - "TinyVCMI fpga/ddr3_ctrl/{dfi_adapter,ddr3_phy,ddr3_init,ddr3_sync,ddr3_wdata,ddr3_derot,ddr3_cmdmux}.v with their testbenches"
+    - "Tang-PSX third_party/litedram, litex, migen and litex-boards"
+    - "TinyVCMI docs/ddr3-open-flow.md: The controller path"
+  verification: "The spike generated the core against a stub, synthesised it and placed it with nextpnr-himbaechel for GW5AST-LV138PG484AC1/I0. The generator then emitted the core at board geometry with the DFI at its ports and synthesised it clean. Each hand-written piece has a passing unit simulation: dfi_adapter (commands on any phase, burst slicing, write data, underflow), ddr3_init (power-up order), ddr3_sync (start-up order), ddr3_wdata (all 256 burst bits by one-hot walk), ddr3_derot (every rotation 0 to 7), ddr3_cmdmux (arbitration and op encoding). The extracted PHY synthesises standalone and again with its write path repointed. No image was written and no hardware was accessed."
 
 - record_id: PROV-001
   topic_id: PROV
