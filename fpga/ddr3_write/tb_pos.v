@@ -48,6 +48,7 @@ module tb_pos;
         .rvalid(rvalid), .rv_enable(rv_enable),
         .issue_idx(issue_idx), .issue_col(issue_col), .lat(lat), .step(step),
         .slip_enable(slip_enable), .slip(slip), .refi(refi),
+        .log_skip(8'd0), .log_page(6'd0), .log_go(1'b0),
         .n_both(n_both), .n_only11(n_only11), .n_only19(n_only19),
         .n_other(n_other), .pos_range(pos_range), .pos_cls(pos_cls),
         .locked(locked), .expect_rot(expect_rot), .last_rot(last_rot),

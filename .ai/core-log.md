@@ -2028,3 +2028,40 @@ Run the user-approved next cycle: condition each lane's own-READ hits in the ven
 - User Test: N/A
 
 ---
+
+## 62 COMMIT Unreleased 2026-10-25T08:07:28-07:00
+
+#### Coming From:
+
+Unreleased 0a7edbb
+
+#### Purpose:
+
+Find what property of an isolated READ decides whether a trained DDR3 lane returns its own burst in the proven controller's accepted read state, by logging every READ with its address and each lane's held word, and then, with the user's approval, sweep a trained lane's gate, RCLKSEL and IDES8_MEM CALIB to find what makes its bursts whole.
+
+#### Outcome:
+
+`fpga/ddr3_write/rd_check.v` now logs 1024 READs at the check offset into block RAM after passing over a set number of 1024s, each with its location, burst, refresh phase and per lane the least rotation held, whether its pins agreed and its rotation, and copies 16-entry pages out; `fpga/ddr3_write/wr_core.v` adds commands `0x32` to `0x34` and the 148-byte frame `0x34`, and its page-copy pulse waits a PCLK past the page number's synchronizer. `fpga/ddr3_write/tb_check.v` checks the skip, the 1024-entry limit and two pages entry by entry, and a log skipping one READ fewer fails it; `fpga/ddr3_write/tb_wr.v` takes frame `0x34` over the link equal to the log; `fpga/ddr3_write/tb_pos.v` ties the new inputs. `tools/ddr3_write_probe.py` gained `train --log`, `--sweep` and `--calib-fix`, and `logreport` with a beat-map fit; the second agent on the user's new socat link, Codex, reviewed the diff read-only and found three host-side faults, position bins dropping a remainder, the first 64 entries miscounted as not recently read and a fixed capture wait, all fixed. `tools/ddr3_boot_repeat.sh` keeps a log per load and passes `TRAIN_EXTRA` to training. All simulations pass; the open image, SHA-256 `7864144d88abd4f93561fdbe6faa4525ae93aae1371c705084828e6c89bff681`, closes PCLK at 118.95 MHz with the log in 4 BSRAM, and its Gowin control, `71ca168124e99909315dc9fa5bf00be61849d1a325ab8ad3dfb4559885022431`, at 103.195 MHz with no negative slack; they are equal on all 306 DDR3 tables. On the Tang nine loads ran as `ddr3_log.bin` and `ddr3_log_vendor.bin`, each calibrating cleanly. In the accepted state a trained lane's word is fixed per location and one rule fits all sixteen: one memory-clock slot of the burst is a copy of the next, so no trained READ had been right and the 31% own share of entries 59 to 61 was the five patterns that slot leaves unchanged. Codex read from the proven controller's netlist that each lane's `read_adj` drives the CALIB of its eight `IDES8_MEM` through `ides_calib_d`, pulsing after every failed RCLKSEL sweep up to eight times before the gate advances, and that a lane must also read back a fixed pattern, which its start-up writes as one burst to bank 0, row `0x1000` before each RCLKSEL trial, the write's address and count from a cut simulation it ran in its own temporary directory; the CALIB wiring was checked here. With CALIB pulses at the trained setting, every trained lane in every load, six over four loads, returned whole bursts after exactly two pulses in the accepted state, the lag check of the four `--calib-fix` loads then at 100.0% own on every trained lane but open lane 3 at 80%, its framing right and its eye marginal; one open load trained no lane, and sweeping a trained lane's gate lost the accepted state. TOOL-039 was added, TOOL-038 revised and `docs/ddr3-open-flow.md` gained the section. The desktop core was restored after every load and answered `0x54`. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering and active-log capacity.
+
+#### Next Steps:
+
+Bring for approval a read training that copies the proven controller's search, gate positions outer, CALIB 0 to 8 middle and RCLKSEL inner, passing a lane only on one RVALID cycle and one RBURST pulse per READ and whole read-back data, so lanes that training never brought to the accepted state get the chance the vendor gives them, and then centre each trained lane's read delay to close open lane 3's corrupt fifth; run it across several loads of both images, and once every lane trains and returns 100% of isolated READs at a fixed latency with address-derived data, the acceptance gate for resuming controller work is met. The first-load stall after a Tang reboot, the `D108` unused-pin contradiction and the `is_mipi` bug outside the DDR context remain open.
+
+#### Files Modified:
+
+- docs/ddr3-open-flow.md
+- fpga/ddr3_write/rd_check.v
+- fpga/ddr3_write/tb_check.v
+- fpga/ddr3_write/tb_pos.v
+- fpga/ddr3_write/tb_wr.v
+- fpga/ddr3_write/wr_core.v
+- tools/ddr3_boot_repeat.sh
+- tools/ddr3_write_probe.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: N/A
+
+---

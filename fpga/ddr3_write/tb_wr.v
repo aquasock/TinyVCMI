@@ -29,7 +29,9 @@
 //     with the RVALID-held capture switched on by command 29, and the read-
 //     training counters of frame 0x31 count the random READs;
 //   * frame 0x2F, the longest, reaches the link whole: its header and all
-//     206 payload bytes equal to status4.
+//     206 payload bytes equal to status4;
+//   * the READ log keeps every random READ, and a page copied by command 33
+//     reaches the link whole in frame 0x34, its entries those of the log.
 module tb;
     reg sys_clk = 1'b0;
     always #10 sys_clk = ~sys_clk;
@@ -326,6 +328,40 @@ module tb;
             fail("frame 0x2F does not arrive whole over the link");
         end
         $display("      frame 0x2F: %0d bytes received, payload equal to status4", rx_n);
+        // the READ log: copy page 1, then frame 0x34 over the link
+        if (dut.core.rc_log_n < 300 || dut.core.rc_log_n > dut.core.rc_total + 2 ||
+            dut.core.rc_log_n + 2 < dut.core.rc_total)
+            fail("the READ log did not keep every random READ");
+        request(8'h33, 8'h01);
+        #30000;                                                 // its reply
+        if (dut.core.rc_log_page !== 6'd1) fail("log page 1 was not copied");
+        rx_n = 0;
+        listen = 1;
+        request(8'h34, 8'h00);
+        idle_wait = 0;
+        while (rx_n < 152 && idle_wait < 1200000) begin
+            #1000;
+            idle_wait = idle_wait + 1000;
+        end
+        #2000;
+        listen = 0;
+        frame_bad = 0;
+        if (rx_n != 152 || rx_buf[0] !== 8'haa || rx_buf[1] !== 8'h00 ||
+            rx_buf[2] !== 8'h08 || rx_buf[3] !== 8'd148 || rx_buf[6] !== 8'd1)
+            frame_bad = 1;
+        for (fi = 0; fi < 148; fi = fi + 1)
+            if (rx_buf[4 + fi] !== dut.core.status6[8*fi +: 8])
+                frame_bad = frame_bad + 1;
+        if (dut.core.status6[0 +: 16] !== {5'd0, dut.core.rc_log_n} ||
+            dut.core.status6[32 +: 72] !== dut.core.check.log_mem[16])
+            frame_bad = frame_bad + 1;
+        if (frame_bad != 0) begin
+            $display("      %0d bytes, header %h %h %h %h, %0d wrong",
+                     rx_n, rx_buf[0], rx_buf[1], rx_buf[2], rx_buf[3], frame_bad);
+            fail("frame 0x34 does not carry log page 1 whole over the link");
+        end
+        $display("      READ log: %0d entries; page 1 over the link, entry 16 equal to the log",
+                 dut.core.rc_log_n);
         // idle mode refreshes every 7 us and waits tRFC after each, so the
         // core is given up to 2 us to be seen in its idle state
         idle_wait = 0;

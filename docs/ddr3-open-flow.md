@@ -2566,6 +2566,50 @@ sequence itself, alike on every lane, rather than by each lane's FIFO state at
 start-up; what property of a READ decides it is the next measurement (TOOL-038).
 Two of three open loads reached the vendor's state on no lane at all.
 
+## The READ log: one memory clock off, and CALIB puts it right
+
+`rd_check` now logs every READ at the check offset, 1024 of them after
+skipping `log_skip` x 1024, into block RAM: location, burst, refresh phase, and
+per lane the least rotation held, whether its pins agreed and its rotation
+(commands `0x32` to `0x34`, frame `0x34`). `ddr3_write_probe.py train --log`
+keeps one at the trained settings and `logreport` conditions every lane's result
+offline: by location, burst bit, position, refresh phase and the READ before,
+plus a **beat map** -- for each held bit, which beat of the expected burst it
+came from.
+
+On a trained lane the result is deterministic per location, 100% or 0%, and the
+beat map explains every location with one rule: one 2-beat slot of the word, one
+memory clock, carries a copy of the next one (control lane 1: burst beats 2-3
+replaced by 4-5; open lane 3: beats 0-1 by 2-3). No trained READ was really
+right. The "own" share of TOOL-037 and TOOL-038 is the five of sixteen patterns
+whose two pairs happen to be equal, which is why it was whole sixteenths, alike
+on every lane and flat across lags.
+
+The proven controller's netlist (read by the second agent, CALIB wiring checked
+here) explains the fix: each lane's `read_adj` drives the `CALIB` of all eight of
+its `IDES8_MEM` through `ides_calib_d`, pulsing once after every failed RCLKSEL
+sweep, up to eight times before the gate moves, and a lane passes only if its
+read-back data also equals a fixed pattern. Our training had neither the CALIB
+step nor the data check. `train --calib-fix` adds CALIB pulses to each trained
+lane at its trained setting until its log shows whole bursts in the vendor's
+state:
+
+| Load | Trained lanes | CALIB pulses to whole | Own READs after |
+|---|---|---|---|
+| control (sweep) | 2 | 2 | 100% |
+| control 1 | 1 | 2 | 100% |
+| control 2 | 1, 2 | 2, 2 | 100%, 100% |
+| open 1 | 0, 3 | 2, 2 | 100%, 80% |
+| open 2 | none | -- | -- |
+
+Every trained lane in every load came right after exactly two pulses, with one
+RVALID cycle and one RBURST pulse per READ throughout. Open lane 3 has the right
+framing but a fifth of its words are corrupt -- a marginal read eye, not a slip.
+The `--sweep` around a trained lane also showed the state is order-dependent:
+moving a lane's gate can lose the vendor's state even at its trained setting.
+What remains is that training reaches the vendor's state on only some lanes, and
+on none in some open loads (TOOL-039).
+
 ## The controller path: a spike, and seven pieces under it
 
 ### The spike, and what it settled

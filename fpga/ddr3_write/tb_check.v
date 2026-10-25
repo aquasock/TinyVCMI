@@ -26,7 +26,11 @@
 //     before, outside the window, is spread as chance repeats predict;
 //   * with rv_enable, a burst presented for one PCLK with RVALID high and
 //     noise on every other cycle is held and checked one offset later, and
-//     without it the same READs fail.
+//     without it the same READs fail;
+//   * the READ log passes over log_skip * 1024 READs, then keeps 1024 and
+//     no more, and two pages of it read back entry by entry as the model
+//     answered: each READ's location and burst, and per lane the pattern
+//     held, whether its pins agreed and its rotation.
 module tb_check;
     reg pclk = 1'b0;
     always #5 pclk = ~pclk;
@@ -58,12 +62,20 @@ module tb_check;
     wire [31:0]  lag_eval;
     wire [1279:0] lag_cnt;
     reg  [9:0]   refi = 10'd0;
+    reg  [7:0]   log_skip = 8'd0;
+    reg  [5:0]   log_page = 6'd0;
+    reg          log_go = 1'b0;
+    wire [10:0]  log_n;
+    wire [1151:0] log_buf;
+    wire [5:0]   log_buf_page;
 
     rd_check dut (
         .pclk(pclk), .rst(rst), .arm(arm), .dq_q(dq_q), .issue(issue),
         .rvalid(rvalid), .rv_enable(rv_enable),
         .issue_idx(issue_idx), .issue_col(issue_col), .lat(lat), .step(step),
         .slip_enable(slip_enable), .slip(slip), .refi(refi),
+        .log_skip(log_skip), .log_page(log_page), .log_go(log_go),
+        .log_n(log_n), .log_buf(log_buf), .log_buf_page(log_buf_page),
         .n_both(n_both), .n_only11(n_only11), .n_only19(n_only19),
         .n_other(n_other), .pos_range(pos_range), .pos_cls(pos_cls),
         .lag_eval(lag_eval), .lag_cnt(lag_cnt),
@@ -111,6 +123,8 @@ module tb_check;
     integer lane_lag [0:3];         // answer lane l with READ n - lag; -1 a non-pattern word
     reg [7:0] pend_pat [0:1023];
     reg [7:0] by_no [0:4095];       // every READ's pattern by its number
+    reg [3:0] idx_no [0:4095];      // and its location and burst
+    reg [6:0] col_no [0:4095];
     integer   pend_no [0:1023];
     integer   seed = 32'h1234;
     integer   q, r;
@@ -145,6 +159,8 @@ module tb_check;
             pend_pat[cyc % 1024] <= rom(r[3:0]);
             pend_no[cyc % 1024] <= nissued;
             by_no[nissued % 4096] <= rom(r[3:0]);
+            idx_no[nissued % 4096] <= r[3:0];
+            col_no[nissued % 4096] <= r[10:4];
             nissued <= nissued + 1;
         end else begin
             pend_no[cyc % 1024] <= -1;
@@ -201,6 +217,34 @@ module tb_check;
                     $display("      lane %0d lag %0d: %0d of %0d", ll, kk, lagc(ll, kk), lag_eval);
                     fail("a lane classified at the wrong lag");
                 end
+        end
+    endtask
+
+    // copy log page pg and check its sixteen entries against the READs
+    // 1024 + 16 pg onwards: lane 0 and 3 their own, lane 1 the READ two
+    // before, lane 2 the 0x55 word
+    task check_page(input integer pg);
+        integer e, n, ll;
+        reg [71:0] ent;
+        reg [7:0] want;
+        begin
+            @(posedge pclk) begin log_page <= pg; log_go <= 1'b1; end
+            @(posedge pclk) log_go <= 1'b0;
+            repeat (24) @(posedge pclk);
+            if (log_buf_page != pg) fail("the log page copied is not the one asked for");
+            for (e = 0; e < 16; e = e + 1) begin
+                n = 1024 + 16 * pg + e;
+                ent = log_buf[72 * e +: 72];
+                if (ent[51:48] != idx_no[n] || ent[58:52] != col_no[n])
+                    fail("a log entry's location or burst is not its READ's");
+                for (ll = 0; ll < 4; ll = ll + 1) begin
+                    want = (ll == 1) ? by_no[n - 2] : (ll == 2) ? 8'h55 : by_no[n];
+                    if (ent[9*ll +: 8] != want || !ent[9*ll + 8])
+                        fail("a log entry's lane pattern or pin check is wrong");
+                    if (ll != 2 && ent[36 + 3*ll +: 3] != base_rot[ll])
+                        fail("a log entry's lane rotation is wrong");
+                end
+            end
         end
     endtask
 
@@ -367,6 +411,17 @@ module tb_check;
         $display("     10: without RVALID: %0d/%0d class_ok", class_ok, total);
         rv_mode = 0;
         lat <= 5'd11;
+
+        // 11: the READ log, after passing over the first 1024 READs
+        log_skip <= 8'd1;
+        rearm;
+        lane_lag[1] = 2; lane_lag[2] = -1;
+        run(2100);
+        if (log_n != 11'd1024) fail("the log did not stop at 1024 entries");
+        check_page(0);
+        check_page(63);
+        $display("     11: log of %0d READs from READ 1024, pages 0 and 63 as answered", log_n);
+        log_skip <= 8'd0;
 
         if (errors == 0)
             $display("PASS  latency, lock, jump, predicted move, pin faults, lane slips, lag and RVALID as specified");

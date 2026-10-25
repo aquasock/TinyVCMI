@@ -41,7 +41,16 @@ chosen over the link.  This tool opens TinyTang's `fpgapipe` once and:
               high cycles and RBURST pulses each equal the READs issued, and
               lock it at the second passing RCLKSEL in a row (frame 0x31); then
               check the trained settings with the lag classifier and report,
-              per lane, how many READs back its delivered burst most often is
+              per lane, how many READs back its delivered burst most often is;
+              --log FILE then keeps a READ log at the trained settings (0x32 to
+              0x34) and saves it as JSON; --sweep then steps each trained
+              lane's gate +/-3 memory clocks at every RCLKSEL, and then gives
+              it 1 to 7 CALIB pulses at its trained setting, reporting at each
+              point its RVALID and RBURST per READ, own share and beat map
+  logreport   offline, from a saved READ log: per lane, the share of READs
+              that returned their own burst by location, by burst bit, by
+              position in the READ sequence, by refresh phase and by the
+              READ before, and which READ a wrong word belongs to
   lag         closed-page single READs with each lane's own READ gate delay,
               gate offset and RCLKSEL (commands 0x2C, 0x2D, 0x2E); at each
               check offset in --lats, which READ's pattern every lane held --
@@ -66,6 +75,7 @@ Usage:
 
 import argparse
 from collections import Counter
+import json
 import sys
 import time
 
@@ -210,6 +220,33 @@ class Core:
                 "rv": [u32(8 + 4 * lane) for lane in range(4)],
                 "rb": [u32(24 + 4 * lane) for lane in range(4)]}
 
+    def log_page(self, page: int) -> dict:
+        """Copy READ-log page `page` (0x33) and read it (0x34): 148 payload bytes."""
+        self.request(0x33, page)
+        time.sleep(0.002)                       # the copy takes 18 PCLK
+        r = self.request(0x34, expect=4 + 148)
+        if r[2] != 0x08 or r[3] != 148:
+            raise RuntimeError(f"log frame is {r[2]:#04x}/{r[3]}, expected 0x08/148")
+        b = r[4:]
+        if b[2] != page:
+            raise RuntimeError(f"log page {b[2]} copied, {page} asked for")
+        entries = []
+        for e in range(16):
+            v = int.from_bytes(b[4 + 9 * e:13 + 9 * e], "little")
+            entries.append({
+                "loc": (v >> 48) & 15, "burst": (v >> 52) & 127, "refi": (v >> 59) & 1023,
+                "lanes": [{"pat": (v >> (9 * l)) & 255, "pins": (v >> (9 * l + 8)) & 1,
+                           "rot": (v >> (36 + 3 * l)) & 7} for l in range(4)]})
+        return {"n": int.from_bytes(b[0:2], "little"), "skip": b[3], "entries": entries}
+
+    def read_log(self, pages: int = 64) -> list:
+        """The logged entries in READ order, at most `pages` pages of 16."""
+        first = self.log_page(0)
+        out = first["entries"]
+        for page in range(1, min((first["n"] + 15) // 16, pages)):
+            out += self.log_page(page)["entries"]
+        return out[:min(first["n"], 16 * pages)]
+
     def set_lanes(self, delays, gates, rclksels):
         """Each lane's READ gate delay, gate offset and RCLKSEL."""
         for lane in range(4):
@@ -309,6 +346,206 @@ def lag_line(lat: int, g: dict) -> str:
     lags = " ".join(str(k) for k in range(LAGS + 1))
     return (f"lat {lat:2d}: {g['eval']} READs, % at lag {lags} none: {lanes}"
             f"   RBURST level % {rb}   RVALID % {rv}")
+
+
+def rot8(w: int, r: int) -> int:
+    return ((w << r) | (w >> (8 - r))) & 255
+
+
+def beat_map(ents: list, lane: int):
+    """Which beats a lane's word carries, from a READ log.
+
+    For each location, the raw word the lane held most often; then, at each
+    framing rotation R, for each bit of that word, the beat of the expected
+    word rot(P, R) -- or a constant -- that equals it at every location seen.
+    Returns (% of READs holding their location's most frequent word, R, the
+    source of bits 0..7 as strings), R and sources None when no single map
+    explains every location.  A lane that captures whole bursts maps every
+    bit b to beat b.
+    """
+    raw, det = {}, 0
+    for loc in range(16):
+        c = Counter(rot8(e["lanes"][lane]["pat"], e["lanes"][lane]["rot"])
+                    for e in ents if e["loc"] == loc)
+        if c:
+            raw[loc], cnt = c.most_common(1)[0]
+            det += cnt
+    fits = []
+    for R in range(8):
+        srcs = []
+        for bit in range(8):
+            hb = [(raw[l] >> bit) & 1 for l in sorted(raw)]
+            beats = [b for b in range(8)
+                     if hb == [(rot8(RC_PATTERNS[l], R) >> b) & 1 for l in sorted(raw)]]
+            if beats:
+                srcs.append(str(bit) if bit in beats else str(beats[0]))
+            elif len(set(hb)) == 1:
+                srcs.append(f"c{hb[0]}")
+            else:
+                srcs.append("?")
+        if "?" not in srcs:
+            fits.append((sum(srcs[b] == str(b) for b in range(8)), R, srcs))
+    fits.sort(reverse=True)
+    pct = 100.0 * det / max(len(ents), 1)
+    return (pct, fits[0][1], fits[0][2]) if fits else (pct, None, None)
+
+
+def slip_point(core: "Core", args, sets: list) -> tuple:
+    """Random mode at `sets`; the training counters and 256 logged READs."""
+    core.set_lanes([x[0] for x in sets], [x[1] for x in sets], [x[2] for x in sets])
+    core.request(0x26, args.log_lat)
+    core.request(0x32, args.log_skip)
+    core.mode(4)
+    reads = (args.log_skip + 1) * 1024
+    time.sleep(max(0.05, 2 * reads * (max(args.gap, 8) + 5) * 10e-9 * 1.1))
+    core.mode(0)
+    return core.train_counts(), core.read_log(pages=16)
+
+
+def slip_line(lane: int, c: dict, ents: list) -> str:
+    n = c["reads"] or 1
+    own = sum(e["lanes"][lane]["pins"] and e["lanes"][lane]["pat"] == RC_PATTERNS[e["loc"]]
+              for e in ents)
+    det, R, srcs = beat_map(ents, lane)
+    whole = srcs is not None and all(srcs[b] == str(b) for b in range(8))
+    m = f"R={R} bits 7..0 from " + " ".join(reversed(srcs)) if srcs else "no single map"
+    return (f"rv {c['rv'][lane] / n:5.2f} rb {c['rb'][lane] / n:5.2f}  own "
+            f"{100.0 * own / max(len(ents), 1):5.1f}%  det {det:5.1f}%  {m}"
+            f"{'  WHOLE' if whole else ''}")
+
+
+def calib_fix(core: "Core", args, sets: list, locked: list, max_pulses: int = 16):
+    """CALIB each trained lane until its log shows whole bursts in the vendor's state.
+
+    The gate and RCLKSEL are left where training put them; a trained lane gets
+    one CALIB pulse on all eight of its DQ at a time, and after each its READ
+    log is fitted: the lane is done when its beat map is the identity, at
+    least 99% of its logged READs hold their own pattern, and it has one
+    RVALID cycle and one RBURST pulse per READ.  A majority-word identity map
+    alone is not enough: a lane whose framing is right but whose eye corrupts
+    a fifth of its words still fits it.
+    """
+    for lane in range(4):
+        if not locked[lane]:
+            continue
+        for pulses in range(max_pulses + 1):
+            c, ents = slip_point(core, args, sets)
+            n = c["reads"] or 1
+            _, _, srcs = beat_map(ents, lane)
+            own = sum(e["lanes"][lane]["pins"] and e["lanes"][lane]["pat"] == RC_PATTERNS[e["loc"]]
+                      for e in ents) / max(len(ents), 1)
+            whole = srcs is not None and all(srcs[b] == str(b) for b in range(8)) and own >= 0.99
+            state = abs(c["rv"][lane] - n) <= args.tol and abs(c["rb"][lane] - n) <= args.tol
+            print(f"calib-fix lane {lane} + {pulses} CALIB: " + slip_line(lane, c, ents), flush=True)
+            if whole and state:
+                print(f"lane {lane}: whole bursts in the vendor's state after {pulses} CALIB pulse(s)")
+                break
+            for pin in range(8):
+                core.request(0x08, 8 * lane + pin)
+        else:
+            print(f"lane {lane}: no whole bursts in the vendor's state within {max_pulses} CALIB pulses")
+
+
+def slip_sweep(core: "Core", args, sets: list, locked: list):
+    """Around each trained lane: gate +/-3 memory clocks x RCLKSEL, then CALIB."""
+    for lane in range(4):
+        if not locked[lane]:
+            continue
+        d0, k0, r0 = locked[lane]
+        pos0 = 4 * d0 + k0
+        print(f"sweep lane {lane} around gate {pos0} (delay {d0} k {k0}) rclksel {r0}")
+        for pos in range(max(pos0 - 3, 0), min(pos0 + 3, args.max_pos) + 1):
+            for rs in range(8):
+                pt = list(sets)
+                pt[lane] = (pos // 4, pos % 4, rs)
+                c, ents = slip_point(core, args, pt)
+                print(f"  gate {pos:2d} rclksel {rs}: " + slip_line(lane, c, ents), flush=True)
+        for pulses in range(1, 8):
+            for pin in range(8):
+                core.request(0x08, 8 * lane + pin)
+            c, ents = slip_point(core, args, sets)
+            print(f"  trained + {pulses} CALIB: " + slip_line(lane, c, ents), flush=True)
+        print(f"  lane {lane}'s word framing is left moved by 7 CALIB pulses; "
+              "calibrate again before relying on it")
+
+
+def log_report(log: dict):
+    """Condition each lane's own-READ result in a saved READ log."""
+    ents = log["entries"]
+    n = len(ents)
+    own = [[e["lanes"][l]["pins"] and e["lanes"][l]["pat"] == RC_PATTERNS[e["loc"]]
+            for e in ents] for l in range(4)]
+    print(f"{n} READs from READ {1024 * log['skip']} at offset {log['lat']}, "
+          f"settings (delay, k, rclksel) {log['settings']}, trained {log['locked']}")
+    print("own % per lane: " + " ".join(f"{100.0 * sum(o) / max(n, 1):5.1f}" for o in own))
+
+    def share(lane, pick):
+        sel = [own[lane][i] for i in range(n) if pick(i)]
+        return (100.0 * sum(sel) / len(sel), len(sel)) if sel else (float("nan"), 0)
+
+    def table(title, keys, pick):
+        print(title)
+        print("        " + " ".join(f"{str(k):>5s}" for k in keys))
+        for lane in range(4):
+            print(f"  L{lane}   " + " ".join(f"{share(lane, lambda i: pick(i, k))[0]:5.1f}" for k in keys))
+        print("  READs " + " ".join(f"{share(0, lambda i: pick(i, k))[1]:5d}" for k in keys))
+
+    table("own % by location {row bit, bank}:", list(range(16)), lambda i, k: ents[i]["loc"] == k)
+    table("own % by burst bit set:", list(range(7)), lambda i, k: (ents[i]["burst"] >> k) & 1)
+    table("own % by burst bit clear:", list(range(7)), lambda i, k: not (ents[i]["burst"] >> k) & 1)
+    blk = max(n // 8, 1)
+    table(f"own % by position in the log, eighths of {n} READs:", list(range(8)),
+          lambda i, k: min(i // blk, 7) == k)
+    table("own % by refresh phase at the check, PCLK in 128s:", list(range(6)),
+          lambda i, k: min(ents[i]["refi"] // 128, 5) == k)
+    table("own % by the READ before: same bank, same location, other bank:",
+          ["sbank", "sloc", "obank"],
+          lambda i, k: i > 0 and {"sbank": (ents[i]["loc"] & 7) == (ents[i - 1]["loc"] & 7),
+                                  "sloc": ents[i]["loc"] == ents[i - 1]["loc"],
+                                  "obank": (ents[i]["loc"] & 7) != (ents[i - 1]["loc"] & 7)}[k])
+    table("own % by the READ before's location:", list(range(16)),
+          lambda i, k: i > 0 and ents[i - 1]["loc"] == k)
+    print("wrong words: per lane, not a pattern / pins disagree / a pattern whose most recent READ "
+          "was k back (k: count, top six) / a pattern not read in the last 64; the first 64 "
+          "entries, whose earlier READs were not logged, are left out of the last two")
+    for lane in range(4):
+        bad_pat = bad_pins = far = 0
+        back = Counter()
+        for i in range(n):
+            if own[lane][i]:
+                continue
+            ln = ents[i]["lanes"][lane]
+            if not ln["pins"]:
+                bad_pins += 1
+                continue
+            if ln["pat"] not in RC_PATTERNS:
+                bad_pat += 1
+                continue
+            if i < 64:
+                continue
+            loc = RC_PATTERNS.index(ln["pat"])
+            k = next((k for k in range(1, 65) if ents[i - k]["loc"] == loc), None)
+            if k is None:
+                far += 1
+            else:
+                back[k] += 1
+        print(f"  L{lane}: {bad_pat} / {bad_pins} / "
+              + " ".join(f"{k}:{c}" for k, c in back.most_common(6)) + f" / {far}")
+    print("beat map: per lane, the share of READs holding their location's most frequent word, "
+          "and each held bit's source beat at the framing rotation that explains every location")
+    for lane in range(4):
+        det, R, srcs = beat_map(ents, lane)
+        line = f"R={R} bits 7..0 from " + " ".join(reversed(srcs)) if srcs else "no single map"
+        print(f"  L{lane}: {det:5.1f}% deterministic; {line}")
+    pairs = [Counter() for _ in range(4)]
+    for i in range(n):
+        for lane in range(4):
+            ln = ents[i]["lanes"][lane]
+            if not own[lane][i] and ln["pins"] and ln["pat"] in RC_PATTERNS:
+                pairs[lane][(ents[i]["loc"], RC_PATTERNS.index(ln["pat"]))] += 1
+    print("wrong words by (READ's location -> location of the pattern held), top eight per lane")
+    for lane in range(4):
+        print(f"  L{lane}: " + " ".join(f"{a}->{b}:{c}" for (a, b), c in pairs[lane].most_common(8)))
 
 
 def check_line(c: dict) -> str:
@@ -706,6 +943,18 @@ def main() -> int:
                     help="random mode per check offset of the lag check; about 6%% of"
                          " READs are classified")
     tr.add_argument("--verbose", action="store_true", help="one line per setting tried")
+    tr.add_argument("--log", metavar="FILE",
+                    help="then keep a READ log at the trained settings and save it as JSON")
+    tr.add_argument("--log-lat", type=int, default=20, help="the log's check offset")
+    tr.add_argument("--log-skip", type=int, default=1,
+                    help="READs passed over before the log, in 1024s")
+    tr.add_argument("--calib-fix", action="store_true",
+                    help="after training, CALIB each trained lane, one pulse at a time, until its "
+                         "READ log shows whole bursts in the vendor's state; then the lag check")
+    tr.add_argument("--sweep", action="store_true",
+                    help="then sweep each trained lane's gate, RCLKSEL and CALIB, logging each point")
+    lr = sub.add_parser("logreport", help="offline: condition a saved READ log's results")
+    lr.add_argument("file")
     pw = sub.add_parser("prewrite")
     pw.add_argument("--row", type=lambda x: int(x, 0), default=0)
     pw.add_argument("--write-ms", type=float, default=5)
@@ -739,6 +988,9 @@ def main() -> int:
     mt.add_argument("--write-ms", type=float, default=5)
     mt.add_argument("--pass-ratio", type=float, default=0.75)
     args = ap.parse_args()
+    if args.cmd == "logreport":
+        log_report(json.load(open(args.file)))
+        return 0
 
     core = Core(args.port)
     try:
@@ -967,6 +1219,8 @@ def main() -> int:
                     print("untrained lanes at delay 1 k 2 rclksel 0: "
                           + " ".join(str(n) for n in range(4) if not locked[n]))
                 core.set_lanes([x[0] for x in sets], [x[1] for x in sets], [x[2] for x in sets])
+                if args.calib_fix:
+                    calib_fix(core, args, sets, locked)
                 own = [0.0] * 4
                 # per lane, the (share, lag, lat) of its most frequent class
                 # other than none, over every check offset
@@ -990,6 +1244,26 @@ def main() -> int:
                     share, k, lat = top[l]
                     print(f"lane {l}{'' if locked[l] else ' (untrained)'}: most often lag {k}"
                           f" in {share:5.1f}% at lat {lat}")
+                if args.log:
+                    core.request(0x26, args.log_lat)
+                    core.request(0x32, args.log_skip)
+                    core.mode(4)                # entering random mode arms the log
+                    # (skip + 1) x 1024 READs, each at least max(gap, 8) + 5 PCLK
+                    # apart and a refresh in place of one every 700 PCLK, at
+                    # PCLK 100 MHz; twice that, and never under 50 ms
+                    reads = (args.log_skip + 1) * 1024
+                    time.sleep(max(0.05, 2 * reads * (max(args.gap, 8) + 5) * 10e-9 * 1.1))
+                    core.mode(0)
+                    entries = core.read_log()
+                    if len(entries) < 1024:
+                        print(f"warning: the READ log holds {len(entries)} entries, not 1024")
+                    json.dump({"lat": args.log_lat, "skip": args.log_skip, "gap": args.gap,
+                               "settings": sets, "locked": [bool(x) for x in locked],
+                               "entries": entries}, open(args.log, "w"))
+                    print(f"READ log: {len(entries)} READs saved to {args.log}")
+                    log_report(json.load(open(args.log)))
+                if args.sweep:
+                    slip_sweep(core, args, sets, locked)
         elif args.cmd == "lag":
             if args.prewrite:
                 prewrite(core, args.row, 0.2)

@@ -40,6 +40,14 @@
 //            reveal.  Before 2026-10-25 LAGS was 3 and four patterns had to
 //            be distinct.
 //
+//   log      at the same offset `lat`, every READ from the log_skip * 1024th
+//            after `arm` on is written to a 1024-entry log: its location and
+//            burst, the refresh phase at the check, and per lane the least
+//            rotation it held, whether its pins agreed, and the rotation.
+//            Nothing is filtered, so the host can condition each lane's
+//            result on any property of the READ or of the READs around it.
+//            A log_go pulse copies 16 entries, page log_page, into log_buf.
+//
 // RVALID: the proven controller takes a lane's deserializer word only on a
 // cycle whose DQS RVALID is high (TOOL-033).  With rv_enable set, each lane's
 // input here is a word held from the last such cycle instead of the raw
@@ -73,6 +81,9 @@ module rd_check #(
     input  wire         slip_enable,
     input  wire [11:0]  slip,       // one LiteDRAM-style beat slip per lane
     input  wire [9:0]   refi,       // PCLK since the last refresh, the phase
+    input  wire [7:0]   log_skip,   // READs passed over before the log, in 1024s
+    input  wire [5:0]   log_page,   // the log page log_go copies
+    input  wire         log_go,     // one PCLK: copy that page into log_buf
 
     // Which of the two known burst positions held each READ (command 0x2B),
     // and the refresh phase at the check that decided it.
@@ -88,6 +99,15 @@ module rd_check #(
     // [32 * ((LAGS + 2) l + k) +: 32].
     output reg  [31:0]  lag_eval = 32'd0,
     output reg  [128*(LAGS+2)-1:0] lag_cnt = {128*(LAGS+2){1'b0}},
+
+    // The READ log (commands 0x32 to 0x34): entries written since `arm`, and
+    // one page of 16, entry e at [72e +: 72] laid out as
+    //   [9l +: 8] lane l's least rotation, [9l + 8] its pins agreed,
+    //   [36 + 3l +: 3] its rotation, [51:48] the READ's location {row bit,
+    //   bank}, [58:52] its burst, [68:59] the refresh phase at the check.
+    output reg  [10:0]  log_n = 11'd0,
+    output reg  [1151:0] log_buf = 1152'd0,
+    output reg  [5:0]   log_buf_page = 6'd0,
 
     output reg          locked = 1'b0,
     output reg  [11:0]  expect_rot = 12'd0,   // per lane, for the next READ
@@ -419,9 +439,16 @@ module rd_check #(
     // and does it hold one of the LAGS READs' before it
     reg         ck_distinct = 1'b0;
     reg [4*LAGS-1:0] ck_older = {4*LAGS{1'b0}};  // lane l, lag k = 1..LAGS at LAGS l + k - 1
+    // and, for the log, what each lane held
+    reg [31:0]  ck_canon = 32'd0;
+    reg [3:0]   ck_pins = 4'd0;
+    reg [9:0]   ck_refi = 10'd0;
     integer ck_k;
     always @(posedge pclk) begin
         ck_v <= !clr && sel_v;
+        ck_canon <= canon_b3;
+        ck_pins <= pins_b3;
+        ck_refi <= refi;
         ck_pat <= sel_pat;
         ck_addr <= sel_addr;
         for (cl = 0; cl < 4; cl = cl + 1) begin
@@ -462,6 +489,63 @@ module rd_check #(
                 if (lg_hit[lgk])
                     lag_cnt[32*lgk +: 32] <= lag_cnt[32*lgk +: 32] + 32'd1;
         end
+    end
+
+    // the log: one entry per READ once log_skip * 1024 READs have passed,
+    // the entry registered before it is written
+    reg  [17:0] lw_skip = 18'd0;    // READs still to pass over
+    reg         lw_v = 1'b0;
+    reg  [9:0]  lw_a = 10'd0;
+    reg  [71:0] lw_d = 72'd0;
+    integer lwl;
+    always @(posedge pclk) begin
+        lw_v <= 1'b0;
+        lw_a <= log_n[9:0];
+        for (lwl = 0; lwl < 4; lwl = lwl + 1)
+            lw_d[9*lwl +: 9] <= {ck_pins[lwl], ck_canon[8*lwl +: 8]};
+        lw_d[47:36] <= ck_rot;
+        lw_d[51:48] <= ck_addr[10:7];  // {row bit, bank}
+        lw_d[58:52] <= ck_addr[6:0];   // burst
+        lw_d[68:59] <= ck_refi;
+        lw_d[71:69] <= 3'd0;
+        if (clr) begin
+            log_n <= 11'd0;
+            lw_skip <= {log_skip, 10'd0};
+        end else if (ck_v) begin
+            if (lw_skip != 18'd0)
+                lw_skip <= lw_skip - 18'd1;
+            else if (!log_n[10]) begin
+                lw_v <= 1'b1;
+                log_n <= log_n + 11'd1;
+            end
+        end
+    end
+    reg [71:0] log_mem [0:1023];
+    reg [71:0] lr_d = 72'd0;
+    reg [9:0]  lr_a = 10'd0;
+    always @(posedge pclk) begin
+        if (lw_v)
+            log_mem[lw_a] <= lw_d;
+        lr_d <= log_mem[lr_a];
+    end
+    // a page: sixteen reads, shifted in as they come, entry 0 ending lowest
+    reg        lr_busy = 1'b0, lr_v = 1'b0;
+    reg [3:0]  lr_i = 4'd0;
+    always @(posedge pclk) begin
+        lr_v <= lr_busy;
+        if (log_go) begin
+            lr_busy <= 1'b1;
+            lr_i <= 4'd0;
+            lr_a <= {log_page, 4'd0};
+            log_buf_page <= log_page;
+        end else if (lr_busy) begin
+            lr_a <= lr_a + 10'd1;
+            lr_i <= lr_i + 4'd1;
+            if (lr_i == 4'd15)
+                lr_busy <= 1'b0;
+        end
+        if (lr_v)
+            log_buf <= {lr_d, log_buf[1151:72]};
     end
 
     // second: is it at the expected rotation; expect_rot only changes in

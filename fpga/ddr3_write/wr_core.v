@@ -97,6 +97,12 @@
 //   31        read-training counters: READs issued in random mode since the
 //             arm, the PCLK counted, and per lane RVALID-high cycles and RBURST
 //             pulses, answered with 40 payload bytes (see status5)
+//   32 n      rd_check's READ log passes over n x 1024 READs after its arm
+//             before keeping 1024 (applied at the next arm)
+//   33 p      copy page p[5:0] of the READ log, entries 16p .. 16p + 15, to
+//             the page frame
+//   34        the READ log page: entries logged, the page copied and 16
+//             entries, answered with 148 payload bytes (see status6)
 //   29 v      v[0]: rd_check takes each lane's word only on cycles whose RVALID
 //             is high, holding it between them, as the proven controller's
 //             read FIFO does (TOOL-033); clear by default
@@ -352,6 +358,9 @@ module wr_core (
     reg [14:0] row_req = 15'd0;
     reg rmove_tog = 1'b0, rload_tog = 1'b0, snap_tog = 1'b0, wload_tog = 1'b0,
         calib_tog = 1'b0, bclr_tog = 1'b0;
+    reg [7:0] log_skip_req = 8'd0;
+    reg [5:0] log_page_req = 6'd0;
+    reg log_tog = 1'b0;
 
     reg [1:0] ready_p = 2'b00;
     reg [2:0] rmove_p = 3'b000, rload_p = 3'b000, snap_p = 3'b000,
@@ -376,6 +385,9 @@ module wr_core (
     reg [11:0] read_delay_p1 = {4{3'd3}}, read_delay_p2 = {4{3'd3}};
     reg [2:0] bank_p1 = 3'd0, bank_p2 = 3'd0;
     reg [14:0] row_p1 = 15'd0, row_p2 = 15'd0;
+    reg [7:0] log_skip_p1 = 8'd0, log_skip_p2 = 8'd0;
+    reg [5:0] log_page_p1 = 6'd0, log_page_p2 = 6'd0;
+    reg [3:0] log_p = 4'b0000;
     always @(posedge pclk) begin
         ready_p <= {ready_p[0], ready};
         rmove_p <= {rmove_p[1:0], rmove_tog};
@@ -404,6 +416,9 @@ module wr_core (
         read_delay_p1 <= read_delay_req;  read_delay_p2 <= read_delay_p1;
         bank_p1 <= bank_req;            bank_p2 <= bank_p1;
         row_p1 <= row_req;              row_p2 <= row_p1;
+        log_skip_p1 <= log_skip_req;    log_skip_p2 <= log_skip_p1;
+        log_page_p1 <= log_page_req;    log_page_p2 <= log_page_p1;
+        log_p <= {log_p[2:0], log_tog};
     end
     wire ready_pc = ready_p[1];
     wire rmove_pulse = rmove_p[2] ^ rmove_p[1];
@@ -412,6 +427,9 @@ module wr_core (
     wire wload_pulse = wload_p[2] ^ wload_p[1];
     wire calib_pulse = calib_p[2] ^ calib_p[1];
     wire bclr_tog_pulse = bclr_p[2] ^ bclr_p[1];
+    // the page number changes with the toggle; the pulse comes a PCLK after
+    // the toggle's own synchronizer, so the number has settled in log_page_p2
+    wire log_go_pulse = log_p[3] ^ log_p[2];
     // the clear is seen in PCLK, where the counters live
     reg bclr_d = 1'b0;
     wire bclr_pulse = bclr_tog_pulse || bclr_d;
@@ -878,6 +896,9 @@ module wr_core (
     wire [15:0]  rc_pos_cls;
     wire [31:0]  rc_lag_eval;
     wire [1279:0] rc_lag_cnt;
+    wire [10:0]  rc_log_n;
+    wire [1151:0] rc_log_buf;
+    wire [5:0]   rc_log_page;
     reg          rc_arm = 1'b0, mode_rand_d = 1'b0;
     // the refresh phase for rd_check's statistics, one PCLK late: a copy, so
     // the checker's compares do not load the refresh counter's own path
@@ -895,6 +916,8 @@ module wr_core (
         .issue(rc_issue), .issue_idx({acc_rowbit, acc_bank}), .issue_col(acc_col),
         .lat(lat_p2), .step(rstep_p2), .slip_enable(slip_en_p2), .slip(slip_p2),
         .refi(refi_rc),
+        .log_skip(log_skip_p2), .log_page(log_page_p2), .log_go(log_go_pulse),
+        .log_n(rc_log_n), .log_buf(rc_log_buf), .log_buf_page(rc_log_page),
         .n_both(rc_n_both), .n_only11(rc_n_only11), .n_only19(rc_n_only19),
         .n_other(rc_n_other), .pos_range(rc_pos_range), .pos_cls(rc_pos_cls),
         .lag_eval(rc_lag_eval), .lag_cnt(rc_lag_cnt),
@@ -1280,6 +1303,24 @@ module wr_core (
     end
     wire [319:0] status5 = {rb_fall_s, rv_cnt_s, rb_cyc_s, tr_reads_s};
 
+    // READ log page (command 0x34), 148 payload bytes, static once random
+    // mode is left and the copy (command 0x33) has finished, a few PCLK
+    // after it.  Little-endian, byte 0 in the low bits.
+    //    0-1     entries logged since the arm, up to 1024
+    //    2       the page copied, 0 to 63
+    //    3       the READs passed over before the log, in 1024s (command 0x32)
+    //    4+9e    entry e of the page, the log entry 16 page + e, 72 bits as
+    //            laid out in rd_check.v
+    reg [10:0]   rc_log_n_s = 11'd0;
+    reg [1151:0] rc_log_buf_s = 1152'd0;
+    reg [5:0]    rc_log_page_s = 6'd0;
+    always @(posedge sys_clk) begin
+        rc_log_n_s <= rc_log_n;         rc_log_buf_s <= rc_log_buf;
+        rc_log_page_s <= rc_log_page;
+    end
+    wire [1183:0] status6 = {rc_log_buf_s, log_skip_req, {2'b00, rc_log_page_s},
+                             {5'd0, rc_log_n_s}};
+
     // ------------------------------------------------------------------
     // The link
     // ------------------------------------------------------------------
@@ -1313,7 +1354,8 @@ module wr_core (
                     (c == 8'h21) || (c == 8'h22) || (c == 8'h23) || (c == 8'h24) ||
                     (c == 8'h25) || (c == 8'h26) || (c == 8'h27) || (c == 8'h28) ||
                     (c == 8'h29) || (c == 8'h2a) || (c == 8'h2b) || (c == 8'h2c) || (c == 8'h2d) ||
-                    (c == 8'h2e) || (c == 8'h2f) || (c == 8'h31);
+                    (c == 8'h2e) || (c == 8'h2f) || (c == 8'h31) || (c == 8'h32) ||
+                    (c == 8'h33) || (c == 8'h34);
         end
     endfunction
 
@@ -1341,19 +1383,22 @@ module wr_core (
                         response_active <= 1'b1;
                         response_is_status <= (cmd_byte == 8'h03) || (cmd_byte == 8'h27) ||
                                               (cmd_byte == 8'h2b) || (cmd_byte == 8'h2f) ||
-                                              (cmd_byte == 8'h31);
+                                              (cmd_byte == 8'h31) || (cmd_byte == 8'h34);
                         response_type <= (cmd_byte == 8'h27) ? 8'h05 :
                                          (cmd_byte == 8'h2b) ? 8'h00 :
                                          (cmd_byte == 8'h2f) ? 8'h06 :
-                                         (cmd_byte == 8'h31) ? 8'h07 : 8'h04;
+                                         (cmd_byte == 8'h31) ? 8'h07 :
+                                         (cmd_byte == 8'h34) ? 8'h08 : 8'h04;
                         response_len <= (cmd_byte == 8'h2b) ? 8'd34 :
                                         (cmd_byte == 8'h2f) ? 8'd206 :
-                                        (cmd_byte == 8'h31) ? 8'd40 : 8'd127;
+                                        (cmd_byte == 8'h31) ? 8'd40 :
+                                        (cmd_byte == 8'h34) ? 8'd148 : 8'd127;
                         response_index <= 8'd0;
                         frame <= (cmd_byte == 8'h27) ? {632'd0, status2} :
                                  (cmd_byte == 8'h2b) ? {1376'd0, status3} :
                                  (cmd_byte == 8'h2f) ? status4 :
-                                 (cmd_byte == 8'h31) ? {1328'd0, status5} : {632'd0, status};
+                                 (cmd_byte == 8'h31) ? {1328'd0, status5} :
+                                 (cmd_byte == 8'h34) ? {464'd0, status6} : {632'd0, status};
                         case (cmd_byte)
                             8'h04: snap_tog <= ~snap_tog;
                             8'h05: begin
@@ -1398,6 +1443,11 @@ module wr_core (
                             8'h2d: gate_req[2 * rx_data[7:6] +: 2] <= rx_data[1:0];
                             8'h2e: rclksel_req[3 * rx_data[7:6] +: 3] <= rx_data[2:0];
                             8'h29: rv_en_req <= rx_data[0];
+                            8'h32: log_skip_req <= rx_data;
+                            8'h33: begin
+                                log_page_req <= rx_data[5:0];
+                                log_tog <= ~log_tog;
+                            end
                             8'h26: lat_req <= rx_data[4:0];
                             8'h28: rstep_req <= rx_data[2:0];
                             8'h2a: begin
