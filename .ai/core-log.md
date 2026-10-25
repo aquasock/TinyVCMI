@@ -1962,3 +1962,33 @@ Bring for approval a measurement cycle that deepens the lag classifier from thre
 - User Test: N/A
 
 ---
+
+## 60 COMMIT Unreleased 2026-10-24T22:40:22-07:00
+
+#### Coming From:
+
+Unreleased ab70fe9
+
+#### Purpose:
+
+Hand the project to another agent at the user's request with the live state of the DDR3 read investigation recorded in one place.
+
+#### Outcome:
+
+No engineering file changed in this cycle. The repository is at `ab70fe9` on `main`, equal to `origin`; the nextpnr fork is clean at `a0935e6b` and the Apicula fork at `d69c764` on `epic/gw5ast138c`, both equal to their `aquasock` remotes, and `.codewhale/` in the working tree is untracked and not this project's. The open problem is isolated DDR3 READs, recorded in TOOL-030 and TOOL-033 to TOOL-037: the capture must take a lane's word only where RVALID is high (TOOL-035), the proven controller accepts a lane only at one RVALID cycle and one RBURST pulse per READ (TOOL-036), that state is reachable on two lanes per load but its RVALID word is often an older READ's clean burst (TOOL-037), and whatever setting works is fixed per FPGA load and changes from load to load (TOOL-035). The current image is `fpga/ddr3_write` as of entry 59, built by `tools/build_ddr3_write.sh` against a Gowin control that must be rebuilt with `tools/ddr3_write.py --vendor --place-option 3 --route-option 1`, because Gowin's defaults miss PCLK on this source; `tools/ddr3_write.py --vendor-sweep` finds a clean option set when the source changes. Since entry 56 every rd_check offset is one higher than in earlier records for the same arrival. The board diagnostics are `tools/ddr3_write_probe.py` (`calibrate`, `lag`, `train`), `tools/ddr3_lag_sweep.py`, `tools/ddr3_scatter_sweep.py` and `tools/ddr3_boot_repeat.sh`, and the offline vendor traces are `tools/vendor_read_gate_trace.py` and `tools/vendor_read_cal_trace.py` over Tang-PSX's post-route netlist. The Tang was last left on the desktop core answering `0x54`, with `ddr3_train.bin`, `ddr3_train_vendor.bin`, `ddr3_rv.bin`, `ddr3_rv_vendor.bin`, `ddr3_lag.bin`, `ddr3_lag_vendor.bin`, `ddr3_pos.bin` and `ddr3_pos_vendor.bin` added to `/root/cores/console138k`. Three working cautions carry over: the user shares the Tang and has asked more than once that it not be touched until they say it is free, so every board session needs their go-ahead; TinyTang's `fpga` query gets no answer while the probe holds the `fpgapipe` link, so it is not a liveness check mid-session; and the first image load after a Tang reboot has stalled mid-calibration in three of four boots, recovering on a reload. Scratch data from this session's board runs lived in the session scratchpad and is not kept; every figure that matters is in the records. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering and active-log capacity.
+
+#### Next Steps:
+
+Bring for approval the measurement of entry 59's Next Steps: deepen rd_check's lag classifier from three READs back to at least eight, train with `tools/ddr3_write_probe.py train`, and count per lane how many READs back the delivered burst is in the vendor's accepted state, across several loads with `tools/ddr3_boot_repeat.sh`, to decide between absorbing a fixed per-lane offset in an in-order read FIFO and fixing the DQS read FIFO's start-up state. Lanes that never reach the accepted state in a load, and the cause of the first-load stall, are open alongside. The acceptance gate before controller work resumes is unchanged: isolated random READs returning each address's own data at a fixed trained latency, measured with address-derived data. The `D108` unused-pin contradiction and the `is_mipi` bug outside the DDR context remain open.
+
+#### Files Modified:
+
+None.
+
+#### Status:
+
+- Build: N/A
+- Deployment: N/A
+- User Test: N/A
+
+---
