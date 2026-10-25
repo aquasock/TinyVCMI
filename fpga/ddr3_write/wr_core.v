@@ -103,6 +103,12 @@
 //             the page frame
 //   34        the READ log page: entries logged, the page copied and 16
 //             entries, answered with 148 payload bytes (see status6)
+//   35 v      HOLD on the lanes in v[3:0]: for 4 x (v[7:4] + 1) PCLK, or with
+//             v[7:4] = 15 until the next 0x35, so the host can change a
+//             lane's settings inside it as the proven controller changes
+//             RCLKSEL inside its 11-PCLK HOLD on unconfigured lanes (TOOL-042);
+//             every 0x35 ends the previous one, and one naming no lane
+//             releases them all
 //   29 v      v[0]: rd_check takes each lane's word only on cycles whose RVALID
 //             is high, holding it between them, as the proven controller's
 //             read FIFO does (TOOL-033); clear by default
@@ -186,7 +192,7 @@ module wr_core (
     output reg          pll_en = 1'b1,
     output reg          dll_rst = 1'b1,
     output reg          updncntl = 1'b1,
-    output reg          hold = 1'b0,
+    output wire [3:0]   hold,       // per lane DQS HOLD: the start-up update or command 0x35
     output wire         phy_rst,
     input  wire         dll_lock,
     input  wire [7:0]   step,
@@ -249,6 +255,8 @@ module wr_core (
 
     // the vendor's reset chain: three flops from the DLL reset, forced high
     // for the sync pulse
+    // the start-up sequence's HOLD, on every lane, around the DLL update
+    reg hold_upd = 1'b0;
     reg [2:0] rst_chain = 3'b111;
     reg sync_rst = 1'b0;
     always @(posedge sys_clk)
@@ -266,7 +274,7 @@ module wr_core (
         if (!por_n) begin
             dll_rst <= 1'b1;
             updncntl <= 1'b1;
-            hold <= 1'b0;
+            hold_upd <= 1'b0;
             pll_en <= 1'b1;
             sync_rst <= 1'b0;
             ready <= 1'b0;
@@ -307,11 +315,11 @@ module wr_core (
                 end
                 // cycle: 0 HOLD, 4 UPDNCNTL low, 8 high, 12 HOLD low
                 M_UPDATE: begin
-                    if (mtimer == 15'd0) hold <= 1'b1;
+                    if (mtimer == 15'd0) hold_upd <= 1'b1;
                     if (mtimer == 15'd4) updncntl <= 1'b0;
                     if (mtimer == 15'd8) updncntl <= 1'b1;
                     if (mtimer == 15'd12) begin
-                        hold <= 1'b0;
+                        hold_upd <= 1'b0;
                         mstate <= M_SYNC;
                         mtimer <= 15'd0;
                     end
@@ -358,6 +366,9 @@ module wr_core (
     reg [14:0] row_req = 15'd0;
     reg rmove_tog = 1'b0, rload_tog = 1'b0, snap_tog = 1'b0, wload_tog = 1'b0,
         calib_tog = 1'b0, bclr_tog = 1'b0;
+    reg [3:0] hold_mask_req = 4'd0;
+    reg [3:0] hold_len_req = 4'd0;
+    reg hold_tog = 1'b0;
     reg [7:0] log_skip_req = 8'd0;
     reg [5:0] log_page_req = 6'd0;
     reg log_tog = 1'b0;
@@ -388,6 +399,9 @@ module wr_core (
     reg [7:0] log_skip_p1 = 8'd0, log_skip_p2 = 8'd0;
     reg [5:0] log_page_p1 = 6'd0, log_page_p2 = 6'd0;
     reg [3:0] log_p = 4'b0000;
+    reg [3:0] hold_mask_p1 = 4'd0, hold_mask_p2 = 4'd0;
+    reg [3:0] hold_len_p1 = 4'd0, hold_len_p2 = 4'd0;
+    reg [3:0] hold_p = 4'b0000;
     always @(posedge pclk) begin
         ready_p <= {ready_p[0], ready};
         rmove_p <= {rmove_p[1:0], rmove_tog};
@@ -419,6 +433,9 @@ module wr_core (
         log_skip_p1 <= log_skip_req;    log_skip_p2 <= log_skip_p1;
         log_page_p1 <= log_page_req;    log_page_p2 <= log_page_p1;
         log_p <= {log_p[2:0], log_tog};
+        hold_mask_p1 <= hold_mask_req;  hold_mask_p2 <= hold_mask_p1;
+        hold_len_p1 <= hold_len_req;    hold_len_p2 <= hold_len_p1;
+        hold_p <= {hold_p[2:0], hold_tog};
     end
     wire ready_pc = ready_p[1];
     wire rmove_pulse = rmove_p[2] ^ rmove_p[1];
@@ -430,6 +447,24 @@ module wr_core (
     // the page number changes with the toggle; the pulse comes a PCLK after
     // the toggle's own synchronizer, so the number has settled in log_page_p2
     wire log_go_pulse = log_p[3] ^ log_p[2];
+    // HOLD on command 0x35, in PCLK as the proven controller drives it; the
+    // mask and length settle a PCLK before the pulse, as the log page does
+    wire hold_go = hold_p[3] ^ hold_p[2];
+    reg  [3:0] hold_lanes = 4'd0;
+    reg  [6:0] hold_cnt = 7'd0;
+    always @(posedge pclk) begin
+        if (hold_go) begin
+            hold_lanes <= hold_mask_p2;
+            // code 15 holds until the next command: no count
+            hold_cnt <= (hold_len_p2 == 4'd15) ? 7'd0 : {hold_len_p2, 2'b00} + 7'd4;
+        end else if (hold_cnt != 7'd0) begin
+            hold_cnt <= hold_cnt - 7'd1;
+            if (hold_cnt == 7'd1)
+                hold_lanes <= 4'd0;
+        end
+    end
+    // both terms come from flops, so the OR adds no edge to the update's HOLD
+    assign hold = {4{hold_upd}} | hold_lanes;
     // the clear is seen in PCLK, where the counters live
     reg bclr_d = 1'b0;
     wire bclr_pulse = bclr_tog_pulse || bclr_d;
@@ -1355,7 +1390,7 @@ module wr_core (
                     (c == 8'h25) || (c == 8'h26) || (c == 8'h27) || (c == 8'h28) ||
                     (c == 8'h29) || (c == 8'h2a) || (c == 8'h2b) || (c == 8'h2c) || (c == 8'h2d) ||
                     (c == 8'h2e) || (c == 8'h2f) || (c == 8'h31) || (c == 8'h32) ||
-                    (c == 8'h33) || (c == 8'h34);
+                    (c == 8'h33) || (c == 8'h34) || (c == 8'h35);
         end
     endfunction
 
@@ -1444,6 +1479,11 @@ module wr_core (
                             8'h2e: rclksel_req[3 * rx_data[7:6] +: 3] <= rx_data[2:0];
                             8'h29: rv_en_req <= rx_data[0];
                             8'h32: log_skip_req <= rx_data;
+                            8'h35: begin
+                                hold_mask_req <= rx_data[3:0];
+                                hold_len_req <= rx_data[7:4];
+                                hold_tog <= ~hold_tog;
+                            end
                             8'h33: begin
                                 log_page_req <= rx_data[5:0];
                                 log_tog <= ~log_tog;

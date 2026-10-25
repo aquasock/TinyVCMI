@@ -2127,3 +2127,39 @@ With Codex's decoding of the read-calibration HOLD rule checked against the netl
 - User Test: N/A
 
 ---
+
+## 65 COMMIT Unreleased 2026-10-25T11:07:39-07:00
+
+#### Coming From:
+
+Unreleased e8cba80
+
+#### Purpose:
+
+Hold each unconfigured DDR3 lane's DQS between read-calibration trials as the proven controller does, decoded from its netlist by the second agent, and find out whether all four lanes then reach the vendor's read state and return their own data.
+
+#### Outcome:
+
+Codex decoded read-only that the proven controller holds every unconfigured lane's DQS for 11 PCLK between each two RCLKSEL trials, changing RCLKSEL and, at a step, the gate inside the HOLD with READ low and none before the first trial. `fpga/ddr3_write/wr_core.v` now drives each lane's HOLD separately, the start-up update's HOLD on all lanes ORed with a new command `0x35` that holds the named lanes for 4 x (code + 1) PCLK or, with code 15, until the next `0x35`; `tools/ddr3_write.py` regenerates `fpga/ddr3_write/top.v` with a HOLD bit per DQS; `fpga/ddr3_write/tb_wr.v` checks the timed pulse on exactly the named lanes and the level form; `tools/ddr3_write_probe.py train --hold vendor` holds the unlocked lanes while their settings change between trials. The Gowin control first missed PCLK at 96.846 MHz and no place or route option cleared it, the paths running from `wr_core`'s pattern rotations into `rd_align`, whose identical copy GowinSynthesis had merged with them; keeping `rd_align`'s copy in `fpga/ddr3_write/rd_align.v` closed it at 107.310 MHz with no negative slack. All simulations pass; the open image, SHA-256 `9d673e1629d4c8ea0fa9614b2ed680c7fc874b16abbf6427788a542703d63d37`, closes PCLK at 109.19 MHz, and its Gowin control, `4fa3444c38765d7dafaa0380d5e87ab49f1b3f0431a0dbae007560e9685706b7`, place option 3 and route option 1, at 107.310 MHz; they are equal on all 306 DDR3 tables. On the Tang four loads of `ddr3_hold.bin` and `ddr3_hold_vendor.bin` with the tap-4 start, the vendor search with HOLD and centring trained all four lanes every time, the control's at delay 1, offset 2, RCLKSEL 4 after 4 CALIB pulses and the open image's at delay 1, offset 1, RCLKSEL 5 or 4 after 3, the same in both loads of each image, every lane in the vendor's one-RVALID-per-READ state; centred 18 to 28 taps into whole windows of 44 to 62 taps, every lane of every load returned its own burst on 100.0% of isolated random READs at every check offset from 14 to 25. TOOL-042 was added, TOOL-041 annotated, and `docs/ddr3-open-flow.md` gained the section. The second agent then logged off. The desktop core was restored after every load and answered `0x54`. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering and active-log capacity.
+
+#### Next Steps:
+
+Finish the acceptance gate before controller work resumes: write address-derived data across many rows and banks instead of sixteen row patterns and check that trained isolated READs return each address's own data, then hand read data on at a fixed trained latency per lane, the word under the trained RVALID taken at a known PCLK after its READ, rather than held from RVALID for a checker, and qualify both over several loads. After that the controller resumes on this training, with its own constraint files and the DM mask path. The first-load stall after a Tang reboot, the `D108` unused-pin contradiction and the `is_mipi` bug outside the DDR context remain open.
+
+#### Files Modified:
+
+- docs/ddr3-open-flow.md
+- fpga/ddr3_write/rd_align.v
+- fpga/ddr3_write/tb_wr.v
+- fpga/ddr3_write/top.v
+- fpga/ddr3_write/wr_core.v
+- tools/ddr3_write.py
+- tools/ddr3_write_probe.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: N/A
+
+---

@@ -90,7 +90,10 @@ module rd_align #(
 
     // The rotations, registered beside the comparisons that use them; the
     // pattern only changes on command.
-    reg [63:0] rot_pat_r;
+    // wr_core registers the same eight rotations for its own check; merged,
+    // the one register would feed both from wherever it lands, which put
+    // the Gowin control 1.1 ns short of PCLK, so this copy stays
+    (* syn_preserve = 1, keep = 1 *) reg [63:0] rot_pat_r;
     always @(posedge pclk)
         rot_pat_r <= rot_pat;
 

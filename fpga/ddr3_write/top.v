@@ -61,7 +61,8 @@ module top (
     // kept, so the open flow's SDC can name the memory-side clock whatever
     // Yosys does with the submodules' aliases of it
     (* keep *) wire pclk;
-    wire dll_rst, updncntl, hold, phy_rst, dll_lock, rloadn, rdir, wloadn;
+    wire dll_rst, updncntl, phy_rst, dll_lock, rloadn, rdir, wloadn;
+    wire [3:0] hold;                    // per lane: the start-up update or command 0x35
     wire [3:0] rmove;
     wire [31:0] wstep;
     wire [7:0] dq_pat;
@@ -99,7 +100,7 @@ module top (
         .DQSIN(dqsi_0), .PCLK(pclk), .FCLK(mclk),
         .RESET(phy_rst), .READ(read_en[0+:4]), .RCLKSEL(rclksel[0+:3]), .DLLSTEP(step),
         .WSTEP(wstep[0+:8]), .RLOADN(rloadn), .RMOVE(rmove[0]), .RDIR(rdir),
-        .WLOADN(wloadn), .WMOVE(1'b0), .WDIR(1'b0), .HOLD(hold),
+        .WLOADN(wloadn), .WMOVE(1'b0), .WDIR(1'b0), .HOLD(hold[0]),
         .DQSR90(r90_0), .DQSW0(w0_0), .DQSW270(w270_0),
         .RPOINT(rp_0), .WPOINT(wp_0),
         .RVALID(rvalid[0]), .RBURST(rburst[0]), .RFLAG(rflag[0]), .WFLAG(wflag[0]));
@@ -276,7 +277,7 @@ module top (
         .DQSIN(dqsi_1), .PCLK(pclk), .FCLK(mclk),
         .RESET(phy_rst), .READ(read_en[4+:4]), .RCLKSEL(rclksel[3+:3]), .DLLSTEP(step),
         .WSTEP(wstep[8+:8]), .RLOADN(rloadn), .RMOVE(rmove[1]), .RDIR(rdir),
-        .WLOADN(wloadn), .WMOVE(1'b0), .WDIR(1'b0), .HOLD(hold),
+        .WLOADN(wloadn), .WMOVE(1'b0), .WDIR(1'b0), .HOLD(hold[1]),
         .DQSR90(r90_1), .DQSW0(w0_1), .DQSW270(w270_1),
         .RPOINT(rp_1), .WPOINT(wp_1),
         .RVALID(rvalid[1]), .RBURST(rburst[1]), .RFLAG(rflag[1]), .WFLAG(wflag[1]));
@@ -453,7 +454,7 @@ module top (
         .DQSIN(dqsi_2), .PCLK(pclk), .FCLK(mclk),
         .RESET(phy_rst), .READ(read_en[8+:4]), .RCLKSEL(rclksel[6+:3]), .DLLSTEP(step),
         .WSTEP(wstep[16+:8]), .RLOADN(rloadn), .RMOVE(rmove[2]), .RDIR(rdir),
-        .WLOADN(wloadn), .WMOVE(1'b0), .WDIR(1'b0), .HOLD(hold),
+        .WLOADN(wloadn), .WMOVE(1'b0), .WDIR(1'b0), .HOLD(hold[2]),
         .DQSR90(r90_2), .DQSW0(w0_2), .DQSW270(w270_2),
         .RPOINT(rp_2), .WPOINT(wp_2),
         .RVALID(rvalid[2]), .RBURST(rburst[2]), .RFLAG(rflag[2]), .WFLAG(wflag[2]));
@@ -630,7 +631,7 @@ module top (
         .DQSIN(dqsi_3), .PCLK(pclk), .FCLK(mclk),
         .RESET(phy_rst), .READ(read_en[12+:4]), .RCLKSEL(rclksel[9+:3]), .DLLSTEP(step),
         .WSTEP(wstep[24+:8]), .RLOADN(rloadn), .RMOVE(rmove[3]), .RDIR(rdir),
-        .WLOADN(wloadn), .WMOVE(1'b0), .WDIR(1'b0), .HOLD(hold),
+        .WLOADN(wloadn), .WMOVE(1'b0), .WDIR(1'b0), .HOLD(hold[3]),
         .DQSR90(r90_3), .DQSW0(w0_3), .DQSW270(w270_3),
         .RPOINT(rp_3), .WPOINT(wp_3),
         .RVALID(rvalid[3]), .RBURST(rburst[3]), .RFLAG(rflag[3]), .WFLAG(wflag[3]));

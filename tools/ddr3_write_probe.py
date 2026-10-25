@@ -313,6 +313,11 @@ class Core:
         for _ in range(count):
             self.request(0x07, (1 << (4 + lane)) | int(up))
 
+    def hold(self, mask: int, code: int = 1):
+        """HOLD on the lanes in `mask` for 4 x (code + 1) PCLK, or with code 15
+        until the next call; mask 0 releases every lane (command 0x35)."""
+        self.request(0x35, ((code & 15) << 4) | (mask & 15))
+
     def calib(self, bit: int):
         self.request(0x08, bit)
 
@@ -449,7 +454,14 @@ def vendor_search(core: "Core", args) -> tuple:
             prev = [False] * 4
             for rs in range(8):
                 sets = [locked[n] or (d, k, rs) for n in range(4)]
+                # the vendor changes an unconfigured lane's settings inside a
+                # HOLD on it, between every two trials but before the first
+                held = getattr(args, "hold", "none") == "vendor" and tried > 0
+                if held:
+                    core.hold(sum(1 << l for l in range(4) if locked[l] is None), 15)
                 core.set_lanes([x[0] for x in sets], [x[1] for x in sets], [x[2] for x in sets])
+                if held:
+                    core.hold(0)
                 core.mode(4)                    # arms the counters and the log
                 time.sleep(args.seconds)
                 core.mode(0)
@@ -1117,6 +1129,10 @@ def main() -> int:
                     help="before training, set every lane's read delay as the proven controller's "
                          "u_init_rmove_mod does: RLOADN loads the DLL STEP code, then STEP - 4 RMOVE "
                          "pulses with RDIR = 1 leave the tap at 4 (TOOL-041)")
+    tr.add_argument("--hold", choices=["none", "vendor"], default="none",
+                    help="with --vendor-search, hold every lane not yet locked while its gate and "
+                         "RCLKSEL change between trials, as the proven controller does (TOOL-042, "
+                         "command 0x35)")
     tr.add_argument("--vendor-search", action="store_true",
                     help="train as the proven controller does (TOOL-039): gate outer, CALIB 0..8, "
                          "RCLKSEL inner, a lane passing only with one RVALID and one RBURST per READ "

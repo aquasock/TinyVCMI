@@ -2655,6 +2655,29 @@ calibration, which in Gowin's model resets the DQS FIFO control that produces
 RVALID -- and the lanes that never train show many RVALID cycles per READ. That
 is the next change (TOOL-041).
 
+## HOLD, and all four lanes
+
+The proven controller holds every lane that is not yet configured for 11 PCLK
+between each two RCLKSEL trials of read calibration, changing RCLKSEL (and the
+gate, at a step) inside that HOLD with READ low; HOLD resets the DQS FIFO
+control that produces RVALID. `wr_core` now drives each DQS HOLD separately
+(command `0x35`, timed or held until the next command), and `train --hold
+vendor` holds the unlocked lanes while the host changes their settings.
+
+| Load | Lanes trained | Setting (delay, k, RCLKSEL) | CALIB | Own READs after centring |
+|---|---|---|---|---|
+| control 1 | 0-3 | 1, 2, 4 | 4 | 100% on all four |
+| open 1 | 0-3 | 1, 1, 5 / 5 / 4 / 4 | 3 | 100% on all four |
+| control 2 | 0-3 | 1, 2, 4 | 4 | 100% on all four |
+| open 2 | 0-3 | 1, 1, 5 / 5 / 4 / 4 | 3 | 100% on all four |
+
+Every lane of every load reached the vendor's one-RVALID-per-READ state and,
+centred, returned its own burst on every isolated random READ; each image trains
+to the same settings every time. Keeping `rd_align`'s own copy of the pattern
+rotations, which GowinSynthesis had merged with `wr_core`'s, brought the Gowin
+control from 96.8 to 107.3 MHz. Still to do before the controller: the same with
+address-derived data, and read data at a fixed trained latency (TOOL-042).
+
 ## The controller path: a spike, and seven pieces under it
 
 ### The spike, and what it settled

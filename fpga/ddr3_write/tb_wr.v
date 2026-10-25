@@ -31,7 +31,9 @@
 //   * frame 0x2F, the longest, reaches the link whole: its header and all
 //     206 payload bytes equal to status4;
 //   * the READ log keeps every random READ, and a page copied by command 33
-//     reaches the link whole in frame 0x34, its entries those of the log.
+//     reaches the link whole in frame 0x34, its entries those of the log;
+//   * command 35 holds exactly the lanes it names for 4 x (v[7:4] + 1) PCLK,
+//     or with code 15 until a command naming no lane releases them.
 module tb;
     reg sys_clk = 1'b0;
     always #10 sys_clk = ~sys_clk;
@@ -226,6 +228,15 @@ module tb;
     integer dq_driven_at_write = 0;
     integer idle_wait = 0;
     integer fi, frame_bad;
+    // PCLK each lane's DQS HOLD is high while hold_count is set
+    integer hold_hi [0:3];
+    integer hold_count = 0;
+    integer hl;
+    always @(posedge dut.pclk)
+        if (hold_count)
+            for (hl = 0; hl < 4; hl = hl + 1)
+                if (dut.hold[hl] === 1'b1)
+                    hold_hi[hl] = hold_hi[hl] + 1;
 
     // Per-lane READ gates in random mode: lanes 0 and 1 at delay 2, k 0;
     // lane 2 at delay 5; lane 3 at delay 2, k 3.  Every gate a lane opens is
@@ -362,6 +373,28 @@ module tb;
         end
         $display("      READ log: %0d entries; page 1 over the link, entry 16 equal to the log",
                  dut.core.rc_log_n);
+        // per-lane HOLD: lanes 0 and 2 for 4 x (1 + 1) PCLK, the others not at all
+        hold_count = 1;
+        hold_hi[0] = 0; hold_hi[1] = 0; hold_hi[2] = 0; hold_hi[3] = 0;
+        request(8'h35, 8'h15);
+        #30000;                                                 // its reply
+        hold_count = 0;
+        if (hold_hi[0] != 8 || hold_hi[2] != 8 || hold_hi[1] != 0 || hold_hi[3] != 0) begin
+            $display("      HOLD high for %0d %0d %0d %0d PCLK", hold_hi[0], hold_hi[1],
+                     hold_hi[2], hold_hi[3]);
+            fail("command 0x35 did not hold exactly lanes 0 and 2 for 8 PCLK");
+        end
+        $display("      HOLD: lanes 0 and 2 for 8 PCLK, lanes 1 and 3 untouched");
+        // the level form: lanes 1 and 3 held until a command naming no lane
+        request(8'h35, 8'hfa);
+        #30000;
+        if (dut.hold !== 4'b1010) fail("command 0x35 with code 15 did not hold lanes 1 and 3");
+        #20000;
+        if (dut.hold !== 4'b1010) fail("the level HOLD did not stay until the next command");
+        request(8'h35, 8'h00);
+        #30000;
+        if (dut.hold !== 4'b0000) fail("command 0x35 naming no lane did not release the HOLD");
+        $display("      HOLD: level on lanes 1 and 3 held and released");
         // idle mode refreshes every 7 us and waits tRFC after each, so the
         // core is given up to 2 us to be seen in its idle state
         idle_wait = 0;

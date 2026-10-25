@@ -75,7 +75,8 @@ CORE = """\
     // kept, so the open flow's SDC can name the memory-side clock whatever
     // Yosys does with the submodules' aliases of it
     (* keep *) wire pclk;
-    wire dll_rst, updncntl, hold, phy_rst, dll_lock, rloadn, rdir, wloadn;
+    wire dll_rst, updncntl, phy_rst, dll_lock, rloadn, rdir, wloadn;
+    wire [3:0] hold;                    // per lane: the start-up update or command 0x35
     wire [3:0] rmove;
     wire [31:0] wstep;
     wire [7:0] dq_pat;
@@ -107,7 +108,7 @@ LANE = """\
         .DQSIN(dqsi_{l}), .PCLK(pclk), .FCLK(mclk),
         .RESET(phy_rst), .READ(read_en[{l4}+:4]), .RCLKSEL(rclksel[{l3}+:3]), .DLLSTEP(step),
         .WSTEP(wstep[{w}+:8]), .RLOADN(rloadn), .RMOVE(rmove[{l}]), .RDIR(rdir),
-        .WLOADN(wloadn), .WMOVE(1'b0), .WDIR(1'b0), .HOLD(hold),
+        .WLOADN(wloadn), .WMOVE(1'b0), .WDIR(1'b0), .HOLD(hold[{l}]),
         .DQSR90(r90_{l}), .DQSW0(w0_{l}), .DQSW270(w270_{l}),
         .RPOINT(rp_{l}), .WPOINT(wp_{l}),
         .RVALID(rvalid[{l}]), .RBURST(rburst[{l}]), .RFLAG(rflag[{l}]), .WFLAG(wflag[{l}]));
