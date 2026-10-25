@@ -134,6 +134,28 @@ class Core:
         s["burst_count"] = [b[123 + n] for n in range(4)]
         return s
 
+    def pos(self) -> dict:
+        """rd_check's burst-position frame, command 0x2B: 34 payload bytes.
+
+        For every isolated READ, which of the two known capture offsets held
+        its burst (3 both, 1 only 11, 2 only 19, 0 neither), the refresh
+        phase range seen per class, and the last eight classes.
+        """
+        r = self.request(0x2B, expect=4 + 34)
+        if r[2] != 0x00 or r[3] != 34:
+            raise RuntimeError(
+                f"burst-position frame is {r[2]:#04x}/{r[3]}, expected 0x00/34")
+        b = r[4:]
+        names = ["both", "only11", "only19", "other"]
+        s = {"counts": {n: int.from_bytes(b[4 * i:4 * i + 4], "little")
+                        for i, n in enumerate(names)}}
+        s["phase"] = {n: (int.from_bytes(b[16 + 4 * i:18 + 4 * i], "little"),
+                          int.from_bytes(b[18 + 4 * i:20 + 4 * i], "little"))
+                      for i, n in enumerate(names)}
+        seq = int.from_bytes(b[32:34], "little")
+        s["classes"] = [(seq >> (2 * i)) & 3 for i in range(8)]
+        return s
+
     def check(self) -> dict:
         """rd_check's frame, command 0x27."""
         r = self.request(0x27, expect=TOTAL)
@@ -573,6 +595,13 @@ def main() -> int:
     ga.add_argument("--offsets", type=int, nargs="+", default=[0, 1, 2, 3])
     ga.add_argument("--write-ms", type=float, default=20)
     ga.add_argument("--settle-ms", type=float, default=20)
+    ps = sub.add_parser("pos", help="which capture offset held each isolated READ (0x2B)")
+    ps.add_argument("--row", type=lambda x: int(x, 0), default=0)
+    ps.add_argument("--prewrite", action="store_true")
+    ps.add_argument("--seconds", type=float, default=0.3)
+    ps.add_argument("--read-delay", type=int, default=1)
+    ps.add_argument("--gate", type=int, default=2)
+    ps.add_argument("--slips", type=int, nargs=4, default=[0, 0, 0, 4])
     pw = sub.add_parser("prewrite")
     pw.add_argument("--row", type=lambda x: int(x, 0), default=0)
     pw.add_argument("--write-ms", type=float, default=5)
@@ -784,6 +813,32 @@ def main() -> int:
             core.request(0x22, args.read_delay)
             if failures and not args.sweep_gate:
                 raise RuntimeError(f"{failures} random session(s) failed")
+        elif args.cmd == "pos":
+            if args.prewrite:
+                prewrite(core, args.row, 0.2)
+            core.request(0x0E, RC_PATTERNS[0])
+            core.mode(3)                        # a read stream to align in
+            core.settle()
+            align_framing(core, RC_PATTERNS[0])
+            core.mode(0)
+            core.address(0, args.row & ~1)
+            core.request(0x22, args.read_delay)
+            core.request(0x25, args.gate)
+            core.set_slips(args.slips)
+            core.mode(4)                        # entering random mode arms the counters
+            time.sleep(args.seconds)
+            p = core.pos()
+            core.mode(0)
+            total = sum(p["counts"].values())
+            print(header(core.status()))
+            print(f"READs classified {total}: " + "  ".join(
+                f"{n} {p['counts'][n]}" for n in ("both", "only11", "only19", "other")))
+            for n in ("both", "only11", "only19", "other"):
+                lo, hi = p["phase"][n]
+                if p["counts"][n]:
+                    print(f"    {n:6s} phase {lo}..{hi}")
+            print("    last eight classes, newest first: " +
+                  " ".join(str(c) for c in p["classes"]))
         elif args.cmd in ("align", "alignsweep"):
             if not trainable(args.pattern if args.cmd == "align" else args.patterns[0]):
                 raise ValueError("a pattern needs eight distinct rotations to train")

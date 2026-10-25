@@ -43,11 +43,17 @@ module tb_check;
     wire [7:0]   fail_pat;
     wire [10:0]  fail_addr;
     wire [255:0] fail_words;
+    wire [31:0]  n_both, n_only11, n_only19, n_other;
+    wire [127:0] pos_range;
+    wire [15:0]  pos_cls;
+    reg  [9:0]   refi = 10'd0;
 
     rd_check dut (
         .pclk(pclk), .rst(rst), .arm(arm), .dq_q(dq_q), .issue(issue),
         .issue_idx(issue_idx), .issue_col(issue_col), .lat(lat), .step(step),
-        .slip_enable(slip_enable), .slip(slip),
+        .slip_enable(slip_enable), .slip(slip), .refi(refi),
+        .n_both(n_both), .n_only11(n_only11), .n_only19(n_only19),
+        .n_other(n_other), .pos_range(pos_range), .pos_cls(pos_cls),
         .locked(locked), .expect_rot(expect_rot), .last_rot(last_rot),
         .last_cls(last_cls), .total(total), .good(good), .class_ok(class_ok),
         .rot_moves(rot_moves), .hist_n(hist_n), .hist(hist),

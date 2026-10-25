@@ -47,6 +47,16 @@ module rd_check #(
     input  wire [2:0]   step,       // expected rotation advance per READ
     input  wire         slip_enable,
     input  wire [11:0]  slip,       // one LiteDRAM-style beat slip per lane
+    input  wire [9:0]   refi,       // PCLK since the last refresh, the phase
+
+    // Which of the two known burst positions held each READ (command 0x2B),
+    // and the refresh phase at the check that decided it.
+    output reg  [31:0]  n_both = 32'd0,
+    output reg  [31:0]  n_only11 = 32'd0,
+    output reg  [31:0]  n_only19 = 32'd0,
+    output reg  [31:0]  n_other = 32'd0,
+    output reg  [127:0] pos_range = 128'd0,  // min,max per class, 16 bits each
+    output reg  [15:0]  pos_cls = 16'd0,     // last 8 classes, newest at [1:0]
 
     output reg          locked = 1'b0,
     output reg  [11:0]  expect_rot = 12'd0,   // per lane, for the next READ
@@ -199,20 +209,67 @@ module rd_check #(
     reg [31:0]  hit = 32'd0;
     reg [511:0] hcnt = 512'd0;
     integer j, hl;
-    reg all;
+    reg all, all_any;
+    reg m11 = 1'b0, m19 = 1'b0;     // this READ matched at that offset
     always @(posedge pclk) begin
         for (j = 0; j < 32; j = j + 1) begin
-            all = ex_h[j];
+            all_any = 1'b1;
             for (hl = 0; hl < 4; hl = hl + 1)
                 if (!pins_b3[hl] || canon_b3[8*hl +: 8] != ex_pat[8*j +: 8])
-                    all = 1'b0;
+                    all_any = 1'b0;
+            all = ex_h[j] && all_any;
             hit[j] <= all && !clr;
+            // The two positions an isolated burst lands in, for every READ,
+            // not only the ones the histogram counts.
+            if (j == 11) m11 <= all_any && ex_v[11] && !clr;
+            if (j == 19) m19 <= all_any && ex_v[19] && !clr;
         end
         if (clr)
             hcnt <= 512'd0;
         else
             for (j = 0; j < 32; j = j + 1)
                 hcnt[16*j +: 16] <= hcnt[16*j +: 16] + {15'd0, hit[j]};
+    end
+
+    // ------------------------------------------------------------------
+    // Which position held each READ, and at what refresh phase
+    // ------------------------------------------------------------------
+    // A READ's offset-11 check happens 8 PCLK before its offset-19 check, so
+    // m11 delayed by eight belongs to the same READ as m19 now.  Deciding
+    // both at the offset-19 check gives one classification per READ: 3 both,
+    // 2 only 19, 1 only 11, 0 neither.  The phase is the refresh counter at
+    // that check, so the host can see whether the two positions occupy
+    // disjoint phases (a refresh epoch) or both appear at every phase (a
+    // per-READ property, which a fixed latency cannot cover).
+    // m11 and m19 are registered from the check cycle, so both describe one
+    // READ only on the cycle after its offset-19 check: that is `ev19`.
+    reg  [7:0] m11_d = 8'd0;
+    reg        ev19 = 1'b0;
+    wire [1:0] cls_w = {m19, m11_d[7]};
+    always @(posedge pclk) begin
+        m11_d <= {m11_d[6:0], m11};
+        ev19  <= ex_v[19] && !clr;
+        if (clr) begin
+            n_both <= 32'd0;
+            n_only11 <= 32'd0;
+            n_only19 <= 32'd0;
+            n_other <= 32'd0;
+            pos_cls <= 16'd0;
+            pos_range <= {16'h03ff, 16'd0, 16'h03ff, 16'd0,
+                          16'h03ff, 16'd0, 16'h03ff, 16'd0};
+        end else if (ev19) begin
+            pos_cls <= {pos_cls[13:0], cls_w};
+            case (cls_w)
+                2'd3: n_both <= n_both + 32'd1;
+                2'd2: n_only19 <= n_only19 + 32'd1;
+                2'd1: n_only11 <= n_only11 + 32'd1;
+                default: n_other <= n_other + 32'd1;
+            endcase
+            if ({6'd0, refi} < pos_range[32*cls_w +: 16])
+                pos_range[32*cls_w +: 16] <= {6'd0, refi};
+            if ({6'd0, refi} > pos_range[32*cls_w + 16 +: 16])
+                pos_range[32*cls_w + 16 +: 16] <= {6'd0, refi};
+        end
     end
     assign hist = hcnt;
 

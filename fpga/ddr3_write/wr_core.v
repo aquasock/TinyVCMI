@@ -82,6 +82,9 @@
 //   28 s      rd_check's expected rotation advance per READ, s[2:0]
 //   2A v      set lane v[4:3]'s two-word beat slip to v[2:0]; v[7] enables
 //             the reassembler after all four lane values have been written
+//   2B        burst position: for every isolated READ, which of the two known
+//             capture offsets held it and the refresh phase at that check,
+//             answered with 34 payload bytes (see status3)
 //
 // The read data path ends in rd_align, the trained read-valid boundary: it
 // locks each lane's whole-word rotation from the live stream, derotates it,
@@ -834,6 +837,9 @@ module wr_core (
     wire [7:0]   rc_fail_pat;
     wire [10:0]  rc_fail_addr;
     wire [255:0] rc_fail_words;
+    wire [31:0]  rc_n_both, rc_n_only11, rc_n_only19, rc_n_other;
+    wire [127:0] rc_pos_range;
+    wire [15:0]  rc_pos_cls;
     reg          rc_arm = 1'b0, mode_rand_d = 1'b0;
     always @(posedge pclk) begin
         mode_rand_d <= (mode == M_RAND);
@@ -844,6 +850,9 @@ module wr_core (
         .pclk(pclk), .rst(!ready_pc), .arm(rc_arm), .dq_q(dq_q),
         .issue(rc_issue), .issue_idx({acc_rowbit, acc_bank}), .issue_col(acc_col),
         .lat(lat_p2), .step(rstep_p2), .slip_enable(slip_en_p2), .slip(slip_p2),
+        .refi(refi),
+        .n_both(rc_n_both), .n_only11(rc_n_only11), .n_only19(rc_n_only19),
+        .n_other(rc_n_other), .pos_range(rc_pos_range), .pos_cls(rc_pos_cls),
         .locked(rc_locked), .expect_rot(rc_expect), .last_rot(rc_last_rot),
         .last_cls(rc_last_cls), .total(rc_total), .good(rc_good), .class_ok(rc_class),
         .rot_moves(rc_moves), .hist_n(rc_hist_n), .hist(rc_hist),
@@ -1112,6 +1121,23 @@ module wr_core (
         {rc_locked_s, rand_s, gate_req, 1'b0, rstep_req}        // 0
     };
 
+    // Burst position (command 0x2B), 34 payload bytes: which of the two known
+    // capture offsets held each isolated READ, and the refresh phase at the
+    // check that decided it.  Little-endian, byte 0 in the low bits.
+    //    0-3   READs that matched at both 11 and 19
+    //    4-7   at 11 only        8-11  at 19 only        12-15 at neither
+    //   16-31  min,max of the refresh phase for each of the four classes,
+    //          in the order both, only11, only19, other
+    //   32-33  the last eight classes, 2 bits each, newest at [1:0]
+    wire [271:0] status3 = {
+        rc_pos_cls,                                             // 32..33
+        rc_pos_range[127:112], rc_pos_range[111:96],            // 30..31, 28..29
+        rc_pos_range[95:80],   rc_pos_range[79:64],              // 26..27, 24..25
+        rc_pos_range[63:48],   rc_pos_range[47:32],              // 22..23, 20..21
+        rc_pos_range[31:16],   rc_pos_range[15:0],               // 18..19, 16..17
+        rc_n_other, rc_n_only19, rc_n_only11, rc_n_both         // 12..15, 8..11, 4..7, 0..3
+    };
+
     // ------------------------------------------------------------------
     // The link
     // ------------------------------------------------------------------
@@ -1130,6 +1156,7 @@ module wr_core (
     reg response_active = 1'b0;
     reg response_is_status = 1'b0;
     reg response_is_check = 1'b0;
+    reg response_is_pos = 1'b0;
     reg [7:0] response_index = 8'd0;
     reg [1015:0] frame = 1016'd0;
 
@@ -1143,7 +1170,7 @@ module wr_core (
                     (c == 8'h0f) || (c[7:2] == 6'b000100) || (c == 8'h20) ||
                     (c == 8'h21) || (c == 8'h22) || (c == 8'h23) || (c == 8'h24) ||
                     (c == 8'h25) || (c == 8'h26) || (c == 8'h27) || (c == 8'h28) ||
-                    (c == 8'h2a);
+                    (c == 8'h2a) || (c == 8'h2b);
         end
     endfunction
 
@@ -1169,10 +1196,13 @@ module wr_core (
                     request_state <= 2'd0;
                     if (!response_active) begin
                         response_active <= 1'b1;
-                        response_is_status <= (cmd_byte == 8'h03) || (cmd_byte == 8'h27);
+                        response_is_status <= (cmd_byte == 8'h03) || (cmd_byte == 8'h27) ||
+                                              (cmd_byte == 8'h2b);
                         response_is_check <= (cmd_byte == 8'h27);
+                        response_is_pos <= (cmd_byte == 8'h2b);
                         response_index <= 8'd0;
-                        frame <= (cmd_byte == 8'h27) ? status2 : status;
+                        frame <= (cmd_byte == 8'h27) ? status2 :
+                                 (cmd_byte == 8'h2b) ? {744'd0, status3} : status;
                         case (cmd_byte)
                             8'h04: snap_tog <= ~snap_tog;
                             8'h05: begin
@@ -1234,8 +1264,9 @@ module wr_core (
                 case (response_index)
                     8'd0: tx_data <= 8'haa;
                     8'd1: tx_data <= 8'h00;
-                    8'd2: tx_data <= response_is_check ? 8'h05 : 8'h04;
-                    8'd3: tx_data <= 8'h7f;    // 127 payload bytes
+                    8'd2: tx_data <= response_is_pos ? 8'h00 :
+                                      (response_is_check ? 8'h05 : 8'h04);
+                    8'd3: tx_data <= response_is_pos ? 8'd34 : 8'h7f;    // payload bytes
                     default: begin
                         tx_data <= frame[7:0];
                         frame <= frame >> 8;
@@ -1251,7 +1282,8 @@ module wr_core (
                 endcase
             end
             tx_send <= 1'b1;
-            if (response_index == (response_is_status ? 8'd130 : 8'd4))
+            if (response_index == (response_is_pos ? 8'd37 :
+                                   (response_is_status ? 8'd130 : 8'd4)))
                 response_active <= 1'b0;
             else
                 response_index <= response_index + 8'd1;

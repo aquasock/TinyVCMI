@@ -1638,3 +1638,39 @@ What remains is the controller: bind each burst to the READ command that asked f
 - User Test: N/A
 
 ---
+
+## 51 COMMIT Unreleased 2026-10-24T17:51:00-07:00
+
+#### Coming From:
+
+Unreleased 1e1e6ea
+
+#### Purpose:
+
+Find out what decides which capture position holds an isolated DDR3 read burst, and why most isolated READs reconstruct at no position at all, before committing a controller read path to either a trained latency or a two-word window.
+
+#### Outcome:
+
+`fpga/ddr3_write/rd_check.v` gained a per-READ burst-position classifier with its own frame: at each READ's offset-19 check it decides whether the burst held both 11 and 19, 11 only, 19 only or neither, records the refresh phase at that check as a min/max range per class, and keeps the last eight classes; command `0x2B` returns the 34-byte frame and `tools/ddr3_write_probe.py pos` reads it. `m11` is delayed eight clocks to meet `m19` for the same READ and the decision is registered, because classifying on the check cycle itself put every READ in neither and `fpga/ddr3_write/tb_pos.v`, a new bench that drives one READ's own pattern at exactly one offset, caught it; `tools/sim_rd_check.sh` now runs it beside the existing checker cases. On the Tang with the image whose `.bin` is `c15996cbcd87b4c42e6939fdc7f1d6b5150ee70fbe36f9dc8953d062e8d7816d`, calibrated to 24,957 of 24,958 eligible cycles on every lane, 4,820,348 READs at delay 1 and gate 2 classified as 3,493 both, 76,811 at 11 only, 22,588 at 19 only and 4,717,456 at neither, and every class's refresh phase spanned 0 to 1023, so the position is not a refresh epoch and a retrain per epoch would gain nothing. The survivors sit at whole-word offsets, 975 at 11, 438 at 19 and 80 at 27 in an unsaturated window, so the failures are not a burst in the wrong place. The cadence is not the cause either: `rand_wait` derives from the existing read gap, so it was swept without a rebuild and the rate fell monotonically from 17,247 of 1,478,556 at gap 8 to 297 of 46,675 at 255. Neither is the gate: all 32 (delay, gate) positions at gap 255 peak at 0.40%, while `memtest` passes 12 of 12 cases across banks 0 to 3 and rows 0 to 2 and a stream read still matches 24,989 of 24,988 cycles, so the device, the addressing and the capture all work when the stream is continuous. The conclusion recorded is that closed-page scatter reads do not reach the read capture at any cadence or gate position, that the failure is not framing and so the two-word reassembler of entry 50 does not address it, and that it will matter for the AE350's cache misses; controller work stays on the stream path, which is proven. One sweep was discarded and is recorded as discarded: a `memtest` over banks 0 to 3, rows 0 to 2 overwrote three of the sixteen pattern rows the classifier compares against and the gate sweep taken next read 2.03%, so it was repeated after `prewrite` and only the clean 0.40% stands. The vendor control closes PCLK at 103.249 MHz with `0.000` TNS on all three clocks, the open flow at 113.17 MHz, and the image equals its Gowin build on all 306 tables. The desktop `tinytang.bin` was restored afterwards and answered `0x54`. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering and active-log capacity.
+
+#### Next Steps:
+
+Build the controller on the stream-proven read path: a read command interface with a burst tag, the read-data aligner's trained boundary behind it, and a FIFO that returns one tagged burst per completed read, qualified first in simulation and then against sustained traffic over the full array; keep closed-page scatter reads as an open limitation to be explained before the AE350 takes cache misses to scattered addresses, and leave the `D108` unused-pin contradiction and the `is_mipi` bug outside the DDR context open.
+
+#### Files Modified:
+
+- docs/ddr3-open-flow.md
+- fpga/ddr3_write/rd_check.v
+- fpga/ddr3_write/tb_check.v
+- fpga/ddr3_write/tb_pos.v
+- fpga/ddr3_write/wr_core.v
+- tools/ddr3_write_probe.py
+- tools/sim_rd_check.sh
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: N/A
+
+---

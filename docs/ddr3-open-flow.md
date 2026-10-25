@@ -2282,3 +2282,68 @@ remains the mechanism.
 The desktop `tinytang.bin` was restored afterwards and answered `0x54`. The
 open image and its vendor control are on the card as `ddr3_rand.bin` and
 `ddr3_rand_vendor.bin`.
+
+## Which position a lone burst lands in, and why most of them never arrive
+
+### The classifier
+
+`rd_check` now classifies every isolated READ instead of checking one offset:
+at the offset-19 check it decides whether the burst held 11 and 19, 11 only,
+19 only, or neither, and records the refresh phase (`refi`) at that check.
+`m11` is delayed eight clocks so that it meets `m19` for the same READ, and
+the decision is taken one cycle after the check, because both registers are
+written on the check cycle itself. The counts, the per-class phase range and
+the last eight classes are in frame `0x2B` (34 payload bytes), and
+`tools/ddr3_write_probe.py pos` reads it. `fpga/ddr3_write/tb_pos.v` drives
+one READ's own pattern at exactly one offset and proves all four classes.
+
+### The position is not a refresh epoch
+
+At delay 1, gate 2, slips `0,0,0,4`, over 4,820,348 READs: both 3,493, 11 only
+76,811, 19 only 22,588, neither 4,717,456. That is 2.1% at the two known
+positions and 97.9% nowhere. Every class's refresh phase spans 0 to 1023, the
+whole period, so the position is not selected by the refresh phase and a
+retrain per refresh epoch would gain nothing.
+
+Where the survivors sit is whole words apart: an unsaturated 0.04 s window
+puts 975 at offset 11, 438 at 19 and 80 at 27, and nothing elsewhere. So the
+sub-population that does arrive arrives at a word boundary, as a frame would;
+the failures are not a burst in the wrong place.
+
+### Neither cadence nor gate position explains it
+
+Closed-page spacing is `read_gap` -- `rand_wait` is derived from it -- so the
+cadence can be swept without rebuilding. The pass rate does not move: 17,247
+of 1,478,556 at gap 8, 8,399 of 739,781 at 16, 3,896 of 369,891 at 32, 888 of
+92,999 at 128 and 297 of 46,675 at 255, 1.17% down to 0.64%. Slowing accesses
+thirtyfold recovers no burst, so this is not command spacing, tRCD or tRP
+pressure, or refresh starvation.
+
+`memtest` passes 12 of 12 cases over banks 0 to 3 and rows 0 to 2 on every
+lane, and a stream read still matches 24,989 of 24,988 cycles, so the device
+returns data and the addressing path is sound. Sweeping all 32 (delay, gate)
+positions at gap 255, after rewriting all sixteen pattern rows, peaks at
+0.40% at delay 1, gate 2, with 0.16%, 0.06% and nothing else above 0.02%. A
+burst arriving outside the window would show up at some other position; none
+does.
+
+One measurement in this session was wrong and is recorded as wrong: a
+`memtest` run over banks 0 to 3, rows 0 to 2 overwrote three of the sixteen
+pattern rows the classifier compares against, and the gate sweep taken
+immediately afterwards read 2.03%. It was discarded and repeated after
+`prewrite`. The 0.40% figure is from the clean run.
+
+### What this is and is not
+
+Closed-page scatter reads do not reach the read capture: not at any cadence,
+not at any gate position, with correct addresses and correct row contents,
+while a continuous stream through the same lanes at the same calibration is
+perfect. The session-to-session rate at identical settings has ranged from
+0.4% to 25%, so it is not even a stable marginal case. This is not a framing
+question and the two-word reassembler of TOOL-029 does not address it; it is
+a limitation of the scatter path as built, recorded as open, and it will
+matter when the AE350 takes cache misses to scattered addresses. A controller
+that serves memory in streams is unaffected, which is why the controller work
+continues on the stream path.
+
+The desktop `tinytang.bin` was restored afterwards and answered `0x54`.
