@@ -165,6 +165,7 @@ Topic IDs are the `record_id` prefix. An entry reserves a namespace; it does not
 | Does the DDR3 controller image work on the board, unattended, over the whole array? | TOOL | TOOL-046 |
 | Can LiteDRAM's controller serve this PHY at 100 MHz? | TOOL | TOOL-047 |
 | How much read and write margin do the lanes have under the controller, and what does a cold start do? | TOOL | TOOL-048 |
+| Does write leveling cure the cold failures, and what did a new placement do? | TOOL | TOOL-049 |
 | Why did the Gowin control miss PCLK timing? | TOOL | TOOL-028 |
 | Which sources and licenses constrain reuse? | PROV | PROV-001 |
 
@@ -235,6 +236,7 @@ TOOL-045: "The stream's frame moving during the sequencer's fixed-target per-pin
 TOOL-046: "The controller image trains itself, hands over and tests the whole 1 GiB at 111.62 MHz: four of six read loads clean over about 85 GiB each, two failing on lane 1 at up to 3e-6 of words"
 TOOL-047: "LiteDRAM's controller logic closes 77.9 MHz in the open flow and 90.0 MHz in Gowin's against this PHY's 100 MHz, and its buffered command mode returns a port's reads out of order"
 TOOL-048: "Under the controller's test every lane reads cleanly 20 taps either side of its trained centre; writes run untrained at WSTEP 0, whose upper edges are 16 to 80; failures fall load by load from a cold start, on lane 1 above all"
+TOOL-049: "Leveled write strobes still failed cold as before; the image rebuilt with test diagnostics, the PHY and controller unchanged, failed no word in four cold loads, so the failures follow the placement"
 TOOL-031: "LiteDRAM's control layer alone generates, synthesises and places in the open flow at ~1% of the LUTs, with none of TOOL-025's three gaps"
 TOOL-030: "Closed-page scatter READs do not reach the read capture in the open or the vendor build of the same RTL; no cadence, gate position or shared RCLKSEL recovers them, and failing READs return other rows' patterns"
 PROV-001: "Reuse source and interface ideas with their original license boundaries and attribution intact"
@@ -1103,6 +1105,19 @@ PROV-001: "Reuse source and interface ideas with their original license boundari
     - "TinyVCMI tools/ddr3_write_probe.py: margin, ctrl"
     - "TinyVCMI docs/ddr3-open-flow.md: Margins, and a cold start"
   verification: "Read sweep: one load on 2026-10-26 of ddr3_ctrl.bin (TOOL-046), offsets -28 to +28 in fours, 2 s a point. WSTEP sweep: one load, 0 to 120 in eights, 2 s a point, the lanes in turn; each lane's own window was measured before it was disturbed, and the earlier lanes' failures in later sweeps are the irreversible change. Cold start: the board cooled with air by the user, then four loads with 60 s tests. The desktop core was restored after every load and answered 0x54. Whether the failures are writes or reads is not yet separated, and the lower write edges are unknown."
+
+- record_id: TOOL-049
+  topic_id: TOOL
+  title: "Write leveling does not cure the controller's cold failures; a new placement did"
+  status: VERIFIED
+  verified_date: 2026-10-26
+  statement: "wr_core's write-leveling feedback, swept from WSTEP 0 to 124, rose to full between 24 and 28, 28 and 32, 16 and 24 and 20 and 24 on lanes 0 to 3 and fell near 115, 118, 106 and 106, half a clock being about 88 steps; at WSTEP 0 each strobe leads the clock by 21 to 30 steps. With each lane's WSTEP set from its own sweep and the training rerun on chip, which found d 1, b 2, four loads of the TOOL-046 image from an air-cooled board failed 21,920, 8,061, 321 and 34 words on lane 1. The image rebuilt with the memory test's per-pin, per-lane-and-beat counts and re-read log, the PHY, training and controller unchanged, closed PCLK at 106.79 MHz and in four loads from an air-cooled board failed no word over about 2.4 x 10^9 each, lane 1 having trained in the first at RCLKSEL 4 with a 43-tap window, as in the TOOL-048 load that failed 13,979."
+  consequence: "The cold failures follow the placement, not the DRAM interface's training or the write strobe's alignment: a hold-time violation on some fabric path, worse in cold faster silicon, would behave so, and nextpnr's Gowin flow does not report hold, so it has to be checked before an image can be trusted cold. Write leveling at start-up is not needed for these failures."
+  sources:
+    - "TinyVCMI fpga/ddr3_ctrl/ddr3_bist.v: pin_err, beat_err, elog; ctrl_glue.v: frame 0x3D pages"
+    - "TinyVCMI tools/ddr3_write_probe.py: level, ctrl --diag"
+    - "TinyVCMI docs/ddr3-open-flow.md: Write leveling, the test's diagnostics, and a placement"
+  verification: "Leveling sweep and leveled cold loads with ddr3_ctrl.bin of TOOL-046 on 2026-10-26; the rebuilt image, .bin SHA-256 c9081054dfc72699d37a7be8dafe78a5bf257e25965011ed82bbe3483831f922, equal on all 306 DDR3 tables to Gowin's default build of the same sources, loaded four times from an air-cooled board. The desktop core was restored after every load and answered 0x54. That the earlier image's failures came from its placement is an inference from one rebuild; an A/B of the two images from the same cold start, and a hold analysis, would test it."
 
 - record_id: PROV-001
   topic_id: PROV

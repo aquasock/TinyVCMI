@@ -20,7 +20,19 @@
 //
 // Errors are counted per lane, a word whose lane l (DQ 8l..8l+7, any beat)
 // differs counting once for that lane, and the first failing word's address
-// and the XOR of what came back with what was owed are kept.
+// and the XOR of what came back with what was owed are kept.  For finding
+// why words fail, the test also counts, per DQ pin, the words in which that
+// pin differed in any beat, and per lane and beat the words in which that
+// lane's byte of that beat differed; and it logs the first eight failing
+// words and reads each again at once, before the pass writes anything, so a
+// word that comes back right was read wrong and one that comes back wrong
+// the same way was written wrong.  Entry e of the log, at [64e +: 64]:
+//
+//   [24:0]   the word's address        [28:25]  its lanes that differed
+//   [36:29]  its beats that differed   [37]     its re-read was issued
+//   [38]     the re-read was checked   [39]     the re-read was right
+//   [40]     the re-read was what the first read was
+//   [41]     in the random READs       [55:42]  the pass, its low 14 bits
 module ddr3_bist #(
     parameter integer AW = 25,          // native port address, 256-bit words
     parameter integer N_LOG2 = 25,      // words written and read per pass
@@ -45,7 +57,11 @@ module ddr3_bist #(
     output reg  [127:0]  lane_err = 128'd0,     // lane l at [32l +: 32]
     output reg           err_seen = 1'b0,
     output reg  [AW-1:0] err_addr = {AW{1'b0}},
-    output reg  [255:0]  err_diff = 256'd0
+    output reg  [255:0]  err_diff = 256'd0,
+    output reg  [511:0]  pin_err = 512'd0,      // DQ q at [16q +: 16]
+    output reg  [511:0]  beat_err = 512'd0,     // lane l, beat b at [16(8l + b) +: 16]
+    output reg  [511:0]  elog = 512'd0,         // entry e at [64e +: 64]
+    output reg  [3:0]    n_log = 4'd0
 );
 
     function [255:0] gen(input [AW-1:0] a, input [31:0] s);
@@ -83,8 +99,8 @@ module ddr3_bist #(
     reg [31:0]   rcnt = 32'd0;
     reg [31:0]   lfsr = 32'h1;
 
-    // the words owed, as their addresses
-    reg [AW-1:0] rq [0:DEPTH-1];
+    // the words owed, as {re-read, address}
+    reg [AW:0]   rq [0:DEPTH-1];
     reg [5:0]    rq_w = 6'd0, rq_r = 6'd0;
     reg [6:0]    rq_n = 7'd0;
     wire         take = cmd_valid && cmd_ready;
@@ -92,7 +108,7 @@ module ddr3_bist #(
     assign cmd_wdata = gen(cmd_addr, seed);
 
     // the check, a PCLK behind the word
-    reg          ck_v = 1'b0;
+    reg          ck_v = 1'b0, ck_retry = 1'b0;
     reg [AW-1:0] ck_a = {AW{1'b0}};
     reg [255:0]  ck_got = 256'd0, ck_exp = 256'd0;
     wire [255:0] diff = ck_got ^ ck_exp;
@@ -109,11 +125,37 @@ module ddr3_bist #(
     // room for one more READ after the one being taken
     wire rroom = (rq_n + (take && !cmd_we ? 7'd1 : 7'd0)) < DEPTH - 2;
 
+    // the re-read: one at a time, of the newest logged word
+    reg          cmd_retry = 1'b0;      // the READ offered is a re-read
+    reg          retry_pend = 1'b0, retry_fly = 1'b0;
+    reg [2:0]    retry_idx = 3'd0;
+    reg [AW-1:0] retry_addr = {AW{1'b0}}, resume = {AW{1'b0}};
+    reg [255:0]  retry_got = 256'd0;
+    reg  [31:0]  pin_bad;
+    reg  [31:0]  lb_bad;                // lane l, beat b at 8l + b
+    reg  [7:0]   beat_bad;
+    integer cq, cv;
+    always @(*) begin
+        for (cq = 0; cq < 32; cq = cq + 1) begin
+            pin_bad[cq] = 1'b0;
+            for (cv = 0; cv < 8; cv = cv + 1)
+                if (diff[32*cv + cq]) pin_bad[cq] = 1'b1;
+        end
+        for (cv = 0; cv < 8; cv = cv + 1) begin
+            beat_bad[cv] = (diff[32*cv +: 32] != 32'd0);
+            for (cq = 0; cq < 4; cq = cq + 1)
+                lb_bad[8*cq + cv] = (diff[32*cv + 8*cq +: 8] != 8'd0);
+        end
+    end
+    function [15:0] inc16(input [15:0] a);
+        inc16 = (a == 16'hffff) ? a : a + 16'd1;
+    endfunction
+
     integer ql;
     always @(posedge pclk) begin
         // the FIFO
         if (take && !cmd_we) begin
-            rq[rq_w] <= cmd_addr;
+            rq[rq_w] <= {cmd_retry, cmd_addr};
             rq_w <= rq_w + 6'd1;
         end
         if (rpop)
@@ -122,12 +164,36 @@ module ddr3_bist #(
 
         // the check
         ck_v <= rpop;
-        ck_a <= rq[rq_r];
+        ck_retry <= rq[rq_r][AW];
+        ck_a <= rq[rq_r][AW-1:0];
         ck_got <= rdata_data;
-        ck_exp <= gen(rq[rq_r], seed);
+        ck_exp <= gen(rq[rq_r][AW-1:0], seed);
         if (take && cmd_we && n_written != 32'hffffffff)
             n_written <= n_written + 32'd1;
-        if (ck_v) begin
+        if (ck_v && ck_retry) begin
+            elog[64*retry_idx + 38] <= 1'b1;
+            elog[64*retry_idx + 39] <= (diff == 256'd0);
+            elog[64*retry_idx + 40] <= (ck_got == retry_got);
+            retry_fly <= 1'b0;
+        end
+        if (ck_v && !ck_retry) begin
+            for (ql = 0; ql < 32; ql = ql + 1) begin
+                if (pin_bad[ql]) pin_err[16*ql +: 16] <= inc16(pin_err[16*ql +: 16]);
+                if (lb_bad[ql]) beat_err[16*ql +: 16] <= inc16(beat_err[16*ql +: 16]);
+            end
+            if (|lane_bad && n_log != 4'd8) begin
+                elog[64*n_log[2:0] +: 64] <= {8'd0, passes[13:0], state == S_RR, 4'd0,
+                                             beat_bad, lane_bad, ck_a};
+                n_log <= n_log + 4'd1;
+                if (!retry_pend && !retry_fly && (state == S_RD || state == S_RR)) begin
+                    retry_pend <= 1'b1;
+                    retry_idx <= n_log[2:0];
+                    retry_addr <= ck_a;
+                    retry_got <= ck_got;
+                end
+            end
+        end
+        if (ck_v && !ck_retry) begin
             if (n_checked != 32'hffffffff)
                 n_checked <= n_checked + 32'd1;
             for (ql = 0; ql < 4; ql = ql + 1)
@@ -145,6 +211,11 @@ module ddr3_bist #(
             n_checked <= 32'd0;
             lane_err <= 128'd0;
             err_seen <= 1'b0;
+            pin_err <= 512'd0;
+            beat_err <= 512'd0;
+            elog <= 512'd0;
+            n_log <= 4'd0;
+            retry_pend <= 1'b0;
         end
 
         // the passes
@@ -169,9 +240,22 @@ module ddr3_bist #(
                 state <= S_RD;
             end
             S_RD: if (take) begin
-                if (cmd_addr == LAST) begin
+                if (cmd_retry) begin            // back to where the re-read cut in
+                    cmd_retry <= 1'b0;
+                    cmd_addr <= resume;
+                    cmd_valid <= rroom;
+                end else if (cmd_addr == LAST) begin
                     cmd_valid <= 1'b0;
+                    retry_pend <= 1'b0;
                     state <= S_RDW;
+                end else if (retry_pend) begin  // the re-read next
+                    resume <= cmd_addr + 1'b1;
+                    cmd_addr <= retry_addr;
+                    cmd_retry <= 1'b1;
+                    retry_pend <= 1'b0;
+                    retry_fly <= 1'b1;
+                    elog[64*retry_idx + 37] <= 1'b1;
+                    cmd_valid <= rroom;
                 end else begin
                     cmd_addr <= cmd_addr + 1'b1;
                     cmd_valid <= rroom;
@@ -185,14 +269,29 @@ module ddr3_bist #(
                 state <= S_RR;
             end
             S_RR: if (take) begin
-                lfsr <= xs_next(lfsr);          // the next random address
-                if (rcnt == RLAST) begin
-                    cmd_valid <= 1'b0;
-                    state <= S_RRW;
-                end else begin
-                    rcnt <= rcnt + 32'd1;
-                    cmd_addr <= xs_next(lfsr) & LAST;
+                if (cmd_retry) begin
+                    cmd_retry <= 1'b0;
+                    cmd_addr <= resume;
                     cmd_valid <= rroom;
+                end else begin
+                    lfsr <= xs_next(lfsr);      // the next random address
+                    if (rcnt == RLAST) begin
+                        cmd_valid <= 1'b0;
+                        retry_pend <= 1'b0;
+                        state <= S_RRW;
+                    end else begin
+                        rcnt <= rcnt + 32'd1;
+                        if (retry_pend) begin
+                            resume <= xs_next(lfsr) & LAST;
+                            cmd_addr <= retry_addr;
+                            cmd_retry <= 1'b1;
+                            retry_pend <= 1'b0;
+                            retry_fly <= 1'b1;
+                            elog[64*retry_idx + 37] <= 1'b1;
+                        end else
+                            cmd_addr <= xs_next(lfsr) & LAST;
+                        cmd_valid <= rroom;
+                    end
                 end
             end else if (!cmd_valid && rroom)
                 cmd_valid <= 1'b1;
@@ -212,6 +311,9 @@ module ddr3_bist #(
             cmd_valid <= 1'b0;
             rq_w <= 6'd0; rq_r <= 6'd0; rq_n <= 7'd0;
             ck_v <= 1'b0;
+            cmd_retry <= 1'b0;
+            retry_pend <= 1'b0;
+            retry_fly <= 1'b0;
         end
     end
 endmodule

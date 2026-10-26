@@ -3076,3 +3076,40 @@ of RCLKSEL 5 and 58 or 59 taps, and its failures came fastest early in the
 run.  The failures follow the board's temperature from a cold start, on lane
 1 above all, with the write strobe untrained at WSTEP 0 and the read training
 itself moving when cold.
+
+### Write leveling, the test's diagnostics, and a placement
+
+The write-leveling feedback of `wr_core`'s mode 1, swept from WSTEP 0 to 124
+on a warm board, rose from 0 to 65,535 between 24 and 28 on lane 0, 28 and 32
+on lane 1, 16 and 24 on lane 2 and 20 and 24 on lane 3, and fell again near
+115, 118, 106 and 106: half a clock is about 88 steps, so at WSTEP 0 each
+lane's strobe arrives 21 to 30 steps, up to about 430 ps, ahead of the clock,
+inside DDR3's quarter clock.  Leveling each lane from its own sweep and
+retraining on chip still found d 1, b 2, but four loads from an air-cooled
+board then failed 21,920, 8,061, 321 and 34 words on lane 1, as many as
+without it, so the write strobe's alignment to the clock is not the cause,
+and the start-up still does not level.
+
+`ddr3_bist` now counts per DQ pin and per lane and beat the words that
+differed, and logs the first eight failing words, re-reading each before the
+pass writes again, so a word read right the second time was read wrong and
+one read the same way twice was written wrong; frame `0x3D` shows these as
+pages 1 to 3, chosen by `0x3C 0x40 + p`, and `tools/ddr3_write_probe.py ctrl
+--diag` prints them.  `tools/sim_ddr3_ctrl.sh` gained a run in which the model
+writes one word wrong once and reads another wrong once, and the counts and
+the log must name exactly those pins, beats and words, the first re-read as
+wrong as its read and the second right.
+
+The image with them, SHA-256
+`c9081054dfc72699d37a7be8dafe78a5bf257e25965011ed82bbe3483831f922`, closes
+PCLK at 106.79 MHz and the link clock at 76.66 MHz and is equal on all 306
+DDR3 tables to Gowin's default build, which routes only at 47 to 59 MHz in
+any option, the place 3 route 1 build of the last image having left 4,309
+nets unrouted.  From an air-cooled board it failed no word in four loads of
+60 s, about 2.4 x 10^9 words each, though lane 1 trained at RCLKSEL 4 with a
+43-tap window in the first, the cold result that had gone with 13,979
+failures.  Only the logic added and so the placement changed.  Failures that
+follow a cold start, fade as the board warms and vanish with a placement are
+what a hold-time violation does, faster silicon when cold shortening a path
+with too little hold; nextpnr's Gowin flow computes hold slack but reports
+none, so the open flow has never been checked for it.  That is a hypothesis.

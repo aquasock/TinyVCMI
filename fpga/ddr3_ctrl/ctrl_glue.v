@@ -22,6 +22,10 @@
 //                   sat in the command registers; 1, the board's 7, at reset
 //   0x3C 0x20 / 21  the memory test stopped / running (running at reset)
 //   0x3C 0x30       the test's counts and first error cleared
+//   0x3C 0x40 + p   frame 0x3D shows page p from the next snapshot:
+//                   0 the summary below, 1 each DQ q's failing words at
+//                   [16q +: 16], 2 lane l and beat b's at [16(8l + b) +: 16],
+//                   3 the log of the first eight failing words (ddr3_bist)
 //
 // Frame 0x3D, little-endian, byte 0 in the low bits:
 //   0      {ctrl_own, trained, test running, READ/WRITE off phase 0,
@@ -31,7 +35,8 @@
 //   2-3    passes completed
 //   4-7    words written       8-11   words read and checked
 //   12+4l  words whose lane l differed
-//   28-31  the first failing word's address (25 bits)
+//   28-31  the first failing word's address in bits 0 to 24, and how many
+//          words the log holds in bits 25 to 28
 //   32-63  that word's XOR with what was written, beat b, DQ q at 32b + q
 module ctrl_glue #(
     parameter integer WD = 1,           // dfi_phy's built-in write alignment
@@ -82,6 +87,7 @@ module ctrl_glue #(
     // ---- the link's commands, into PCLK ---------------------------------
     reg [2:0] tog_p = 3'd0;
     reg [1:0] rd_off = 2'd1;
+    reg [1:0] page = 2'd0;
     reg       bist_en = 1'b1, bist_clr = 1'b0;
     reg [7:0] cmd_p = 8'd0;
     always @(posedge pclk) begin
@@ -93,6 +99,7 @@ module ctrl_glue #(
                 4'h1: rd_off <= cmd_p[1:0];
                 4'h2: bist_en <= cmd_p[0];
                 4'h3: bist_clr <= 1'b1;
+                4'h4: page <= cmd_p[1:0];
                 default: ;
             endcase
     end
@@ -148,13 +155,16 @@ module ctrl_glue #(
     wire         b_err_seen;
     wire [24:0]  b_err_addr;
     wire [255:0] b_err_diff;
+    wire [511:0] b_pin_err, b_beat_err, b_elog;
+    wire [3:0]   b_n_log;
     ddr3_bist #(.AW(25), .N_LOG2(N_LOG2), .R_LOG2(R_LOG2)) bist (
         .pclk(pclk), .rst(ld_rst || !bist_en), .clr(bist_clr),
         .cmd_valid(cmd_valid), .cmd_ready(cmd_ready), .cmd_we(cmd_we), .cmd_addr(cmd_addr),
         .cmd_wdata(cmd_wdata), .rdata_valid(rdata_valid), .rdata_data(rdata_data),
         .state(b_state), .passes(b_passes), .n_written(b_written), .n_checked(b_checked),
         .lane_err(b_lane_err), .err_seen(b_err_seen), .err_addr(b_err_addr),
-        .err_diff(b_err_diff));
+        .err_diff(b_err_diff), .pin_err(b_pin_err), .beat_err(b_beat_err), .elog(b_elog),
+        .n_log(b_n_log));
 
     // ---- the pads -------------------------------------------------------
     wire [255:0] wc_wdq;
@@ -187,10 +197,16 @@ module ctrl_glue #(
     always @(posedge pclk) begin
         snap_t <= snap_t + 1'b1;
         if (snap_t == {SNAP_LOG2{1'b0}}) begin
-            snap <= {b_err_diff, 7'd0, b_err_addr, b_lane_err, b_checked, b_written, b_passes,
-                     walign_ok, 3'd0, b_state,
-                     ctrl_own, trained_p[2], bist_en && !ld_rst, bad_phase, rd_off,
-                     b_err_seen, 1'b0};
+            case (page)
+                2'd1: snap <= b_pin_err;
+                2'd2: snap <= b_beat_err;
+                2'd3: snap <= b_elog;
+                default:
+                    snap <= {b_err_diff, 3'd0, b_n_log, b_err_addr, b_lane_err, b_checked,
+                             b_written, b_passes, walign_ok, 3'd0, b_state,
+                             ctrl_own, trained_p[2], bist_en && !ld_rst, bad_phase, rd_off,
+                             b_err_seen, 1'b0};
+            endcase
             snap_tog <= ~snap_tog;
         end
     end

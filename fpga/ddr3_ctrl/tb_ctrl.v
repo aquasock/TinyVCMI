@@ -32,6 +32,12 @@
 // switch rows in a bank, and every word must come back as written, with no
 // READ or WRITE off phase 0.
 //
+// With MODEL_FAULTS the model writes word 100 wrong the first time, lane 1
+// pin 1 beat 3 flipped, and reads word 2000 wrong the first time, lane 2
+// pin 1 beat 5 flipped, and the test's diagnostics must say so: those pins
+// and beats counted and nothing else, both words logged, the first re-read
+// as wrong as the first read and the second right.
+//
 // MODEL_RDO and MODEL_D override the model's read offset and write
 // alignment, so that a design whose offset or alignment were not the
 // trained one's is seen to fail, and CTL_T_* shorten the controller's timing,
@@ -124,6 +130,7 @@ module tb_ctrl;
     reg [255:0] wdq_hist [0:15];        // the serializers' words, newest at 0
     reg [15:0]  drv_hist = 16'd0;
     integer     n_reads = 0, n_writes = 0, n_bad_pin = 0, n_refs = 0;
+    reg         fault_w = 1'b0, fault_r = 1'b0;
     // timing, in memory clocks; -1000 is long ago
     integer     t_act [0:7], t_pre [0:7], t_rd [0:7], t_wr [0:7];
     integer     t_act4 [0:3];
@@ -248,6 +255,12 @@ module tb_ctrl;
                 for (bb = 0; bb < 8; bb = bb + 1)
                     burst[8*pn + bb] = (bb < 8 - WB) ? w_first[8*pn + WB + bb]
                                                      : w_second[8*pn + bb - (8 - WB)];
+`ifdef MODEL_FAULTS
+            if (wr_key[0] == 100 && !fault_w) begin
+                burst[8*9 + 3] = ~burst[8*9 + 3];
+                fault_w = 1'b1;
+            end
+`endif
             mem[wr_key[0]] = burst;
             for (i = 0; i < wr_n - 1; i = i + 1) begin
                 wr_cyc[i] = wr_cyc[i + 1];
@@ -260,6 +273,12 @@ module tb_ctrl;
         dq_q = {8{32'hdeadbeef}};
         if (rd_n > 0 && cyc == rd_at[0]) begin
             dq_q = mem[rd_key[0]];
+`ifdef MODEL_FAULTS
+            if (rd_key[0] == 2000 && !fault_r) begin
+                dq_q[64*2 + 8*1 + 5] = ~dq_q[64*2 + 8*1 + 5];
+                fault_r = 1'b1;
+            end
+`endif
             for (i = 0; i < rd_n - 1; i = i + 1) begin
                 rd_at[i] = rd_at[i + 1];
                 rd_key[i] = rd_key[i + 1];
@@ -267,6 +286,45 @@ module tb_ctrl;
             rd_n = rd_n - 1;
         end
     end
+
+    // ---- the diagnostics, against the two injected faults ------------------
+    task check_faults;
+        integer q, e, found_w, found_r;
+        reg [63:0] en;
+        begin
+            for (q = 0; q < 32; q = q + 1)
+                if ((q == 9 || q == 17) != (dut.bist.pin_err[16*q +: 16] != 16'd0)) begin
+                    $display("      DQ %0d counted %0d", q, dut.bist.pin_err[16*q +: 16]);
+                    fail("a pin's count is not the injected faults'");
+                end
+            if (dut.bist.pin_err[16*17 +: 16] != 16'd1) fail("the read fault was not counted once");
+            for (q = 0; q < 32; q = q + 1)
+                if ((q == 8 + 3 || q == 16 + 5) != (dut.bist.beat_err[16*q +: 16] != 16'd0))
+                    fail("a lane and beat's count is not the injected faults'");
+            if (dut.bist.lane_err[0 +: 32] != 0 || dut.bist.lane_err[96 +: 32] != 0 ||
+                dut.bist.lane_err[64 +: 32] != 1 || dut.bist.lane_err[32 +: 32] == 0)
+                fail("the lanes' counts are not the injected faults'");
+            found_w = 0; found_r = 0;
+            for (e = 0; e < dut.bist.n_log; e = e + 1) begin
+                en = dut.bist.elog[64*e +: 64];
+                $display("      log %0d: word %0d lanes %b beats %b re-read issued %b checked %b right %b same %b",
+                         e, en[24:0], en[28:25], en[36:29], en[37], en[38], en[39], en[40]);
+                if (en[24:0] == 100 && en[28:25] == 4'b0010 && en[36:29] == 8'b0000_1000) begin
+                    found_w = found_w + 1;
+                    if (e == 0 && !(en[38] && !en[39] && en[40]))
+                        fail("the written-wrong word's re-read was not as wrong as its read");
+                end
+                if (en[24:0] == 2000 && en[28:25] == 4'b0100 && en[36:29] == 8'b0010_0000) begin
+                    found_r = found_r + 1;
+                    if (!(en[38] && en[39] && !en[40]))
+                        fail("the read-wrong word's re-read was not right");
+                end
+            end
+            if (found_w == 0 || found_r != 1) fail("the faults were not both logged");
+            if (errors == 0)
+                $display("PASS  diagnostics: the injected pins, beats and lanes counted, a write fault re-read wrong and a read fault re-read right");
+        end
+    endtask
 
     // ---- the run ----------------------------------------------------------
     wire [15:0]  st_passes = ext_status[16 +: 16];
@@ -285,21 +343,28 @@ module tb_ctrl;
                  n_writes, n_reads, st_passes, st_written, st_checked);
         if (st_passes < 2) fail("the status frame did not report two passes");
         if (dut.bist.n_checked < 2 * 2 * (1 << NL)) fail("fewer words checked than read");
+`ifdef MODEL_FAULTS
+        check_faults;
+`else
         if (dut.bist.err_seen || st_err) begin
             $display("      lane errors %0d %0d %0d %0d, first at word %0d",
                      dut.bist.lane_err[0 +: 32], dut.bist.lane_err[32 +: 32],
                      dut.bist.lane_err[64 +: 32], dut.bist.lane_err[96 +: 32], dut.bist.err_addr);
             fail("a word came back other than written");
         end
+`endif
         if (dut.phy.bad_phase || st_badph) fail("a READ or WRITE reached the DFI off phase 0");
         $display("      %0d REFRESHes, the longest interval %0d memory clocks", n_refs, max_refi);
         if (n_refs < (4 * cyc) / 3120 - 1) fail("fewer REFRESHes than the run's length needs");
         if (max_refi > 3120) fail("a refresh interval over 7.8 us");
         if (!ctrl_accept || !ext_status[15]) fail("the controller did not accept the trained alignment");
+`ifndef MODEL_FAULTS
         if (errors == 0)
             $display("PASS  ddr3_ctl through dfi_phy: %0d words written and %0d read back whole",
                      dut.bist.n_written, dut.bist.n_checked);
         else
+`endif
+        if (errors != 0)
             $display("FAIL  %0d error(s)", errors);
         $finish;
     end

@@ -35,6 +35,11 @@ run trained
 grep -v '^      t=' "$out/trained.log" | grep -v '^- '
 grep -q "^PASS" "$out/trained.log"
 
+# the test's diagnostics against a word written wrong and a word read wrong
+run faults +define+MODEL_FAULTS
+grep -E '^PASS|^FAIL' "$out/faults.log"
+grep -q "^PASS" "$out/faults.log"
+
 # The controller with tRAS, tRP or WRITE to READ short must fail too.  Three
 # shortenings are not among these, because nothing here can show them: tRCD,
 # since the registered decision already waits two PCLK after an ACTIVATE;

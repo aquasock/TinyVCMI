@@ -2455,3 +2455,38 @@ Bring for approval a cycle that adds write leveling to the image's start-up befo
 - User Test: N/A
 
 ---
+
+## 74 COMMIT Unreleased 2026-10-26T09:24:33-07:00
+
+#### Coming From:
+
+Unreleased 47c1c55
+
+#### Purpose:
+
+Find and close the cause of the DDR3 controller image's cold-start failures on lane 1, by testing write leveling, giving the memory test per-pin and per-beat counts and a re-read log, and requalifying from cold starts.
+
+#### Outcome:
+
+`wr_core`'s write-leveling feedback, swept by the probe on a warm board, rose to full between WSTEP 24 and 28, 28 and 32, 16 and 24 and 20 and 24 on lanes 0 to 3, so at WSTEP 0 each strobe leads the clock by up to about 430 ps, inside DDR3's quarter clock. Before building leveling into the start-up it was tested from the host: each lane's WSTEP set from its own sweep, the training rerun on chip, which still found d 1, b 2, and the bus handed back with command `0x0c 6`; four loads from an air-cooled board then failed 21,920, 8,061, 321 and 34 words on lane 1, no fewer than without it, so leveling was not added to the start-up, a departure from the approved plan that the test justified. `fpga/ddr3_ctrl/ddr3_bist.v` gained per-pin and per-lane-and-beat counts and a log of the first eight failing words, each re-read before the pass writes again; `fpga/ddr3_ctrl/ctrl_glue.v` shows them as frame `0x3D` pages 1 to 3 chosen by `0x3C 0x40 + p`; `fpga/ddr3_ctrl/tb_ctrl.v` injects a word written wrong once and a word read wrong once, and `tools/sim_ddr3_ctrl.sh` requires the diagnostics to name exactly those; `tools/ddr3_write_probe.py ctrl --diag` reads them. Gowin's place 3 route 1 build of these sources left 4,309 nets unrouted and every option of `tools/ddr3_write.py --vendor-sweep --ctrl` routed at 47 to 59 MHz or not at all, so the default build is the fuse reference; `tools/build_ddr3_ctrl.sh` stopped for want of it, and its last step was run by hand against that build, the sources byte for byte the same, equal on all 306 DDR3 tables. The image, SHA-256 `c9081054dfc72699d37a7be8dafe78a5bf257e25965011ed82bbe3483831f922`, closes PCLK at 106.79 MHz and the link clock at 76.66 MHz, and from an air-cooled board four loads failed no word over about 2.4 x 10^9 each, though lane 1 trained cold in the first as in the load that had failed 13,979. Only the added logic, and so the placement, changed: failures that follow a cold start and vanish with a placement are what a hold-time violation does, and nextpnr's Gowin flow reports no hold analysis; that is a hypothesis from one rebuild. TOOL-049 was added and `docs/ddr3-open-flow.md` gained the section. Board logs are in `build/ddr3_boot`, not committed. The desktop core was restored after every load and answered `0x54`. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering and active-log capacity.
+
+#### Next Steps:
+
+Bring for approval a cycle that tests the placement hypothesis: rebuild entry 72's image from its commit and run it and this one from the same cold start, and analyse hold on both, through nextpnr's timing data or Gowin's report of the same placement if one can be had, looking first at the deserializers' outputs into the fabric; if a hold path is found, constrain or restructure it so every build is safe cold, and requalify over repeated cold starts. B2, the DM mask path, and B3, the AE350's bridge, follow. The mid-calibration stall, the `D108` unused-pin contradiction and the `is_mipi` bug outside the DDR context remain open.
+
+#### Files Modified:
+
+- docs/ddr3-open-flow.md
+- fpga/ddr3_ctrl/ctrl_glue.v
+- fpga/ddr3_ctrl/ddr3_bist.v
+- fpga/ddr3_ctrl/tb_ctrl.v
+- tools/ddr3_write_probe.py
+- tools/sim_ddr3_ctrl.sh
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: N/A
+
+---

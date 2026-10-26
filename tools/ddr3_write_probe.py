@@ -281,8 +281,32 @@ class Core:
                 "state": b[1] & 15, "walign_ok": b[1] >> 7, "passes": int.from_bytes(b[2:4], "little"),
                 "written": u32(4), "checked": u32(8),
                 "lane_err": [u32(12 + 4 * l) for l in range(4)],
-                "err_addr": u32(28) & 0x1FFFFFF,
+                "err_addr": u32(28) & 0x1FFFFFF, "n_log": u32(28) >> 25 & 15,
                 "err_diff": int.from_bytes(b[32:64], "little")}
+
+    def ctrl_page(self, page: int) -> bytes:
+        """Page `page` of the controller's frame 0x3D: the next snapshot after
+        selecting it (0x3C 0x40 + page), 1024 PCLK apart."""
+        self.request(0x3C, 0x40 | page)
+        time.sleep(0.05)
+        r = self.request(0x3D, expect=4 + 64)
+        if r[2] != 0x0A or r[3] != 64:
+            raise RuntimeError(f"controller frame is {r[2]:#04x}/{r[3]}, expected 0x0a/64")
+        return r[4:]
+
+    def ctrl_diag(self) -> dict:
+        """The memory test's per-pin and per-lane-and-beat counts and its log."""
+        u16 = lambda b, i: int.from_bytes(b[2 * i:2 * i + 2], "little")
+        p1, p2, p3 = self.ctrl_page(1), self.ctrl_page(2), self.ctrl_page(3)
+        self.ctrl_page(0)
+        log = []
+        for e in range(8):
+            v = int.from_bytes(p3[8 * e:8 * e + 8], "little")
+            log.append({"addr": v & 0x1FFFFFF, "lanes": v >> 25 & 15, "beats": v >> 29 & 0xFF,
+                        "issued": v >> 37 & 1, "checked": v >> 38 & 1, "right": v >> 39 & 1,
+                        "same": v >> 40 & 1, "random": v >> 41 & 1, "pass": v >> 42 & 0x3FFF})
+        return {"pins": [u16(p1, q) for q in range(32)],
+                "beats": [[u16(p2, 8 * l + b) for b in range(8)] for l in range(4)], "log": log}
 
     def log_page(self, page: int) -> dict:
         """Copy READ-log page `page` (0x33) and read it (0x34): 148 payload bytes."""
@@ -1325,6 +1349,8 @@ def main() -> int:
     ct.add_argument("--clear", action="store_true", help="clear the test's counts and first error")
     ct.add_argument("--watch", type=float, default=0,
                     help="seconds to report the test's progress for, once a second")
+    ct.add_argument("--diag", action="store_true",
+                    help="then the test's per-pin and per-lane-and-beat counts and its log")
     mg = sub.add_parser("margin", help="the controller image: each lane's read delay stepped away "
                                        "from where training left it, under the memory test")
     mg.add_argument("--lanes", type=int, nargs="+", default=[0, 1, 2, 3])
@@ -1704,6 +1730,22 @@ def main() -> int:
                 if time.time() - t0 >= args.watch:
                     break
                 time.sleep(1.0)
+            if args.diag:
+                g = core.ctrl_diag()
+                print("failing words per DQ: " + " ".join(
+                    f"{q}:{n}" for q, n in enumerate(g["pins"]) if n) or "none")
+                for l in range(4):
+                    if any(g["beats"][l]):
+                        print(f"  lane {l} by beat 0..7: {g['beats'][l]}")
+                n_log = core.ctrl()["n_log"]
+                for e, en in enumerate(g["log"][:n_log]):
+                    how = ("not re-read" if not en["checked"] else
+                           "re-read right: read wrong" if en["right"] else
+                           "re-read the same: written wrong" if en["same"] else
+                           "re-read wrong differently")
+                    print(f"  log {e}: word {en['addr']:#09x} pass {en['pass']} "
+                          f"{'random' if en['random'] else 'in order'}, lanes {en['lanes']:04b} "
+                          f"beats {en['beats']:08b}, {how}")
         elif args.cmd == "margin":
             # The test is stopped while a lane's delay moves, so it measures
             # only the new point: each run starts with a fresh write pass,
