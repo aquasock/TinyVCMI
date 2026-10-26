@@ -12,10 +12,10 @@
 #      simulations pass, and the image's simulation
 #      passes against Gowin's own primitive models;
 #   3. Yosys, nextpnr, and `gowin_pack --ddr3-context`;
-#   4. tools/ddr3_image_check.py --exact-lanes against the vendor build, and
-#      the vendor build's own timing report clean: a control that misses
-#      timing is no control;
-#   5. both .bin files, the open-flow image and the vendor control.
+#   4. tools/ddr3_image_check.py --exact-lanes against the vendor build of
+#      the same sources; the vendor build needs to meet timing only to be
+#      a board control, so a miss is a warning and no control is written;
+#   5. the open-flow .bin, and the vendor control when it meets timing.
 #
 # Nothing here touches the board.  Loading is a separate, approved step.
 set -euo pipefail
@@ -93,7 +93,14 @@ rm -f "$out/wr.fs" "$out/wr.bin"
     }
 
 echo "[6/6] image against the vendor build, lanes exact; vendor timing"
-python3 - "$vendor/impl/pnr/probe_tr_content.html" <<'PY'
+for f in top.v wr_core.v rd_align.v rd_check.v top.cst; do
+    cmp -s "$src/$f" "$vendor/$f" || {
+        echo "the vendor build's $f is not the source's; rebuild it with tools/ddr3_write.py --vendor" >&2
+        exit 1
+    }
+done
+control=1
+python3 - "$vendor/impl/pnr/probe_tr_content.html" <<'PY' || control=0
 import html, re, sys
 text = re.sub(r"\s+", " ", html.unescape(re.sub(r"<[^>]+>", " ", open(sys.argv[1]).read())))
 fmax = text[text.find("Max Frequency Summary"):text.find("Total Negative Slack Summary")]
@@ -102,7 +109,8 @@ rows = re.findall(r"(\S+) (Setup|Hold) (-?\d+\.\d+) (\d+)", tns)
 print("vendor " + fmax.strip())
 bad = [r for r in rows if float(r[2]) != 0.0]
 if not rows or bad:
-    print("the vendor control misses timing: " + "; ".join(" ".join(r) for r in bad), file=sys.stderr)
+    print("warning: the vendor build misses timing, so it is a fuse reference only "
+          "and no control is written: " + "; ".join(" ".join(r) for r in bad), file=sys.stderr)
     sys.exit(1)
 PY
 (cd "$root/tools" && python3 ddr3_image_check.py "$out/wr.fs" \
@@ -111,8 +119,15 @@ PY
 "$oss_suite/py3bin/python3" "$root/tools/fs2bin.py" "$out/wr.fs" "$out/wr.bin"
 # Gowin writes the raw image itself (bit_compress 0); it is the .fs packed
 # eight bits to a byte, so the vendor control needs no conversion
-# (Gowin writes it read-only, so it is installed rather than copied)
-install -m 0644 "$vendor/impl/pnr/probe.bin" "$out/../vendor_control.bin"
-sha256sum "$out/wr.fs" "$out/wr.bin" "$out/../vendor_control.bin"
-echo "Write images written: $out/wr.bin (open flow), $out/../vendor_control.bin (vendor)"
+# (Gowin writes it read-only, so it is installed rather than copied).  A
+# control that misses timing is no control, so none is left to be loaded.
+rm -f "$out/../vendor_control.bin"
+if [[ $control == 1 ]]; then
+    install -m 0644 "$vendor/impl/pnr/probe.bin" "$out/../vendor_control.bin"
+    sha256sum "$out/wr.fs" "$out/wr.bin" "$out/../vendor_control.bin"
+    echo "Write images written: $out/wr.bin (open flow), $out/../vendor_control.bin (vendor)"
+else
+    sha256sum "$out/wr.fs" "$out/wr.bin"
+    echo "Write image written: $out/wr.bin (open flow); no vendor control"
+fi
 echo "Hardware was not accessed."

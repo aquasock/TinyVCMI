@@ -2812,3 +2812,30 @@ compare (`pos_range`).  Place 3 route 0 reached 95.170 MHz and the default
 sequencer clock, and place 2 route 1 left 3,472 nets unrouted.  The compares
 need a registered stage before the image can be built, compared against its
 open build and loaded.
+
+## The hardware training on the board
+
+With the overflow fixed the training image builds in the open flow: PCLK
+129.89 MHz, the link clock 61.06 MHz, and all 306 DDR3 tables equal to the
+Gowin build of the same sources, which misses PCLK (above) and so is a fuse
+reference only.  `tools/build_ddr3_write.sh` now refuses a Gowin build of
+other sources, warns rather than stops when that build misses timing, and
+then writes no control; `tools/ddr3_write.py --vendor-sweep` installs its
+fastest variant as that reference when none meets timing.  The open image,
+SHA-256 `d17425982499c894f9a1f30ed85e25bee6a36a3763f021700b34c0eecd705299`,
+ran on the Tang as `ddr3_hwtrain.bin`.
+
+`ddr3_write_probe.py hwtrain` did not complete in any of four loads.  Load 3
+stopped in per-pin framing after 0.01 s (error 2).  Loads 1, 2 and 4 ran the
+whole search, 2,304 trials, and locked no lane, lanes 1 and 2, and lanes 0 to
+2, so the write alignment never ran (error 3).  Every lane that locked did so
+at the setting the host's training finds on this image, delay 1, offset 1,
+RCLKSEL 5 on lanes 0 and 1 and 4 on lane 2, after 3 CALIB pulses, centred
+whole with 46 to 58 passing taps above tap 4.  In a fifth load the host's
+training of TOOL-042 on the same image trained all four lanes at those
+settings, lane 3 at RCLKSEL 4, in 392 settings, each lane 100.0% own at lag 0.
+The search is therefore right and the image and board are not at fault; what
+differs is that the host calibrates first, centring each lane's read delay and
+checking per-pin framing over five sessions, while the sequencer frames each
+pin once at the start-up read delay.  That a pin framed one slot wrong keeps
+its lane from ever passing the data check is the leading hypothesis, untested.

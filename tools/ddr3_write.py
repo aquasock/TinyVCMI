@@ -310,11 +310,15 @@ def vendor_sweep(jobs: int) -> int:
         fmax, neg = vendor_timing(dirs[c])
         results.append((neg == 0.0, fmax, c))
         print(f"{name}: PCLK {fmax:.3f} MHz, negative slack {neg:.3f}")
+    if not results:
+        print("no variant built; the vendor build is left as it was")
+        return 1
     clean = [r for r in results if r[0]]
     if not clean:
-        print("no variant meets timing; the vendor control is left as it was")
-        return 1
-    _, fmax, (pl, rt) = max(clean, key=lambda r: r[1])
+        # Still the same sources, so still the reference for the DDR3 fuse
+        # comparison; build_ddr3_write.sh writes no control from it.
+        print("no variant meets timing; installing the fastest as a fuse reference only")
+    _, fmax, (pl, rt) = max(clean or results, key=lambda r: r[1])
     if os.path.isdir(VENDOR):
         shutil.rmtree(VENDOR)
     shutil.copytree(dirs[(pl, rt)], VENDOR)

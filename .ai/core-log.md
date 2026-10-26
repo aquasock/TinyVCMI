@@ -2265,3 +2265,35 @@ Register `rd_check`'s `pos_range` compares one PCLK later, which the overflow fi
 - User Test: NOT RUN
 
 ---
+
+## 69 COMMIT Unreleased 2026-10-25T18:40:23-07:00
+
+#### Coming From:
+
+Unreleased 083a7d5
+
+#### Purpose:
+
+With the user's approval to stop requiring a Gowin control that meets timing, build the DDR3 hardware-training image in the open flow against a Gowin fuse reference of the same sources and run its own training on the Tang over several loads.
+
+#### Outcome:
+
+`tools/build_ddr3_write.sh` now refuses a Gowin build whose `top.v`, `wr_core.v`, `rd_align.v`, `rd_check.v` or `top.cst` differ from the source's, which the installed one did, its `wr_core.v` and `rd_check.v` predating the sequencer; a Gowin build that misses timing is a warning, and then no `vendor_control.bin` is written. `tools/ddr3_write.py --vendor-sweep` installs its fastest variant as that reference when none meets timing, and entry 68's place 3 route 1 build, 98.759 MHz, was installed by hand as what it would choose. With the simulation gate already passed on this RTL in entry 68, the open image, SHA-256 `d17425982499c894f9a1f30ed85e25bee6a36a3763f021700b34c0eecd705299`, closed PCLK at 129.89 MHz and the link clock at 61.06 MHz and equalled the reference on all 306 DDR3 tables. On the Tang, as `ddr3_hwtrain.bin`, `ddr3_write_probe.py hwtrain` did not complete in any of four loads: one stopped in per-pin framing, error 2, and three ran the full 2,304-trial search and locked no lane, lanes 1 and 2, and lanes 0 to 2, so the write alignment never ran, error 3. Every lane that locked did so at the host training's setting on this image, delay 1, offset 1, RCLKSEL 5 or 4, after 3 CALIB pulses, centred whole. A fifth load ran the host's TOOL-042 training through `tools/ddr3_boot_repeat.sh` after `calibrate` and trained all four lanes at those settings in 392 settings, each 100.0% own at lag 0, so the image and board are sound and the sequencer is at fault; the leading hypothesis, untested, is that it frames each pin once at the start-up read delay where the host first centres the read delay and checks framing over five sessions. TOOL-045 was added and `docs/ddr3-open-flow.md` gained the section. Board logs are in `build/ddr3_boot/hwtrain_1` to `hwtrain_4` and `hwtrain_host5`, not committed. The comment above `seq_lane_own` in `fpga/ddr3_write/wr_core.v` still cites TOOL-044 as forbidding `rd_check` edits, the opposite of what TOOL-044 found, and was left so the reference stayed the same sources. The desktop core was restored after every load and answered `0x54`. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering and active-log capacity.
+
+#### Next Steps:
+
+Test the framing hypothesis without a rebuild first: run `calibrate` and then `hwtrain` in each of several loads, and if every lane then trains, move the calibration's read-delay centring and a framing check repeated across sessions into `ddr3_seq` ahead of its per-pin framing, gate it in `tools/sim_ddr3_seq.sh` with a model that frames wrong away from the eye, and requalify `hwtrain` over several loads until all four lanes train, the write alignment passes and the address-data checks hold every READ. Correct the stale TOOL-044 comment in `wr_core.v` in that change. The Gowin build need meet timing only when a board control is wanted; then register `rd_check`'s `pos_range` compares. The mid-calibration stall, the `D108` unused-pin contradiction and the `is_mipi` bug outside the DDR context remain open.
+
+#### Files Modified:
+
+- docs/ddr3-open-flow.md
+- tools/build_ddr3_write.sh
+- tools/ddr3_write.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: N/A
+
+---
