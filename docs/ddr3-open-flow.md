@@ -2776,3 +2776,39 @@ sink and the DLL's clock input failed dedicated routing. The routed write image
 reaches the same sink through `X0Y30/FCLKA/HCLK00` with the PLL at X1Y27, so the
 pip exists. The controller needs its own constraints and a build that refuses an
 unmatched `INS_LOC`; whether it then routes is untested (TOOL-032).
+
+## The training image's legalizer failure was an integer overflow
+
+The hardware training sequencer did not expose a new Gowin placement rule or
+exhaust the device.  The heap placer's default per-cell attempt budget squared
+the cell count as signed 32-bit integers.  The diagnostic netlist had 48,302
+cells, so `48,302 * 48,302` overflowed before division and the configured
+budget fell back to its 10,000-attempt floor.  That is why every positive
+`--placer-heap-cell-placement-timeout` value still stopped after 10,001
+attempts and why the reported failing DFF or LUT changed between runs.
+
+Running the same netlist with timeout zero, the existing no-limit path, placed
+and routed normally.  The nextpnr fork now computes the square in `int64_t`
+(commit `16237b0f` on `aquasock/nextpnr` branch `epic/gw5ast138c`).  With the
+ordinary finite setting it selected 356,044,612 attempts, completed place and
+route, and met both clocks: PCLK 119.80 MHz against 100 MHz and the TinyTang
+link clock 63.95 MHz against 50 MHz.  No validity rule was relaxed and no
+TinyVCMI workaround was added (TOOL-044).
+
+The primitive image bench also passes with the sequencer integrated.  Its old
+monitor assumed that every streaming write except the host fill stayed in bank
+0; the sequencer's deliberate sixteen-row prewrite uses every bank, so the
+monitor now applies that restriction only to host-driven streaming.  This is a
+testbench correction, not a change to the generated DDR3 commands.  The Tang
+was not accessed in this cycle.
+
+The Gowin control of the same source does not yet close PCLK under any place
+and route option.  `tools/ddr3_write.py --vendor-sweep` built the default and
+place options 0 to 3 with route options 0 and 1; the best, place 3 route 1,
+reached 98.759 MHz with 11 failing endpoints, worst slack -0.126 ns, and every
+one of them is `rd_check`'s per-class refresh-position minimum and maximum
+compare (`pos_range`).  Place 3 route 0 reached 95.170 MHz and the default
+95.311 MHz, failing on the same compares; place 0 and 1 also miss the 50 MHz
+sequencer clock, and place 2 route 1 left 3,472 nets unrouted.  The compares
+need a registered stage before the image can be built, compared against its
+open build and loaded.

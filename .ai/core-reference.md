@@ -160,6 +160,7 @@ Topic IDs are the `record_id` prefix. An entry reserves a namespace; it does not
 | Where does the proven controller put the read delay before read calibration, and does it help? | TOOL | TOOL-041 |
 | Do all four lanes train, and what made them? | TOOL | TOOL-042 |
 | Is the read latency fixed, and do isolated READs return address-derived data across banks and rows? | TOOL | TOOL-043 |
+| Why did the hardware-training image's heap legalizer stop after 10,001 attempts? | TOOL | TOOL-044 |
 | Why did the Gowin control miss PCLK timing? | TOOL | TOOL-028 |
 | Which sources and licenses constrain reuse? | PROV | PROV-001 |
 
@@ -225,6 +226,7 @@ TOOL-040: "RMOVE stops moving the read delay at the top of its range, 44 to 68 s
 TOOL-041: "The proven controller loads the read tap from DLL STEP and moves every lane to tap 4 with STEP - 4 RDIR = 1 pulses before read calibration; RDIR = 1 lowers the tap, so TOOL-040's top is tap 0; the tap-4 start and a READ period of 8 do not train more lanes"
 TOOL-042: "With HOLD on every unconfigured lane while its gate and RCLKSEL change, as the proven controller does, all four lanes train in every load to repeatable settings and return 100% of isolated READs' own bursts"
 TOOL-043: "Trained lanes hand over each READ's burst at one fixed PCLK on all four lanes; with a trained write alignment every isolated random READ over 8 banks x 16 rows x 128 bursts returns its address's own data"
+TOOL-044: "The heap placer's default per-cell attempt budget overflowed signed 32-bit arithmetic above 46,340 cells; 64-bit arithmetic lets the 48,302-cell hardware-training image place and route without relaxing legality"
 TOOL-031: "LiteDRAM's control layer alone generates, synthesises and places in the open flow at ~1% of the LUTs, with none of TOOL-025's three gaps"
 TOOL-030: "Closed-page scatter READs do not reach the read capture in the open or the vendor build of the same RTL; no cadence, gate position or shared RCLKSEL recovers them, and failing READs return other rows' patterns"
 PROV-001: "Reuse source and interface ideas with their original license boundaries and attribution intact"
@@ -1028,6 +1030,19 @@ PROV-001: "Reuse source and interface ideas with their original license boundari
     - "TinyVCMI tools/ddr3_write_probe.py (train --fixed-latency, --write-train, adata_pattern, exp_pat, Core.read_log adata)"
     - "TinyVCMI docs/ddr3-open-flow.md: A fixed read latency, and address data written and read back"
   verification: "The open image, .bin SHA-256 7485c10f58dce78f85b902f8c4403a5bd8897602162bfcf700f4a6fa55cd53b1, closing PCLK at 117.97 MHz, and its Gowin build, .bin SHA-256 6c2f1677bbaf144eeb96d60274eda314a67d94c7a78d014b2acb52cfaa870b26, place option 3 and route option 1, closing PCLK at 105.537 MHz with no negative slack, equal on all 306 DDR3 tables, were placed on the card as ddr3_fill.bin and ddr3_fill_vendor.bin and loaded on the Tang Console 138K on 2026-10-25 by tools/ddr3_boot_repeat.sh. One control load stopped answering mid-calibration with no reply to command 0x07 and was reloaded; four loads, two of each image, ran the whole sequence. The fixed latency was first measured on the ddr3_hold images of TOOL-042 over five loads. The image bench finds a fill row's 128 patterns back to back in the serializers' beats and the 19-beat move at d 2, b 3, and checks the protocol and a 7.17 us longest refresh interval with the fill. The desktop core was restored after every load and answered 0x54."
+
+- record_id: TOOL-044
+  topic_id: TOOL
+  title: "The training image's heap-legalizer failure was a signed attempt-budget overflow"
+  status: VERIFIED
+  verified_date: 2026-10-25
+  statement: "nextpnr's PlacerHeapCfg computed the default per-cell legalisation attempt budget as max(10000, int(cell_count) * int(cell_count) / divisor). The 48,302-cell DDR3 hardware-training netlist therefore overflowed its signed 32-bit multiplication because 48,302 squared is 2,333,083,204, and every positive timeout-divisor setting collapsed to the 10,000 floor; legalise_cell then reported failure after 10,001 attempts on a DFF or LUT that varied between runs. Commit 16237b0f in aquasock/nextpnr branch epic/gw5ast138c promotes the count, multiplication and maximum to int64_t without changing any Gowin BEL-validity rule."
+  consequence: "Large designs must use a nextpnr build containing commit 16237b0f or set the timeout divisor to zero to take the existing unlimited-search path. With the fix, the hardware-training image receives a finite 356,044,612-attempt budget and places and routes normally, so device density and the Gowin legality rules are not the blocker recorded in TinyVCMI log entry 67."
+  sources:
+    - "aquasock/nextpnr commit 16237b0f, common/place/placer_heap.cc: PlacerHeapCfg"
+    - "TinyVCMI build/ddr3_write/finite_timeout/nextpnr.log and wr-routed.json generated from the entry-67 training image"
+    - "TinyVCMI docs/ddr3-open-flow.md: The training image's legalizer failure was an integer overflow"
+  verification: "The committed netlist first failed deterministically after 10,001 attempts, and timeout-divisor values 1 and 200000 both printed a 10,000-attempt budget. The unchanged netlist then placed and routed through the pre-existing no-timeout path in 6 minutes 12 seconds, meeting PCLK at 119.80 MHz and the link clock at 63.95 MHz. After rebuilding the fork with commit 16237b0f, the ordinary finite setting logged 356,044,612 attempts and again completed place and route with the same timing results; focused nextpnr Gowin tests for internal nets, DQS sites, deterministic arch generation, HCLK-to-FCLK routing, post-route refusal and GW5A IODELAY all passed. No Tang hardware was accessed."
 
 - record_id: PROV-001
   topic_id: PROV

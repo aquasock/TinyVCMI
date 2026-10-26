@@ -14,8 +14,10 @@
 //     only to a precharged bank; tRP after a bank's precharge, tRC between
 //     ACTIVATEs to one bank, tRRD and tFAW between ACTIVATEs, tRAS before a
 //     precharge, and tRFC after a REFRESH before the next command;
-//   * streaming modes in bank 0 without auto-precharge; random mode only
-//     READs with auto-precharge, to the sixteen rows {row[14:1], 0 or 1};
+//   * host-driven streaming modes in bank 0 without auto-precharge; the
+//     hardware trainer's prewrite may span its sixteen rows over all banks;
+//     random mode only READs with auto-precharge, to the sixteen rows
+//     {row[14:1], 0 or 1};
 //   * a REFRESH at least every 7.8 us outside write leveling;
 //   * write leveling entered with MR1 0x00C4 and left with MR1 0x0044,
 //     ODT high before any strobe is driven, and no DQ driven inside it;
@@ -165,8 +167,11 @@ module tb;
                         nrand = nrand + 1;
                         // auto-precharge begins tRTP (4 tCK) after the READ
                         precharge(bank, $time + 10);
-                    end else if ((mode != 3'd5 && bank !== 3'd0) || addr[10] !== 1'b0) begin
-                        // the fill (mode 5) writes every bank of its region
+                    end else if ((mode != 3'd5 && !dut.core.seq_busy && bank !== 3'd0) ||
+                                 addr[10] !== 1'b0) begin
+                        // The fill (mode 5) and the hardware trainer's
+                        // sixteen-row prewrite use every bank.  Ordinary
+                        // host-driven streaming modes remain in bank 0.
                         fail("a streaming column command outside bank 0 or with auto-precharge");
                     end
                     if (c == 4'b0100) begin

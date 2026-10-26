@@ -2234,3 +2234,34 @@ Within the user's two-hour timebox, find why the nextpnr fork's heap legalizer r
 - User Test: N/A
 
 ---
+
+## 68 COMMIT Unreleased 2026-10-25T18:02:58-07:00
+
+#### Coming From:
+
+Unreleased 5ecbcb6
+
+#### Purpose:
+
+Find why the open flow's heap legalizer rejected the DDR3 hardware-training image of entry 67, get that image through place and route and the image bench, and measure whether its Gowin control closes timing, ending at a handoff at the user's request.
+
+#### Outcome:
+
+The legalizer failure was not a Gowin placement rule or device density: nextpnr's `PlacerHeapCfg` squared the cell count in signed 32-bit arithmetic, so the 48,302-cell netlist overflowed and every positive timeout fell to the 10,000-attempt floor, which is why the failing DFF or LUT changed between runs and why the edits to `rd_check` in entry 67 appeared to break placement. Commit `16237b0f` on `aquasock/nextpnr` branch `epic/gw5ast138c` computes it in `int64_t` and is pushed; the rebuilt `nextpnr-himbaechel` gives the unchanged netlist a 356,044,612-attempt budget and places and routes it with PCLK at 119.80 MHz and the link clock at 63.95 MHz, in `build/ddr3_write/finite_timeout/nextpnr.log`, no validity rule relaxed; the image was not packed. TOOL-044 records it and `docs/ddr3-open-flow.md` gained the section. `fpga/ddr3_write/tb_wr.v`'s bus monitor kept every streaming write except the fill in bank 0, which the sequencer's sixteen-row prewrite deliberately breaks, so the restriction now applies only to host-driven streaming; this is a bench correction and no generated DDR3 command changed. With it the image bench passes, including the sequencer's start, refusal of setting writes while it runs, report and abort, and `tools/sim_rd_align.sh`, `tools/sim_rd_check.sh` and `tools/sim_ddr3_seq.sh` pass on this source. The Gowin control does not close PCLK under any option of `tools/ddr3_write.py --vendor-sweep`: the best, place option 3 and route option 1, reached 98.759 MHz with 11 failing endpoints and worst slack -0.126 ns, all in `rd_check`'s per-class refresh-position minimum and maximum compares, `pos_range`; place 3 route 0 reached 95.170 MHz and the default 95.311 MHz on the same compares, place options 0 and 1 also missed the 50 MHz sequencer clock, and place 2 route 1 left 3,472 nets unrouted. The previous agent ran out of usage before writing this entry, and the incoming agent finished the handoff from its working tree after rerunning the simulation gate. The Tang was not accessed in this cycle. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering and active-log capacity.
+
+#### Next Steps:
+
+Register `rd_check`'s `pos_range` compares one PCLK later, which the overflow fix now allows without disturbing open placement, prove it in `tools/sim_rd_check.sh` and the image bench, and rerun the Gowin sweep until a place and route option closes PCLK and the 50 MHz clock with no negative slack; then build the image through `tools/build_ddr3_write.sh` so the open image and its control are equal on all 306 DDR3 tables, and only once the user says the Tang is free load both and run `tools/ddr3_write_probe.py hwtrain` over several loads of each, expecting the four trained lanes and 100% of isolated random READs of TOOL-042 and TOOL-043. The mid-calibration stall, the `D108` unused-pin contradiction and the `is_mipi` bug outside the DDR context remain open.
+
+#### Files Modified:
+
+- docs/ddr3-open-flow.md
+- fpga/ddr3_write/tb_wr.v
+
+#### Status:
+
+- Build: FAIL
+- Deployment: NOT RUN
+- User Test: NOT RUN
+
+---
