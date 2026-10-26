@@ -2424,3 +2424,34 @@ Bring for approval a cycle that finds lane 1's failures: give the test a per-pin
 - User Test: N/A
 
 ---
+
+## 73 COMMIT Unreleased 2026-10-26T03:34:52-07:00
+
+#### Coming From:
+
+Unreleased f3b3c87
+
+#### Purpose:
+
+Find why the DDR3 controller image failed words on lane 1 in some loads, by measuring each lane's read and write margin under its memory test and by loading it repeatedly from a cold board, before changing the design.
+
+#### Outcome:
+
+`tools/ddr3_write_probe.py` gained `margin`, which stops the controller image's test, moves one lane's read delay or sets its WSTEP, clears the counts, runs the test and reads each lane's failing words, and `ctrl` now prints each lane's trained settings; the probe also names mode 6. No image changed: `ddr3_ctrl.bin` of entry 72 ran on the Tang. On a warm board each lane read with no error from 20 taps below to 20 above its trained read delay, about 78 x 10^6 words a point, so the read eye is wide. Every lane writes at WSTEP 0, because the image's start-up does no write leveling; the clean ranges were WSTEP 0 to 16, 0 to 24, 0 to 56 and 0 to 80 for lanes 0 to 3, failing from 24, 32, 64 and 88, the lower edges below 0 unmeasured, and a lane set back to WSTEP 0 kept failing for the rest of the load, so a live WSTEP change is not undone by reloading the old value. TOOL-021's finding that writes land at almost every WSTEP checked one repeated pattern up to rotation and could not see a misplaced write. After the user cooled the board with air, four loads about 80 s apart failed 13,979, 2,020, 130 and 0 words on lane 1 and 182, 40, 11 and 1 on every lane, over about 2.84 x 10^9 words each, and in the first lane 1 trained at RCLKSEL 4 with a 43-tap window instead of RCLKSEL 5 and 58 or 59 taps: the failures follow the board's warming from a cold start. TOOL-048 was added and `docs/ddr3-open-flow.md` gained the section. Board logs are in `build/ddr3_boot/margin_1`, `margin_2` and `ctrl_cold1` to `ctrl_cold4`, not committed. The desktop core was restored after every load and answered `0x54`. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering and active-log capacity.
+
+#### Next Steps:
+
+Bring for approval a cycle that adds write leveling to the image's start-up before read training, with wr_core's leveling mode setting each lane's WSTEP from the DRAM's feedback, checks whether the trained write alignment stays at the built-in d 1, b 2, and gives the memory test per-pin counts, a log of its first failing words and a re-read of each to separate write from read errors; then requalify from repeated cold starts. B2, the DM mask path, and B3, the AE350's bridge, follow. The mid-calibration stall, the `D108` unused-pin contradiction and the `is_mipi` bug outside the DDR context remain open.
+
+#### Files Modified:
+
+- docs/ddr3-open-flow.md
+- tools/ddr3_write_probe.py
+
+#### Status:
+
+- Build: N/A
+- Deployment: PASS
+- User Test: N/A
+
+---

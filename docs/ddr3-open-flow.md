@@ -3049,3 +3049,30 @@ in the loads whose settings were read, lane 1 centred 31 taps up a 58- or
 a board still warming from where training centred lane 1, is a hypothesis;
 the test turns from reading to writing only between passes, so the read to
 write turnaround is still exercised only there.
+
+### Margins, and a cold start
+
+`tools/ddr3_write_probe.py margin` stops the test, moves one lane's read delay
+or sets its WSTEP, clears the counts, runs the test for a set time and reads
+each lane's failing words.  Each run begins with a write pass, which a read
+delay does not touch.  On a warm board every lane read cleanly from 20 taps
+below its trained centre to 20 above, about 78 x 10^6 words a point: lanes 0
+and 1 failed first at +24, lane 2 at -28 and lane 3 at -28, so the read eye is
+not what fails.  Every lane writes at WSTEP 0, because the controller image's
+start-up does no write leveling; lane 0 wrote cleanly at WSTEP 0 to 16 and
+failed from 24, lane 1 0 to 24 and from 32, lane 2 0 to 56 and from 64, lane 3
+0 to 80 and from 88.  WSTEP stops at 0, so the lower edges are unknown, and
+setting a lane's WSTEP back to its first value did not restore it: the lane
+kept failing every word for the rest of the load, so a WSTEP change is not
+undone by loading the old value.  The earlier finding that writes land "at
+almost every WSTEP" (TOOL-021) streamed one pattern and checked it up to
+rotation, which cannot see a write a beat or a bit off.
+
+After the board had been cooled with air and was reconnected, four loads in
+a row, about 80 s apart, failed fewer words each time: 13,979, 2,020, 130 and
+0 on lane 1, and 182, 40, 11 and 1 on every lane, over about 2.84 x 10^9 words
+each.  In the first, lane 1 trained at RCLKSEL 4 with a 43-tap window instead
+of RCLKSEL 5 and 58 or 59 taps, and its failures came fastest early in the
+run.  The failures follow the board's temperature from a cold start, on lane
+1 above all, with the write strobe untrained at WSTEP 0 and the read training
+itself moving when cold.

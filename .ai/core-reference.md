@@ -164,6 +164,7 @@ Topic IDs are the `record_id` prefix. An entry reserves a namespace; it does not
 | Does the image's own hardware training train all four lanes on the board, and what stopped it? | TOOL | TOOL-045 |
 | Does the DDR3 controller image work on the board, unattended, over the whole array? | TOOL | TOOL-046 |
 | Can LiteDRAM's controller serve this PHY at 100 MHz? | TOOL | TOOL-047 |
+| How much read and write margin do the lanes have under the controller, and what does a cold start do? | TOOL | TOOL-048 |
 | Why did the Gowin control miss PCLK timing? | TOOL | TOOL-028 |
 | Which sources and licenses constrain reuse? | PROV | PROV-001 |
 
@@ -233,6 +234,7 @@ TOOL-044: "The heap placer's default per-cell attempt budget overflowed signed 3
 TOOL-045: "The stream's frame moving during the sequencer's fixed-target per-pin framing split lanes' pins; framed against pin 0 and checked, the image's own training trains all four lanes and passes every READ check in five of five loads"
 TOOL-046: "The controller image trains itself, hands over and tests the whole 1 GiB at 111.62 MHz: four of six read loads clean over about 85 GiB each, two failing on lane 1 at up to 3e-6 of words"
 TOOL-047: "LiteDRAM's controller logic closes 77.9 MHz in the open flow and 90.0 MHz in Gowin's against this PHY's 100 MHz, and its buffered command mode returns a port's reads out of order"
+TOOL-048: "Under the controller's test every lane reads cleanly 20 taps either side of its trained centre; writes run untrained at WSTEP 0, whose upper edges are 16 to 80; failures fall load by load from a cold start, on lane 1 above all"
 TOOL-031: "LiteDRAM's control layer alone generates, synthesises and places in the open flow at ~1% of the LUTs, with none of TOOL-025's three gaps"
 TOOL-030: "Closed-page scatter READs do not reach the read capture in the open or the vendor build of the same RTL; no cadence, gate position or shared RCLKSEL recovers them, and failing READs return other rows' patterns"
 PROV-001: "Reuse source and interface ideas with their original license boundaries and attribution intact"
@@ -1089,6 +1091,18 @@ PROV-001: "Reuse source and interface ideas with their original license boundari
     - "TinyVCMI tools/litedram_ctrl_gen.py: --setting and the fixed hash seed"
     - "TinyVCMI docs/ddr3-open-flow.md: Why not LiteDRAM"
   verification: "Measured on the controller image with the built-in write alignment: nextpnr's routed timing for the default core and with timing weight 40 and --tmg-ripup, Gowin's place option 3 and route option 1 report, and tools/sim_ddr3_ctrl.sh's model of the trained PHY, which with the buffered core saw READs at the pads in an order other than the native port's and its test get word 977's data for word 335. Not checked on hardware."
+
+- record_id: TOOL-048
+  topic_id: TOOL
+  title: "The controller's lanes have wide read margin, untrained write timing, and fail after a cold start"
+  status: VERIFIED
+  verified_date: 2026-10-26
+  statement: "On the TOOL-046 image under its memory test, with the test stopped while a setting changed and about 78 x 10^6 words checked per point: each lane read with no error from 20 taps below to 20 above its trained read delay, lanes 0 and 1 first failing at +24 and lanes 2 and 3 at -28. Every lane wrote at WSTEP 0, the image's start-up doing no write leveling; lane 0 wrote cleanly at WSTEP 0 to 16 and failed from 24, lane 1 at 0 to 24 and from 32, lane 2 at 0 to 56 and from 64, lane 3 at 0 to 80 and from 88, and a lane set back to WSTEP 0 kept failing every word for the rest of the load. After the board was cooled with air, four consecutive loads about 80 s apart failed 13,979, 2,020, 130 and 0 words on lane 1 and 182, 40, 11 and 1 on every lane over about 2.84 x 10^9 words each; in the first, lane 1 trained at RCLKSEL 4 with a 43-tap window instead of RCLKSEL 5 and 58 or 59 taps."
+  consequence: "The controller's failures depend on the board's temperature from a cold start, most on lane 1. Write timing is untrained and its lower edges are unmeasured, so start-up needs write leveling before the controller can be relied on cold, and the read training's cold result should be checked for margin. Changing WSTEP live cannot be undone by reloading the old value, so a write sweep must reload or reset the lane between points."
+  sources:
+    - "TinyVCMI tools/ddr3_write_probe.py: margin, ctrl"
+    - "TinyVCMI docs/ddr3-open-flow.md: Margins, and a cold start"
+  verification: "Read sweep: one load on 2026-10-26 of ddr3_ctrl.bin (TOOL-046), offsets -28 to +28 in fours, 2 s a point. WSTEP sweep: one load, 0 to 120 in eights, 2 s a point, the lanes in turn; each lane's own window was measured before it was disturbed, and the earlier lanes' failures in later sweeps are the irreversible change. Cold start: the board cooled with air by the user, then four loads with 60 s tests. The desktop core was restored after every load and answered 0x54. Whether the failures are writes or reads is not yet separated, and the lower write edges are unknown."
 
 - record_id: PROV-001
   topic_id: PROV

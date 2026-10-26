@@ -1325,6 +1325,16 @@ def main() -> int:
     ct.add_argument("--clear", action="store_true", help="clear the test's counts and first error")
     ct.add_argument("--watch", type=float, default=0,
                     help="seconds to report the test's progress for, once a second")
+    mg = sub.add_parser("margin", help="the controller image: each lane's read delay stepped away "
+                                       "from where training left it, under the memory test")
+    mg.add_argument("--lanes", type=int, nargs="+", default=[0, 1, 2, 3])
+    mg.add_argument("--taps", type=int, nargs="+",
+                    default=[-28, -24, -20, -16, -12, -8, -4, 0, 4, 8, 12, 16, 20, 24, 28],
+                    help="read-delay offsets in taps; negative lowers the tap (RDIR = 1)")
+    mg.add_argument("--seconds", type=float, default=3.0, help="the test's run at each point")
+    mg.add_argument("--wstep", type=int, nargs="+",
+                    help="sweep each lane's WSTEP through these values instead, restoring "
+                         "what the status reports afterwards")
     hw = sub.add_parser("hwtrain", help="the image's own training (0x38, 0x39), then checks")
     hw.add_argument("--timeout", type=float, default=120)
     hw.add_argument("--log", metavar="FILE", help="save the address-data READ log as JSON")
@@ -1694,6 +1704,54 @@ def main() -> int:
                 if time.time() - t0 >= args.watch:
                     break
                 time.sleep(1.0)
+        elif args.cmd == "margin":
+            # The test is stopped while a lane's delay moves, so it measures
+            # only the new point: each run starts with a fresh write pass,
+            # which the read delay does not touch, so what fails is a read.
+            def step(lane, n):
+                for _ in range(abs(n)):
+                    core.request(0x07, (1 << (4 + lane)) | (1 if n < 0 else 0))
+            def run():
+                core.request(0x3C, 0x30)                # clear
+                core.request(0x3C, 0x21)                # run
+                time.sleep(args.seconds)
+                c = core.ctrl()
+                core.request(0x3C, 0x20)                # stop
+                time.sleep(0.05)
+                return c
+            c0 = core.ctrl()
+            if not c0["own"]:
+                raise RuntimeError("the controller does not own the bus")
+            core.request(0x3C, 0x20)
+            time.sleep(0.05)
+            if args.wstep:
+                # a write's timing: every run begins with a write pass at the
+                # new WSTEP, and a word written wrong fails when read
+                ws0 = [ln["wstep"] for ln in core.status()["lanes"]]
+                print(f"WSTEP now {ws0}")
+                for lane in args.lanes:
+                    print(f"lane {lane}: WSTEP, then words checked and each lane's failing words",
+                          flush=True)
+                    for v in args.wstep:
+                        core.request(0x10 + lane, v)
+                        c = run()
+                        print(f"  {v:4d}  {c['checked']:>11}  {c['lane_err']}"
+                              f"{'  <- this lane' if c['lane_err'][lane] else ''}", flush=True)
+                    core.request(0x10 + lane, ws0[lane])
+                args.lanes = []
+            for lane in args.lanes:
+                print(f"lane {lane}: offset in taps, then words checked and each lane's failing words",
+                      flush=True)
+                pos = 0
+                for off in args.taps:
+                    step(lane, off - pos)
+                    pos = off
+                    c = run()
+                    print(f"  {off:+4d}  {c['checked']:>11}  {c['lane_err']}"
+                          f"{'  <- this lane' if c['lane_err'][lane] else ''}", flush=True)
+                step(lane, -pos)
+            core.request(0x3C, 0x30)
+            core.request(0x3C, 0x21)
         elif args.cmd == "hwtrain":
             core.request(0x38, 1)
             t0 = time.time()
