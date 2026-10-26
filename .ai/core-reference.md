@@ -166,6 +166,7 @@ Topic IDs are the `record_id` prefix. An entry reserves a namespace; it does not
 | Can LiteDRAM's controller serve this PHY at 100 MHz? | TOOL | TOOL-047 |
 | How much read and write margin do the lanes have under the controller, and what does a cold start do? | TOOL | TOOL-048 |
 | Does write leveling cure the cold failures, and what did a new placement do? | TOOL | TOOL-049 |
+| Does nextpnr time the paths between the DDR3 I/O cells and the fabric? | TOOL | TOOL-050 |
 | Why did the Gowin control miss PCLK timing? | TOOL | TOOL-028 |
 | Which sources and licenses constrain reuse? | PROV | PROV-001 |
 
@@ -237,6 +238,7 @@ TOOL-046: "The controller image trains itself, hands over and tests the whole 1 
 TOOL-047: "LiteDRAM's controller logic closes 77.9 MHz in the open flow and 90.0 MHz in Gowin's against this PHY's 100 MHz, and its buffered command mode returns a port's reads out of order"
 TOOL-048: "Under the controller's test every lane reads cleanly 20 taps either side of its trained centre; writes run untrained at WSTEP 0, whose upper edges are 16 to 80; failures fall load by load from a cold start, on lane 1 above all"
 TOOL-049: "Leveled write strobes still failed cold as before; the image rebuilt with test diagnostics, the PHY and controller unchanged, failed no word in four cold loads, so the failures follow the placement"
+TOOL-050: "nextpnr's Gowin timing model has no arcs for IDES8_MEM, OSER8, OSER8_MEM or DQS, so no path between them and the fabric is timed for setup or hold; the controller image now retimes every such crossing on PCLK's falling edge"
 TOOL-031: "LiteDRAM's control layer alone generates, synthesises and places in the open flow at ~1% of the LUTs, with none of TOOL-025's three gaps"
 TOOL-030: "Closed-page scatter READs do not reach the read capture in the open or the vendor build of the same RTL; no cadence, gate position or shared RCLKSEL recovers them, and failing READs return other rows' patterns"
 PROV-001: "Reuse source and interface ideas with their original license boundaries and attribution intact"
@@ -1112,12 +1114,25 @@ PROV-001: "Reuse source and interface ideas with their original license boundari
   status: VERIFIED
   verified_date: 2026-10-26
   statement: "wr_core's write-leveling feedback, swept from WSTEP 0 to 124, rose to full between 24 and 28, 28 and 32, 16 and 24 and 20 and 24 on lanes 0 to 3 and fell near 115, 118, 106 and 106, half a clock being about 88 steps; at WSTEP 0 each strobe leads the clock by 21 to 30 steps. With each lane's WSTEP set from its own sweep and the training rerun on chip, which found d 1, b 2, four loads of the TOOL-046 image from an air-cooled board failed 21,920, 8,061, 321 and 34 words on lane 1. The image rebuilt with the memory test's per-pin, per-lane-and-beat counts and re-read log, the PHY, training and controller unchanged, closed PCLK at 106.79 MHz and in four loads from an air-cooled board failed no word over about 2.4 x 10^9 each, lane 1 having trained in the first at RCLKSEL 4 with a 43-tap window, as in the TOOL-048 load that failed 13,979."
-  consequence: "The cold failures follow the placement, not the DRAM interface's training or the write strobe's alignment: a hold-time violation on some fabric path, worse in cold faster silicon, would behave so, and nextpnr's Gowin flow does not report hold, so it has to be checked before an image can be trusted cold. Write leveling at start-up is not needed for these failures."
+  consequence: "The cold failures follow the placement, not the DRAM interface's training or the write strobe's alignment. The likeliest cause is a path between the I/O cells and the fabric, which nextpnr does not time at all (TOOL-050), worse in cold faster silicon. Write leveling at start-up is not needed for these failures."
   sources:
     - "TinyVCMI fpga/ddr3_ctrl/ddr3_bist.v: pin_err, beat_err, elog; ctrl_glue.v: frame 0x3D pages"
     - "TinyVCMI tools/ddr3_write_probe.py: level, ctrl --diag"
     - "TinyVCMI docs/ddr3-open-flow.md: Write leveling, the test's diagnostics, and a placement"
-  verification: "Leveling sweep and leveled cold loads with ddr3_ctrl.bin of TOOL-046 on 2026-10-26; the rebuilt image, .bin SHA-256 c9081054dfc72699d37a7be8dafe78a5bf257e25965011ed82bbe3483831f922, equal on all 306 DDR3 tables to Gowin's default build of the same sources, loaded four times from an air-cooled board. The desktop core was restored after every load and answered 0x54. That the earlier image's failures came from its placement is an inference from one rebuild; an A/B of the two images from the same cold start, and a hold analysis, would test it."
+  verification: "Leveling sweep and leveled cold loads with ddr3_ctrl.bin of TOOL-046 on 2026-10-26; the rebuilt image, .bin SHA-256 c9081054dfc72699d37a7be8dafe78a5bf257e25965011ed82bbe3483831f922, equal on all 306 DDR3 tables to Gowin's default build of the same sources, loaded four times from an air-cooled board. The desktop core was restored after every load and answered 0x54. That the earlier image's failures came from its placement is an inference from one rebuild; an A/B of the two images from the same cold start would test it. Revised 2026-10-26: the record first said nextpnr's Gowin flow reports no hold analysis; it does analyse hold with routed clock skew and reported no violation, but on fabric paths only, as TOOL-050 records. The image that failed, rebuilt from commit f3b3c87, came out bit for bit SHA-256 1d5617587da0a38e97b609d8f8a0185b7e08d1361fb0aa5e748e0e9564fed64d. The user noted that the clean cold loads followed the longest cool-down, over six hours unplugged."
+
+- record_id: TOOL-050
+  topic_id: TOOL
+  title: "nextpnr does not time the DDR3 I/O cells' paths to the fabric"
+  status: VERIFIED
+  verified_date: 2026-10-26
+  statement: "In aquasock/nextpnr branch epic/gw5ast138c, himbaechel/uarch/gowin/gowin_arch_gen.py create_timing_info adds cell timing variants for LUT4, MUX2_LUT5 to MUX2_LUT8, ALU, RAM16SDP4, the DFF types, block RAM and AE350_SOC, and none for IDES8_MEM, OSER8, OSER8_MEM or DQS. The final timing analysis (common/kernel/timing.cc timing_analysis) runs setup and hold with routed clock skew and logs hold violations when it finds any, but a path with an untimed cell at one end is not a register-to-register path to it, so the deserializers' outputs, DQS RVALID, the serializers' data, TX and command inputs and the DQS control inputs are checked for neither setup nor hold."
+  consequence: "Every open-flow DDR3 image's I/O boundary is untimed, and whether it works can change with placement alone, which fits TOOL-049. fpga/ddr3_ctrl's generated top therefore registers every PCLK signal crossing that boundary on PCLK's falling edge, giving each crossing about half a PCLK of setup and of hold regardless of routing while keeping each consumer's latency; adding I/O-cell timing to the chipdb would let nextpnr check these paths directly. The write image's boundary is still untimed."
+  sources:
+    - "aquasock/nextpnr epic/gw5ast138c: himbaechel/uarch/gowin/gowin_arch_gen.py create_timing_info; common/kernel/timing.cc, timing_log.cc"
+    - "TinyVCMI tools/ddr3_write.py: BOUNDARY, LANE_B, DQ_B"
+    - "TinyVCMI docs/ddr3-open-flow.md: The I/O boundary is not timed, so it is retimed"
+  verification: "Read from the fork's source. The retimed controller image built in the open flow at PCLK 101.21 MHz with no hold violation reported and compiled against Gowin's primitive models; it has not been run on the board, and its table check has not run, Gowin's default build of it having left 441 nets unrouted."
 
 - record_id: PROV-001
   topic_id: PROV

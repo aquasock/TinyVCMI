@@ -214,19 +214,86 @@ CTRL_WIRES = """\
 
 
 def ctrl_cmd(p: str) -> dict:
-    """Each memory clock's value of command ball `p` in the controller image."""
+    """Each memory clock's value of command ball `p` in the controller image,
+    from the boundary's falling-edge registers (BOUNDARY)."""
     v = SIGNALS[p]
     if p in STROBES:
-        return {f"p{k}": f"p_{v}[{k}]" for k in range(4)}
+        return {f"p{k}": f"pb_{v}[{k}]" for k in range(4)}
     if v.startswith("ba["):
         i = int(v[3:-1])
-        return {f"p{k}": f"p_ba[{3 * k + i}]" for k in range(4)}
+        return {f"p{k}": f"pb_ba[{3 * k + i}]" for k in range(4)}
     if v.startswith("addr["):
         i = int(v[5:-1])
-        return {f"p{k}": f"p_addr[{16 * k + i}]" for k in range(4)}
+        return {f"p{k}": f"pb_addr[{16 * k + i}]" for k in range(4)}
     if v == "odt":
-        return {f"p{k}": "p_odt" for k in range(4)}
+        return {f"p{k}": "pb_odt" for k in range(4)}
+    if v == "cke":
+        return {f"p{k}": "cke_b" for k in range(4)}
     return {f"p{k}": v for k in range(4)}
+
+
+#: The controller image's I/O boundary.  nextpnr's Gowin timing model has no
+#: arcs for IDES8_MEM, OSER8, OSER8_MEM or DQS, so no path between them and
+#: the fabric is timed, for setup or hold, and each placement routes them as
+#: it falls: an image whose layout changed with nothing else failed words
+#: from a cold start and the next did not (TOOL-049).  Every PCLK signal
+#: crossing the boundary therefore passes a register on PCLK's falling edge
+#: here: a deserializer word or RVALID launched at a rising edge is taken half
+#: a PCLK later, and everything the serializers and the DQS sample at a rising
+#: edge leaves half a PCLK before it, so each crossing has about half a PCLK
+#: of setup and of hold whatever its routing, and the fabric side of each is
+#: an ordinary register-to-register path nextpnr times.  The consumers still
+#: see each word at the rising edge they did, so no latency changes.
+BOUNDARY = """\
+    wire [255:0] dq_io;                 // the deserializers' outputs
+    wire [3:0] rvalid_io;
+    reg [255:0] dq_q = 256'd0;
+    reg [3:0] rvalid = 4'd0;
+    reg [15:0] read_en_b = 16'd0;
+    reg [11:0] rclksel_b = 12'd0;
+    reg [3:0] hold_b = 4'd0, rmove_b = 4'd0;
+    reg rdir_b = 1'b0, rloadn_b = 1'b1, wloadn_b = 1'b1, cke_b = 1'b0;
+    reg [31:0] wstep_b = 32'd0, calib_b = 32'd0;
+    reg [255:0] wdq_b = 256'd0;
+    reg dq_drive_b = 1'b0, dqs_drive_b = 1'b0;
+    reg [3:0] pb_cs_n = 4'hf, pb_ras_n = 4'hf, pb_cas_n = 4'hf, pb_we_n = 4'hf;
+    reg [11:0] pb_ba = 12'd0;
+    reg [63:0] pb_addr = 64'd0;
+    reg pb_odt = 1'b0;
+    always @(negedge pclk) begin
+        dq_q <= dq_io;
+        rvalid <= rvalid_io;
+        read_en_b <= read_en;
+        rclksel_b <= rclksel;
+        hold_b <= hold;
+        rmove_b <= rmove;
+        rdir_b <= rdir;
+        rloadn_b <= rloadn;
+        wloadn_b <= wloadn;
+        wstep_b <= wstep;
+        calib_b <= calib;
+        wdq_b <= wdq;
+        dq_drive_b <= p_dq_drive;
+        dqs_drive_b <= p_dqs_drive;
+        pb_cs_n <= p_cs_n;
+        pb_ras_n <= p_ras_n;
+        pb_cas_n <= p_cas_n;
+        pb_we_n <= p_we_n;
+        pb_ba <= p_ba;
+        pb_addr <= p_addr;
+        pb_odt <= p_odt;
+        cke_b <= cke;
+    end"""
+
+#: the DQS and deserializer templates' boundary nets in the controller image
+LANE_B = (LANE.replace("read_en[", "read_en_b[").replace("rclksel[", "rclksel_b[")
+              .replace("(wstep[", "(wstep_b[").replace(".RLOADN(rloadn)", ".RLOADN(rloadn_b)")
+              .replace("(rmove[", "(rmove_b[").replace(".RDIR(rdir)", ".RDIR(rdir_b)")
+              .replace(".WLOADN(wloadn)", ".WLOADN(wloadn_b)").replace("(hold[", "(hold_b[")
+              .replace(".RVALID(rvalid[", ".RVALID(rvalid_io["))
+DQ_B = DQ.replace("(calib[", "(calib_b[").replace("(dq_q[", "(dq_io[")
+assert LANE_B.count("_b[") == 5 and LANE_B.count("_b)") == 3 and "rvalid_io[" in LANE_B
+assert DQ_B.count("dq_io[") == 8 and "calib_b[" in DQ_B
 
 
 def render(ctrl: bool = False) -> str:
@@ -240,20 +307,25 @@ def render(ctrl: bool = False) -> str:
            "`default_nettype none",
            "module top (\n    " + ",\n    ".join(ports) + "\n);",
            PLL,
-           CORE.replace("{4{!dq_drive}}", "{4{!p_dq_drive}}")
-               .replace("{4{!dqs_drive}}", "{4{!p_dqs_drive}}") if ctrl else CORE]
+           CORE.replace("    wire [3:0] dq_tx = {4{!dq_drive}};\n", "")
+               .replace("    wire [3:0] dqs_tx = {4{!dqs_drive}};\n", "") if ctrl else CORE]
     if ctrl:
         out.append(CTRL_WIRES)
-    out += ["    wire [3:0] rvalid, rburst, rflag, wflag;",
-           "    wire [11:0] rpoint, wpoint;",
-           "    // the strobe toggles each half clock; odd DQ carry the inverse",
-           "    wire [7:0] dqs_d = 8'b01010101;",
-           "    wire [7:0] dq_npat = ~dq_pat;",
-           "    wire [7:0] dm_d = 8'h00;    // DM low: every byte written",
-           "    // lane n, DQ 8n+k, IDES8_MEM output b at 64n + 8k + b",
-           "    wire [255:0] dq_q;"]
+        out.append(BOUNDARY)
+        out.append("    wire [3:0] dq_tx = {4{!dq_drive_b}};\n"
+                   "    wire [3:0] dqs_tx = {4{!dqs_drive_b}};")
+    out += ["    wire [3:0] rburst, rflag, wflag;" if ctrl else
+            "    wire [3:0] rvalid, rburst, rflag, wflag;",
+            "    wire [11:0] rpoint, wpoint;",
+            "    // the strobe toggles each half clock; odd DQ carry the inverse",
+            "    wire [7:0] dqs_d = 8'b01010101;",
+            "    wire [7:0] dq_npat = ~dq_pat;",
+            "    wire [7:0] dm_d = 8'h00;    // DM low: every byte written"]
+    if not ctrl:
+        out += ["    // lane n, DQ 8n+k, IDES8_MEM output b at 64n + 8k + b",
+                "    wire [255:0] dq_q;"]
     for l in pads.LANES:
-        out.append(LANE.format(l=l, l3=3 * l, l4=4 * l, w=8 * l))
+        out.append((LANE_B if ctrl else LANE).format(l=l, l3=3 * l, l4=4 * l, w=8 * l))
         out.append(OSER_MEM.format(n=f"st{l}", src='"DQSW270"', tclk=f"w270_{l}",
                                    d="dqs_d", t="dqs_tx"))
         out.append(f"    ELVDS_IOBUF st{l}_buf (.I(st{l}_o), .OEN(st{l}_t), "
@@ -262,14 +334,15 @@ def render(ctrl: bool = False) -> str:
             i = 8 * l + k
             b = 64 * l + 8 * k
             if ctrl:
-                out.append(f"    wire [7:0] wd{i} = wdq[{b}+:8];")
+                out.append(f"    wire [7:0] wd{i} = wdq_b[{b}+:8];")
                 d = f"wd{i}"
             else:
                 d = "dq_pat" if k % 2 == 0 else "dq_npat"
             out.append(OSER_MEM.format(n=f"dq{i}", src='"DQSW"', tclk=f"w0_{l}",
                                        d=d, t="dq_tx"))
-            out.append(DQ.format(i=i, l=l, b=b, b1=b + 1, b2=b + 2, b3=b + 3,
-                                 b4=b + 4, b5=b + 5, b6=b + 6, b7=b + 7))
+            out.append((DQ_B if ctrl else DQ).format(i=i, l=l, b=b, b1=b + 1, b2=b + 2,
+                                                     b3=b + 3, b4=b + 4, b5=b + 5, b6=b + 6,
+                                                     b7=b + 7))
         out.append(OSER_MEM.format(n=f"dm{l}", src='"DQSW"', tclk=f"w0_{l}",
                                    d="dm_d", t="dq_tx"))
         out.append(f"    TBUF dm{l}_buf (.I(dm{l}_o), .OEN(dm{l}_t), .O(ddr_dm[{l}]));")

@@ -3113,3 +3113,32 @@ follow a cold start, fade as the board warms and vanish with a placement are
 what a hold-time violation does, faster silicon when cold shortening a path
 with too little hold; nextpnr's Gowin flow computes hold slack but reports
 none, so the open flow has never been checked for it.  That is a hypothesis.
+
+### The I/O boundary is not timed, so it is retimed
+
+A correction to the section above: nextpnr does analyse hold, with the routed
+clocks' skew, and would print a count of hold violations; it printed none.
+But its Gowin timing model (`himbaechel/uarch/gowin/gowin_arch_gen.py`,
+`create_timing_info`) gives arcs only to LUTs, the wide multiplexers, ALUs,
+LUT RAM, flip-flops, block RAM and the AE350: nothing to `IDES8_MEM`,
+`OSER8`, `OSER8_MEM` or `DQS`.  Every path between those and the fabric -- the
+deserializers' words and RVALID in, the serializers' data, drive and command
+inputs and the DQS controls out -- is therefore timed for neither setup nor
+hold, in any build, and lands wherever its placement puts it.  A rebuilt
+netlist of entry 72's image, bit for bit the one that failed cold, and the
+one that did not, show no lane 1 outlier in routing hops on those nets, a
+coarse measure that cannot settle it.
+
+So the controller image now passes every PCLK signal crossing that boundary
+through a register on PCLK's falling edge in its generated top: a word or
+RVALID an I/O cell launches at a rising edge is taken half a PCLK later, and
+everything the serializers and the DQS sample at a rising edge leaves half a
+PCLK before it.  Each crossing then has about half a PCLK of setup and of
+hold whatever its routing, the fabric side of each is a register-to-register
+path nextpnr does time, and each consumer still sees its word at the rising
+edge it did, so no trained offset should move.  The write image is unchanged.
+The image closes PCLK at 101.21 MHz, the critical path now in the test's
+re-read compare, and the link clock passes; nextpnr reports no hold
+violation.  Gowin's default build of it left 441 nets unrouted after about
+two hours, so there is no fuse reference yet, the table check has not run and
+no raw image has been written.

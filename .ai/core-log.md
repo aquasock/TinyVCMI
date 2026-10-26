@@ -2490,3 +2490,35 @@ Bring for approval a cycle that tests the placement hypothesis: rebuild entry 72
 - User Test: N/A
 
 ---
+
+## 75 COMMIT Unreleased 2026-10-26T11:45:04-07:00
+
+#### Coming From:
+
+Unreleased ab893e5
+
+#### Purpose:
+
+Make the DDR3 controller image's I/O boundary safe whatever its placement, by retiming every PCLK crossing between the I/O cells and the fabric on PCLK's falling edge, and prepare a cold A/B against the image that failed, handing the work over before the board is loaded at the user's request.
+
+#### Outcome:
+
+Entry 72's image was rebuilt from commit `f3b3c87` bit for bit, SHA-256 `1d5617587da0a38e97b609d8f8a0185b7e08d1361fb0aa5e748e0e9564fed64d`, and kept at `build/ddr3_ctrl/old_1d56/ctrl.bin` for the A/B. Entry 74 and TOOL-049 were wrong that nextpnr does not analyse hold: its final analysis checks setup and hold with routed clock skew and found no violation, but its Gowin timing model gives no arcs to `IDES8_MEM`, `OSER8`, `OSER8_MEM` or `DQS`, so no path between them and the fabric is timed for either in any build (TOOL-050); TOOL-049 was revised and notes the user's remark that the clean cold loads followed the longest cool-down, over six hours unplugged. Routing hops on the deserializer and serializer nets of the two layouts showed no lane 1 outlier, too coarse to decide. At the user's choice of the structural fix, `tools/ddr3_write.py` now gives the controller's top a `BOUNDARY` block: the deserializers' words and RVALID, and the serializers' data, TX and command inputs and the DQS controls and CALIB, each pass a register on PCLK's falling edge, so each crossing has about half a PCLK of setup and hold regardless of routing and every consumer keeps its latency; `fpga/ddr3_ctrl/top.v` was regenerated and the write image's top is unchanged. The controller top compiles against Gowin's primitive models, every simulation of the gate passed, and the open flow closed PCLK at 101.21 MHz, the critical path the test's 256-bit re-read compare, with the link clock passing and no hold violation reported; `tools/build_ddr3_ctrl.sh` then stopped for want of a fuse reference, because Gowin's default build of these sources left 441 nets unrouted after about two hours. The table check has therefore not run and no raw image of this source has been written. The user asked to wait before deploying, and the Tang was not accessed. `docs/ddr3-open-flow.md` gained the section. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering and active-log capacity.
+
+#### Next Steps:
+
+Get a Gowin build of these sources that routes, by `tools/ddr3_write.py --vendor-sweep --ctrl` or with the test's diagnostic logic reduced, rerun `tools/build_ddr3_ctrl.sh` with `TINYVCMI_SKIP_SIM=1` so the 306-table check runs and the raw image is written, and pipeline the test's re-read compare if PCLK margin is wanted. Then, once the user says the Tang is free and cooled, run the A/B from one cold start, `build/ddr3_ctrl/old_1d56/ctrl.bin` and the retimed image in turn, four loads each with `ctrl --watch 60 --diag`, finding the console's tty by USB id `ffff:5454`. If the retimed image is clean cold and the old one fails, the boundary was the cause; record it and go on to B2, the DM mask path, and B3, the AE350's bridge. The write image's boundary remains untimed. The mid-calibration stall, the `D108` unused-pin contradiction and the `is_mipi` bug outside the DDR context remain open.
+
+#### Files Modified:
+
+- docs/ddr3-open-flow.md
+- fpga/ddr3_ctrl/top.v
+- tools/ddr3_write.py
+
+#### Status:
+
+- Build: FAIL
+- Deployment: NOT RUN
+- User Test: NOT RUN
+
+---
