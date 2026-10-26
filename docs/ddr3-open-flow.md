@@ -2839,3 +2839,15 @@ differs is that the host calibrates first, centring each lane's read delay and
 checking per-pin framing over five sessions, while the sequencer frames each
 pin once at the start-up read delay.  That a pin framed one slot wrong keeps
 its lane from ever passing the data check is the leading hypothesis, untested.
+
+Calibrating first does not help.  After a Tang reboot three loads each ran
+`calibrate`, which aligned all 32 pins over five sessions every time, and then
+`hwtrain`, which locked lanes 0 and 3, lane 2, and lanes 0 and 1, each at the
+host's setting, so the framing hypothesis is rejected.  The sequencer's data
+check is stricter than the host's: it needs every lag-classified READ of a
+2.6 ms batch, about 390 counted from the first READ after the HOLD is released,
+to be the lane's own, where the host's `lane_pass` needs 99% of 256 logged
+READs after the first 1,024.  During the search every lane's read delay is at
+tap 4, 3 or 4 taps from the edge of its window (TOOL-041), so a rare wrong READ
+fails a sequencer trial that the host would pass, and a lock needs two passing
+trials in a row.  That is the next hypothesis, untested.

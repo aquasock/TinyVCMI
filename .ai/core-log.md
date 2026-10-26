@@ -2297,3 +2297,33 @@ Test the framing hypothesis without a rebuild first: run `calibrate` and then `h
 - User Test: N/A
 
 ---
+
+## 70 COMMIT Unreleased 2026-10-25T18:58:50-07:00
+
+#### Coming From:
+
+Unreleased afc2868
+
+#### Purpose:
+
+Test without a rebuild whether calibrating each load from the host before the image's own DDR3 training lets the sequencer train all four lanes, as the framing hypothesis of entry 69 predicted.
+
+#### Outcome:
+
+After the user rebooted the Tang, three loads of `ddr3_hwtrain.bin`, the entry-69 image, SHA-256 `d17425982499c894f9a1f30ed85e25bee6a36a3763f021700b34c0eecd705299`, each ran `tools/ddr3_write_probe.py calibrate`, which aligned all 32 pins over five sessions every time with no stall, and then `hwtrain`, which again ran the full 2,304-trial search and locked lanes 0 and 3, lane 2, and lanes 0 and 1, each at the host's setting after 3 CALIB pulses, so the write alignment never ran; the framing hypothesis is rejected. Reading `ddr3_seq` against the probe's `vendor_search` and `lane_pass` found that the sequencer's per-trial data check is stricter than the host's: `pass_now` needs every lag-classified READ of a 2.6 ms batch, about 390 counted from the first READ after the HOLD is released, to be the lane's own, where the host needs 99% of 256 logged READs after the first 1,024. During the search every lane's read delay is at tap 4, 3 or 4 taps from its window's edge (TOOL-041), so a rare wrong READ would fail a sequencer trial the host passes, and a lock needs two passing trials in a row; that is the new hypothesis, untested. TOOL-045 was revised and `docs/ddr3-open-flow.md` extended. The user then unplugged the Tang, after the last load had restored the desktop core, and no later board access was made. Board logs are in `build/ddr3_boot/calhw_1` to `calhw_3`, not committed. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering and active-log capacity.
+
+#### Next Steps:
+
+With the user's approval and the Tang free, measure the hypothesis first: run the host's `train --vendor-delay --vendor-search --hold vendor --verbose` with `--log-skip 0` on `ddr3_hwtrain.bin` to see each lane's own share from the first READ at the passing points. If wrong READs appear there, give `ddr3_seq` the host's criterion, a share of at least 99% of classified READs, and if they cluster at the batch's start a warm-up before the counted batch, gate it in `tools/sim_ddr3_seq.sh` with a model that returns rare wrong READs, correct the stale TOOL-044 comment in `fpga/ddr3_write/wr_core.v`, rebuild, and requalify `hwtrain` over several loads until all four lanes train, the write alignment passes and the address-data checks hold every READ. The mid-calibration stall, the `D108` unused-pin contradiction and the `is_mipi` bug outside the DDR context remain open.
+
+#### Files Modified:
+
+- docs/ddr3-open-flow.md
+
+#### Status:
+
+- Build: N/A
+- Deployment: PASS
+- User Test: N/A
+
+---
