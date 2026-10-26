@@ -996,6 +996,7 @@ module top (
         .dq_pat(dq_pat), .dq_drive(dq_drive), .dqs_drive(dqs_drive), .odt(odt),
         .ddr_reset_n(ddr_rst_n), .cke(cke), .cs_n(cs_n), .ras_n(ras_n), .cas_n(cas_n),
         .we_n(we_n), .ba(ba), .addr(addr),
-        .burst_tog(burst_tog));
+        .burst_tog(burst_tog),
+        .ctrl_rd(1'b0), .ctrl_accept(1'b0), .ext_status(512'd0));
 endmodule
 `default_nettype wire

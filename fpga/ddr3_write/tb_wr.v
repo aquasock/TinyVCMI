@@ -115,6 +115,8 @@ module tb;
     wire row_open = |open_b;
     time t_ref = 0, t_last_ref = 0, t_last_act = 0, t_last_pre = 0;
     integer nwr = 0, nrd = 0, nref = 0, nact = 0, nlevel = 0, nrand = 0, b;
+    integer ncmd = 0, npre = 0, m6_cmds = 0, m6_pre = 0;
+    reg ctrl_gap = 1'b0;                // mode 6: the controller refreshes, not the core
     time max_refi = 0;
     reg [3:0] c;
     initial for (b = 0; b < 8; b = b + 1) begin
@@ -131,6 +133,7 @@ module tb;
     always @(posedge ddr_ck_p) if (ddr_ck_n === 1'b0 && ddr_cs === 1'b0) begin
         c = {ddr_cs, ddr_ras, ddr_cas, ddr_we};
         if (c != 4'b0111) begin
+            ncmd = ncmd + 1;
             if (t_ref != 0 && $time - t_ref < 260) fail("a command inside tRFC");
             case (c)
                 4'b0011: begin                                   // ACTIVATE
@@ -147,12 +150,15 @@ module tb;
                 end
                 4'b0010: begin                                   // PRECHARGE
                     if (addr[10] !== 1'b1) fail("PRECHARGE not to all banks");
+                    npre = npre + 1;
                     for (b = 0; b < 8; b = b + 1) precharge(b, $time);
                 end
                 4'b0001: begin                                   // REFRESH
                     if (row_open) fail("REFRESH with a row open");
                     if (t_last_pre != 0 && $time < t_last_pre + 15) fail("REFRESH inside tRP");
-                    if (t_last_ref != 0 && !in_level && $time - t_last_ref > max_refi)
+                    if (ctrl_gap)       // the interval spanning mode 6 is the controller's
+                        ctrl_gap = 1'b0;
+                    else if (t_last_ref != 0 && !in_level && $time - t_last_ref > max_refi)
                         max_refi = $time - t_last_ref;
                     t_ref = $time; t_last_ref = $time; nref = nref + 1;
                 end
@@ -516,6 +522,33 @@ module tb;
         if (dut.core.seq_busy || dut.core.seq_err !== 4'd15 || dut.core.mode !== 3'd0)
             fail("command 0x38 0 did not abort the training back to idle");
         $display("      training: started, refused a setting, reported over the link, aborted to idle");
+        // mode 6, the controller's: the bus handed over with nothing issued
+        // by the core for 20 us, past a refresh interval, and on leaving
+        // every bank precharged and the bus taken back
+        request(8'h0c, 8'h06);
+        idle_wait = 0;
+        while (!dut.core.ctrl_own && idle_wait < 20000) begin
+            #10;
+            idle_wait = idle_wait + 10;
+        end
+        if (!dut.core.ctrl_own) fail("mode 6 did not hand the bus over");
+        // set only now: the core refreshes on its own until it hands over
+        ctrl_gap = 1'b1;
+        m6_cmds = ncmd;
+        #20000;
+        if (ncmd != m6_cmds) fail("the core issued a command in mode 6");
+        if (!dut.core.ctrl_own) fail("the bus was taken back without a mode change");
+        m6_pre = npre;
+        request(8'h0c, 8'h00);
+        idle_wait = 0;
+        while (dut.core.ctrl_own && idle_wait < 20000) begin
+            #10;
+            idle_wait = idle_wait + 10;
+        end
+        #2000;
+        if (dut.core.ctrl_own) fail("leaving mode 6 did not take the bus back");
+        if (npre == m6_pre) fail("leaving mode 6 precharged no bank");
+        $display("      mode 6: the bus handed over, nothing issued for 20 us, every bank precharged on leaving");
         // idle mode refreshes every 7 us and waits tRFC after each, so the
         // core is given up to 2 us to be seen in its idle state
         idle_wait = 0;

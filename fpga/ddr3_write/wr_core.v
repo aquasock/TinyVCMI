@@ -192,7 +192,11 @@
 // counter-addressed LUT-RAM shift registers, whose read sits on PCLK's
 // critical paths; Yosys ignores the attribute.
 (* syn_srlstyle = "registers" *)
-module wr_core (
+module wr_core #(
+    // nonzero: train once the PHY is up, up to three times, and on success
+    // hand the bus to the controller (mode 6), as fpga/ddr3_ctrl does
+    parameter integer AUTOTRAIN = 0
+) (
     input  wire         sys_clk,
     input  wire         uart_rx,
     output wire         uart_tx,
@@ -235,7 +239,24 @@ module wr_core (
     output reg          cas_n = 1'b1,
     output reg          we_n = 1'b1,
     output reg  [2:0]   ba = 3'd0,
-    output reg  [15:0]  addr = 16'd0
+    output reg  [15:0]  addr = 16'd0,
+
+    // the controller of fpga/ddr3_ctrl: its READ loading into the command
+    // registers at this PCLK edge, so the trained gate opens for it; that it
+    // owns the bus (mode 6); the trained write alignment {d, 0, b} and read
+    // rotations; a byte from the link (command 0x3C) and the controller's
+    // status (frame 0x3D).  The controller accepts a training only with the
+    // write alignment its PHY is built for.  The diagnostic image ties the
+    // inputs off.
+    input  wire         ctrl_rd,
+    input  wire         ctrl_accept,    // sys_clk: the controller can take this training
+    output reg          ctrl_own = 1'b0,
+    output wire [6:0]   ctrl_walign,
+    output wire [11:0]  ctrl_rot,
+    output wire         ctrl_trained,
+    output reg  [7:0]   ext_cmd = 8'd0,
+    output reg          ext_tog = 1'b0,
+    input  wire [511:0] ext_status
 );
     // ------------------------------------------------------------------
     // PHY start-up, 50 MHz
@@ -492,9 +513,9 @@ module wr_core (
     localparam [3:0] I_IDLE = 4'd0, I_RESET = 4'd1, I_CKE = 4'd2, I_XPR = 4'd3,
                      I_MR = 4'd4, I_ZQ = 4'd5, I_WAIT = 4'd6,
                      R_IDLE = 4'd8, R_LEVEL = 4'd9, R_WRITE = 4'd10, R_READ = 4'd11,
-                     R_RAND = 4'd12, R_FILL = 4'd13;
+                     R_RAND = 4'd12, R_FILL = 4'd13, R_CTRL = 4'd14;
     localparam [2:0] M_IDLE = 3'd0, M_LEVEL = 3'd1, M_WRITE = 3'd2, M_READ = 3'd3,
-                     M_RAND = 3'd4, M_FILL = 3'd5;
+                     M_RAND = 3'd4, M_FILL = 3'd5, M_CTRL = 3'd6;
 
     reg [3:0] istate = I_IDLE;
     reg [3:0] wnext = I_IDLE;
@@ -514,7 +535,8 @@ module wr_core (
         mode_next <= (mode_p == M_LEVEL) ? R_LEVEL :
                      (mode_p == M_WRITE) ? R_WRITE :
                      (mode_p == M_READ) ? R_READ :
-                     (mode_p == M_FILL) ? R_FILL : R_RAND;
+                     (mode_p == M_FILL) ? R_FILL :
+                     (mode_p == M_CTRL) ? R_CTRL : R_RAND;
     end
     reg [3:0] rload_cnt = 4'd0;
     reg [3:0] wload_cnt = 4'd0;
@@ -682,7 +704,13 @@ module wr_core (
         rmove <= rmove_pulse ? mask_p2 : 4'b0000;
         rc_issue <= 1'b0;
         read_pipe <= {read_pipe[7:0], 1'b0};
-        read_en <= (mode == M_READ || mode == M_RAND) ? ({4{pat_p2}} & gate_win) : 16'd0;
+        if (mode == M_CTRL && ctrl_rd)  // the controller's READ, as one of ours
+            read_pipe[0] <= 1'b1;
+        read_en <= (mode == M_READ || mode == M_RAND || mode == M_CTRL) ?
+                   ({4{pat_p2}} & gate_win) : 16'd0;
+        // the bus is the controller's from the PCLK after R_CTRL is entered
+        // until the edge that leaves it, which precharges every bank
+        ctrl_own <= (istate == R_CTRL) && !mode_chg;
         if (read_count == 8'd0) begin
             read_active <= 1'b1;
             read_count <= read_run_p2;
@@ -976,6 +1004,14 @@ module wr_core (
                             istate <= R_IDLE;
                         end
                     endcase
+                end
+                // the controller's: nothing is issued here, not even a
+                // REFRESH, until the mode changes; then every bank is
+                // precharged and the core is idle again
+                R_CTRL: if (mode_chg) begin
+                    issue(C_PRE, 3'd0, 16'h0400);       // all banks
+                    mode <= M_IDLE;
+                    pause(17'd4, R_IDLE);               // tRP
                 end
                 default: istate <= I_IDLE;
             endcase
@@ -1535,6 +1571,8 @@ module wr_core (
     wire [127:0] seq_lane_own = {rc_lag_cnt_s[32*30 +: 32], rc_lag_cnt_s[32*20 +: 32],
                                  rc_lag_cnt_s[32*10 +: 32], rc_lag_cnt_s[0 +: 32]};
     reg  seq_start = 1'b0, seq_abort = 1'b0, seq_ack = 1'b0;
+    reg  [1:0] auto_tries = 2'd0;       // AUTOTRAIN: trainings redone after a failure
+    reg  auto_wait = 1'b0, auto_done = 1'b0;
     wire seq_busy, seq_done, seq_req, seq_wfound;
     wire [7:0] seq_cmd, seq_arg;
     wire [3:0] seq_err, seq_locked, seq_centred;
@@ -1555,6 +1593,9 @@ module wr_core (
         .lane_u(seq_lane_u), .centred(seq_centred), .wpass(seq_wpass), .walign(seq_walign),
         .wfound(seq_wfound), .rot(seq_rot), .fin_total(seq_fin_total),
         .fin_class(seq_fin_class), .tried(seq_tried), .cycles(seq_cycles), .diag(seq_diag));
+    assign ctrl_walign = walign_p2;
+    assign ctrl_rot = seq_rot;
+    assign ctrl_trained = seq_done && (seq_err == 4'd0) && !seq_busy;
 
     // Training result (command 0x39), 72 payload bytes, little-endian.
     //    0     {done, busy, 2'b0, err[3:0]}  (err 1/2 framing, 3 no write
@@ -1634,7 +1675,8 @@ module wr_core (
                     (c == 8'h29) || (c == 8'h2a) || (c == 8'h2b) || (c == 8'h2c) || (c == 8'h2d) ||
                     (c == 8'h2e) || (c == 8'h2f) || (c == 8'h31) || (c == 8'h32) ||
                     (c == 8'h33) || (c == 8'h34) || (c == 8'h35) || (c == 8'h36) ||
-                    (c == 8'h37) || (c == 8'h38) || (c == 8'h39);
+                    (c == 8'h37) || (c == 8'h38) || (c == 8'h39) || (c == 8'h3c) ||
+                    (c == 8'h3d);
         end
     endfunction
 
@@ -1669,7 +1711,11 @@ module wr_core (
                         moves <= 32'd0;
                     end
                     8'h0b: read_pat <= a[3:0];
-                    8'h0c: mode_req <= a[2:0] > 3'd5 ? 3'd0 : a[2:0];
+                    8'h0c: mode_req <= a[2:0] > 3'd6 ? 3'd0 : a[2:0];
+                    8'h3c: begin
+                        ext_cmd <= a;
+                        ext_tog <= ~ext_tog;
+                    end
                     8'h0d: read_run_req <= a == 8'd0 ? 8'd1 : a;
                     8'h0e: pat_req <= a;
                     8'h0f: bank_req <= a[2:0];
@@ -1716,7 +1762,8 @@ module wr_core (
     function readonly;
         input [7:0] c;
         readonly = (c == 8'h01) || (c == 8'h03) || (c == 8'h27) || (c == 8'h2b) ||
-                   (c == 8'h2f) || (c == 8'h31) || (c == 8'h34) || (c == 8'h39);
+                   (c == 8'h2f) || (c == 8'h31) || (c == 8'h34) || (c == 8'h39) ||
+                   (c == 8'h3d);
     endfunction
 
     always @(posedge sys_clk) begin
@@ -1724,6 +1771,33 @@ module wr_core (
         restart <= 1'b0;
         seq_start <= 1'b0;
         seq_abort <= 1'b0;
+        // AUTOTRAIN: train once the PHY is up, again after a failure up to
+        // three times in all, and on success request mode 6 if the
+        // controller accepts the training; ahead of the link below, so a
+        // command from the host still wins
+        if (AUTOTRAIN != 0) begin
+            if (!ready) begin
+                auto_tries <= 2'd0;
+                auto_wait <= 1'b0;
+                auto_done <= 1'b0;
+            end else if (!auto_done && !seq_busy && !seq_start) begin
+                if (!auto_wait) begin
+                    seq_start <= 1'b1;
+                    auto_wait <= 1'b1;
+                end else if (seq_done) begin
+                    if (seq_err == 4'd0) begin
+                        if (ctrl_accept)
+                            mode_req <= 3'd6;
+                        auto_done <= 1'b1;
+                    end else if (auto_tries == 2'd2)
+                        auto_done <= 1'b1;
+                    else begin
+                        auto_tries <= auto_tries + 2'd1;
+                        seq_start <= 1'b1;
+                    end
+                end
+            end
+        end
         // the sequencer's requests, in a cycle the link is not using
         seq_ack <= 1'b0;
         if (seq_req && !seq_ack && !rx_valid) begin
@@ -1751,25 +1825,28 @@ module wr_core (
                         response_is_status <= (cmd_byte == 8'h03) || (cmd_byte == 8'h27) ||
                                               (cmd_byte == 8'h2b) || (cmd_byte == 8'h2f) ||
                                               (cmd_byte == 8'h31) || (cmd_byte == 8'h34) ||
-                                              (cmd_byte == 8'h39);
+                                              (cmd_byte == 8'h39) || (cmd_byte == 8'h3d);
                         response_type <= (cmd_byte == 8'h27) ? 8'h05 :
                                          (cmd_byte == 8'h2b) ? 8'h00 :
                                          (cmd_byte == 8'h2f) ? 8'h06 :
                                          (cmd_byte == 8'h31) ? 8'h07 :
                                          (cmd_byte == 8'h34) ? 8'h08 :
-                                         (cmd_byte == 8'h39) ? 8'h09 : 8'h04;
+                                         (cmd_byte == 8'h39) ? 8'h09 :
+                                         (cmd_byte == 8'h3d) ? 8'h0a : 8'h04;
                         response_len <= (cmd_byte == 8'h2b) ? 8'd34 :
                                         (cmd_byte == 8'h2f) ? 8'd206 :
                                         (cmd_byte == 8'h31) ? 8'd40 :
                                         (cmd_byte == 8'h34) ? 8'd148 :
-                                        (cmd_byte == 8'h39) ? 8'd72 : 8'd127;
+                                        (cmd_byte == 8'h39) ? 8'd72 :
+                                        (cmd_byte == 8'h3d) ? 8'd64 : 8'd127;
                         response_index <= 8'd0;
                         frame <= (cmd_byte == 8'h27) ? {632'd0, status2} :
                                  (cmd_byte == 8'h2b) ? {1376'd0, status3} :
                                  (cmd_byte == 8'h2f) ? status4 :
                                  (cmd_byte == 8'h31) ? {1328'd0, status5} :
                                  (cmd_byte == 8'h34) ? {464'd0, status6} :
-                                 (cmd_byte == 8'h39) ? {1072'd0, status7} : {632'd0, status};
+                                 (cmd_byte == 8'h39) ? {1072'd0, status7} :
+                                 (cmd_byte == 8'h3d) ? {1136'd0, ext_status} : {632'd0, status};
                         if (cmd_byte == 8'h38) begin
                             seq_start <= rx_data[0];
                             seq_abort <= !rx_data[0];

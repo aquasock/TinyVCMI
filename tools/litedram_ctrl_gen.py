@@ -24,9 +24,24 @@ TP = os.environ.get("LITEX_THIRD_PARTY", "/run/media/vash/GIT/Tang-PSX/third_par
 
 
 def main() -> int:
+    # Migen names signals partly by iterating sets of strings, whose order
+    # follows Python's per-process string hashing: two runs can name the same
+    # signal differently, and the controller's build checks that its core is
+    # byte for byte the one the vendor build used.  A fixed seed makes the
+    # output reproducible.
+    if os.environ.get("PYTHONHASHSEED") != "0":
+        os.environ["PYTHONHASHSEED"] = "0"
+        os.execv(sys.executable, [sys.executable] + sys.argv)
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default="build/ddr3_ctrl")
+    ap.add_argument("--setting", action="append", default=[], metavar="KEY=VALUE",
+                    help="a LiteDRAM ControllerSettings field, e.g. cmd_buffer_buffered=True")
     args = ap.parse_args()
+    import ast
+    ctrl_settings = {}
+    for s in args.setting:
+        k, v = s.split("=", 1)
+        ctrl_settings[k] = ast.literal_eval(v)
 
     for pkg in ("litex", "migen", "litedram", "litex-boards", "litepcie"):
         path = f"{TP}/{pkg}"
@@ -41,6 +56,7 @@ def main() -> int:
     from litedram.common import PhySettings
     from litedram.phy.dfi import Interface as DFI
     from litedram.core import LiteDRAMCore
+    from litedram.core.controller import ControllerSettings
     from litedram.modules import DDR3Module
 
     # The board's array, as the reference library records it: two x16 devices
@@ -77,8 +93,17 @@ def main() -> int:
         # carry the 256 bits of one BL8 burst, which is exactly what the
         # hand-written PHY captures in one PCLK.
         databits=DATABITS, dfi_databits=(8 // NPHASES) * DATABITS, nphases=NPHASES,
-        rdphase=0, wrphase=2, cl=6, cwl=5,
-        read_latency=7, write_latency=4,
+        # READ and WRITE on phase 0, the first memory clock of a PCLK, where
+        # the trained PHY of fpga/ddr3_write issues its own: a READ's burst
+        # then reaches the deserializers whole in one PCLK, at the trained
+        # offset, and a WRITE's data takes the trained alignment unchanged.
+        # ACTIVATE and PRECHARGE go on phase 3, the steerer's rdphase - 1.
+        # CL 6 and CWL 5 are the MR0 and MR2 the PHY's start-up writes.
+        rdphase=0, wrphase=0, cl=6, cwl=5,
+        # fpga/ddr3_ctrl/dfi_phy.v: every command three PCLK behind the DFI,
+        # write data the PCLK after wrdata_en, and the burst on the DFI
+        # fifteen PCLK after rddata_en whatever the trained read offset
+        read_latency=15, write_latency=1,
         nranks=1, strobes=DATABITS // 8)
 
     class DFIPorts(Module):
@@ -94,19 +119,19 @@ def main() -> int:
             self.clock_domains.cd_sys = ClockDomain("sys")
             self.clock_domains.cd_sys4x = ClockDomain("sys4x")
             self.submodules.phy = phy = DFIPorts()
-            self.submodules.core = LiteDRAMCore(phy, geom, timing, 100e6)
+            self.submodules.core = LiteDRAMCore(
+                phy, geom, timing, 100e6,
+                controller_settings=ControllerSettings(**ctrl_settings))
 
-            # One user port exposed so the crossbar survives synthesis; the
-            # AE350's bridge will replace it.
+            # One native user port, driven by fpga/ddr3_ctrl/ddr3_bist.v and
+            # later by the AE350's bridge.
             port = self.core.crossbar.get_port()
-            self.sync += port.cmd.valid.eq(0)   # idle until the bridge drives it
-            self.comb += [port.rdata.ready.eq(1), port.wdata.ready.eq(1)]
 
             ios = {self.cd_sys.clk, self.cd_sys.rst,
                    self.cd_sys4x.clk, self.cd_sys4x.rst}
             ios |= {port.cmd.valid, port.cmd.ready, port.cmd.addr,
                     port.cmd.we, port.cmd.last,
-                    port.wdata.valid, port.wdata.ready, port.wdata.data,
+                    port.wdata.valid, port.wdata.ready, port.wdata.data, port.wdata.we,
                     port.rdata.valid, port.rdata.ready, port.rdata.data}
             for phase in phy.dfi.phases:
                 ios |= {phase.address, phase.bank, phase.cas_n, phase.ras_n,

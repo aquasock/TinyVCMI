@@ -86,7 +86,7 @@ import time
 
 import serial
 
-MODES = ["idle", "level", "write", "read", "random", "fill"]
+MODES = ["idle", "level", "write", "read", "random", "fill", "controller", "mode 7"]
 
 #: rd_check.v's sixteen patterns, by {row bit, bank}
 RC_PATTERNS = [0x0B, 0x0D, 0x13, 0x15, 0x17, 0x19, 0x1B, 0x1D,
@@ -267,6 +267,22 @@ class Core:
                 # miss as READs not its own of READs counted
                 "diag": [tuple(int.from_bytes(b[40 + 8 * l + 2 * f:42 + 8 * l + 2 * f], "little")
                                for f in range(4)) for l in range(4)]}
+
+    def ctrl(self) -> dict:
+        """The controller image's status, frame 0x3D: 64 payload bytes
+        (fpga/ddr3_ctrl/ctrl_glue.v)."""
+        r = self.request(0x3D, expect=4 + 64)
+        if r[2] != 0x0A or r[3] != 64:
+            raise RuntimeError(f"controller frame is {r[2]:#04x}/{r[3]}, expected 0x0a/64")
+        b = r[4:]
+        u32 = lambda o: int.from_bytes(b[o:o + 4], "little")
+        return {"own": b[0] >> 7, "trained": b[0] >> 6 & 1, "running": b[0] >> 5 & 1,
+                "bad_phase": b[0] >> 4 & 1, "rd_off": b[0] >> 2 & 3, "err": b[0] >> 1 & 1,
+                "state": b[1] & 15, "walign_ok": b[1] >> 7, "passes": int.from_bytes(b[2:4], "little"),
+                "written": u32(4), "checked": u32(8),
+                "lane_err": [u32(12 + 4 * l) for l in range(4)],
+                "err_addr": u32(28) & 0x1FFFFFF,
+                "err_diff": int.from_bytes(b[32:64], "little")}
 
     def log_page(self, page: int) -> dict:
         """Copy READ-log page `page` (0x33) and read it (0x34): 148 payload bytes."""
@@ -1302,6 +1318,13 @@ def main() -> int:
                          "READ log shows whole bursts in the vendor's state; then the lag check")
     tr.add_argument("--sweep", action="store_true",
                     help="then sweep each trained lane's gate, RCLKSEL and CALIB, logging each point")
+    ct = sub.add_parser("ctrl", help="the controller image: its training, hand-over and memory test")
+    ct.add_argument("--rd-off", type=int, choices=range(4),
+                    help="the read offset: a READ's burst 6 + this PCLK after it (0x3C 0x1r)")
+    ct.add_argument("--test", choices=["on", "off"], help="run or stop the memory test")
+    ct.add_argument("--clear", action="store_true", help="clear the test's counts and first error")
+    ct.add_argument("--watch", type=float, default=0,
+                    help="seconds to report the test's progress for, once a second")
     hw = sub.add_parser("hwtrain", help="the image's own training (0x38, 0x39), then checks")
     hw.add_argument("--timeout", type=float, default=120)
     hw.add_argument("--log", metavar="FILE", help="save the address-data READ log as JSON")
@@ -1633,6 +1656,44 @@ def main() -> int:
                     log_report(json.load(open(args.log)))
                 if args.sweep:
                     slip_sweep(core, args, sets, locked)
+        elif args.cmd == "ctrl":
+            q = core.seq()
+            print(f"training: {'done' if q['done'] else 'busy' if q['busy'] else 'idle'}, "
+                  f"error {q['err']}, lanes locked {q['locked']:04b}, {q['tried']} trials; "
+                  f"write alignment {'d %d b %d' % (q['walign'], q['wbeat']) if q['wfound'] else 'none'}; "
+                  f"rotations {q['rot']}")
+            for l in range(4):
+                d, k, rs = q["lanes"][l]
+                print(f"  lane {l}: delay {d} k {k} rclksel {rs}, {q['cal'][l]} CALIB pulse(s), "
+                      f"{q['u'][l]} passing taps above tap 4, centred at tap {(4 + q['u'][l]) // 2}")
+            if args.rd_off is not None:
+                core.request(0x3C, 0x10 | args.rd_off)
+            if args.test is not None:
+                core.request(0x3C, 0x21 if args.test == "on" else 0x20)
+            if args.clear:
+                core.request(0x3C, 0x30)
+            t0 = time.time()
+            while True:
+                time.sleep(0.05)
+                c = core.ctrl()
+                line = (f"controller {'owns the bus' if c['own'] else 'not yet'}"
+                        f"{', trained' if c['trained'] else ''}, read offset {6 + c['rd_off']}, "
+                        f"test {'running' if c['running'] else 'stopped'} in state {c['state']}: "
+                        f"{c['passes']} passes, {c['written']} written, {c['checked']} checked, "
+                        f"lane errors {c['lane_err']}")
+                if not c["walign_ok"]:
+                    line += "; the training's write alignment is not the PHY's, so no hand-over"
+                if c["bad_phase"]:
+                    line += "; a READ or WRITE off phase 0"
+                if c["err"]:
+                    diff = c["err_diff"]
+                    lanes = [l for l in range(4)
+                             if any(diff >> (32 * k + 8 * l) & 0xFF for k in range(8))]
+                    line += f"; first error at word {c['err_addr']:#x}, lanes {lanes}"
+                print(f"{time.time() - t0:6.1f} s  {line}", flush=True)
+                if time.time() - t0 >= args.watch:
+                    break
+                time.sleep(1.0)
         elif args.cmd == "hwtrain":
             core.request(0x38, 1)
             t0 = time.time()

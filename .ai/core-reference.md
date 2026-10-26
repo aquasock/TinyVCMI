@@ -162,6 +162,8 @@ Topic IDs are the `record_id` prefix. An entry reserves a namespace; it does not
 | Is the read latency fixed, and do isolated READs return address-derived data across banks and rows? | TOOL | TOOL-043 |
 | Why did the hardware-training image's heap legalizer stop after 10,001 attempts? | TOOL | TOOL-044 |
 | Does the image's own hardware training train all four lanes on the board, and what stopped it? | TOOL | TOOL-045 |
+| Does the DDR3 controller image work on the board, unattended, over the whole array? | TOOL | TOOL-046 |
+| Can LiteDRAM's controller serve this PHY at 100 MHz? | TOOL | TOOL-047 |
 | Why did the Gowin control miss PCLK timing? | TOOL | TOOL-028 |
 | Which sources and licenses constrain reuse? | PROV | PROV-001 |
 
@@ -229,6 +231,8 @@ TOOL-042: "With HOLD on every unconfigured lane while its gate and RCLKSEL chang
 TOOL-043: "Trained lanes hand over each READ's burst at one fixed PCLK on all four lanes; with a trained write alignment every isolated random READ over 8 banks x 16 rows x 128 bursts returns its address's own data"
 TOOL-044: "The heap placer's default per-cell attempt budget overflowed signed 32-bit arithmetic above 46,340 cells; 64-bit arithmetic lets the 48,302-cell hardware-training image place and route without relaxing legality"
 TOOL-045: "The stream's frame moving during the sequencer's fixed-target per-pin framing split lanes' pins; framed against pin 0 and checked, the image's own training trains all four lanes and passes every READ check in five of five loads"
+TOOL-046: "The controller image trains itself, hands over and tests the whole 1 GiB at 111.62 MHz: four of six read loads clean over about 85 GiB each, two failing on lane 1 at up to 3e-6 of words"
+TOOL-047: "LiteDRAM's controller logic closes 77.9 MHz in the open flow and 90.0 MHz in Gowin's against this PHY's 100 MHz, and its buffered command mode returns a port's reads out of order"
 TOOL-031: "LiteDRAM's control layer alone generates, synthesises and places in the open flow at ~1% of the LUTs, with none of TOOL-025's three gaps"
 TOOL-030: "Closed-page scatter READs do not reach the read capture in the open or the vendor build of the same RTL; no cadence, gate position or shared RCLKSEL recovers them, and failing READs return other rows' patterns"
 PROV-001: "Reuse source and interface ideas with their original license boundaries and attribution intact"
@@ -1059,6 +1063,32 @@ PROV-001: "Reuse source and interface ideas with their original license boundari
     - "TinyVCMI tools/ddr3_write_probe.py: hwtrain and Core.seq, frame 0x39 of 72 bytes"
     - "TinyVCMI docs/ddr3-open-flow.md: The hardware training on the board; The hardware training trains every lane"
   verification: "The open image, .bin SHA-256 bd1a556d0b82612ab4bd9947b6795d808d2afd8c1625afe52ab8b991889b8164, closing PCLK at 125.63 MHz and the link clock at 83.08 MHz, and its Gowin build, place option 3 and route option 1, .bin SHA-256 d6417534f85c429579b69df74f8ed24964f68592fdbdc9c139f46ef87bab08c0, closing PCLK at 103.029 MHz and clk50 at 51.833 MHz with no negative slack, equal on all 306 DDR3 tables, after every simulation of the build's gate under Icarus Verilog 14 passed; the open image was loaded as ddr3_hwtrain3.bin on the Tang Console 138K on 2026-10-25 five times for hwtrain followed by a stream of the framing pattern showing every lane's pins in agreement. tb_seq fails with the earlier fixed-target framing, with the 100% data rule and with no wait. The Gowin control was not loaded. Revised 2026-10-25: the record first stated that the sequencer locked 0 to 3 of 4 lanes per load, calibrated first or not, on the entry-68 image, SHA-256 d17425982499c894f9a1f30ed85e25bee6a36a3763f021700b34c0eecd705299, and suspected framing and then the data rule; a rebuild with per-lane diagnostics, SHA-256 8654695481a719391b64eedd72c45f4f1d5a83fce16bd9cb5945558d60ae227b, still trained 2 and 1 lanes in two loads and its diagnostics and pin checks located the framing fault. The desktop core was restored after every load and answered 0x54."
+
+- record_id: TOOL-046
+  topic_id: TOOL
+  title: "The DDR3 controller image works on the board unattended, with lane 1 failing in two of six loads"
+  status: VERIFIED
+  verified_date: 2026-10-26
+  statement: "fpga/ddr3_ctrl -- wr_core with AUTOTRAIN, dfi_phy with the write alignment built in at d 1, b 2, the in-order open-page controller ddr3_ctl and the memory test ddr3_bist -- built in the open flow at PCLK 111.62 MHz, link clock 89.95 MHz, equal on all 306 DDR3 tables to Gowin's build of the same sources. On the Tang Console 138K, with nothing sent from the host for five seconds after each load, the image initialised the array, trained all four lanes in 405 trials, found d 1, b 2, handed the bus over and ran its test, each pass writing all 2^25 words of the 1 GiB with address-, beat- and pass-derived data, reading them in order and reading 2^20 at random, about 0.74 s a pass. Four loads ran 81 or 82 passes in 60 s, about 2.84 x 10^9 words checked each, with no error; the first two the probe read, loads 2 and 3 after a reboot, failed 4,468 and 1,160 words on lane 1 and 48 and 26 on every lane over 44 and 81 passes, the first failing word 0x8260 on lane 1 in both."
+  consequence: "The PHY, its training and an in-order controller run the whole array at speed with no host, so the controller path is sound; the residual failures are a margin on lane 1 that some loads lack, not a logic fault, and must be found and closed before the AE350 depends on the memory. Selecting the write alignment at run time is not affordable in this corner of the die (docs/ddr3-open-flow.md, The PHY's DFI side), so a load that trains another alignment is refused rather than served."
+  sources:
+    - "TinyVCMI fpga/ddr3_ctrl: ctrl_glue.v, dfi_phy.v, ddr3_ctl.v, ddr3_bist.v; fpga/ddr3_write/wr_core.v: AUTOTRAIN, mode 6"
+    - "TinyVCMI tools/build_ddr3_ctrl.sh, tools/sim_ddr3_ctrl.sh, tools/ddr3_write_probe.py ctrl"
+    - "TinyVCMI docs/ddr3-open-flow.md: The controller image"
+  verification: "The open image, .bin SHA-256 1d5617587da0a38e97b609d8f8a0185b7e08d1361fb0aa5e748e0e9564fed64d, built by tools/build_ddr3_ctrl.sh after every simulation of its gate passed, including tools/sim_ddr3_ctrl.sh's two passes over 2^12 words against a model with DDR3-800 timing checks in memory clocks and its five failing mutants; Gowin's build, place option 3 and route option 1, reached 97.3 MHz and was not loaded. Placed on the card as ddr3_ctrl.bin and loaded seven times on 2026-10-26 after a reboot; the first load's report failed in the probe, which could not name mode 6, and the settings of loads 2 and 3 were not read. The desktop core was restored after every load and answered 0x54. Whether the failing loads were the first after the reboot because the board was still warming is untested, and the read to write turnaround is exercised only between passes."
+
+- record_id: TOOL-047
+  topic_id: TOOL
+  title: "LiteDRAM's controller does not meet this PHY's 100 MHz, and its buffered mode reorders a port's reads"
+  status: VERIFIED
+  verified_date: 2026-10-26
+  statement: "LiteDRAM's controller, generated by tools/litedram_ctrl_gen.py at the board's geometry with READ and WRITE on DFI phase 0, has a critical path from its ZQCS timer through the bank machines, the tFAW and tCCD controllers and the steerer to a bank machine's state, eleven logic levels and 12.8 ns: the whole image placed and routed at 77.9 MHz in the open flow, 77.2 MHz with placer timing weight 40 and timing-driven rip-up, and 90.0 MHz in Gowin EDA, against 100 MHz. With cmd_buffer_buffered the core issued two random READs of one native port in the opposite order to the requests and returned their data in that order; with with_auto_precharge off the image estimated 47 MHz before routing. Migen also names some signals differently from run to run unless PYTHONHASHSEED is fixed."
+  consequence: "A 1:4 DFI at a 400 MHz memory clock needs its controller at 100 MHz, so TinyVCMI uses its own in-order controller, ddr3_ctl, which with a registered decision closes 111.62 MHz in the same image (TOOL-046). LiteDRAM's buffered mode cannot be used where a port relies on its data returning in request order."
+  sources:
+    - "LiteDRAM at /run/media/vash/GIT/Tang-PSX/third_party/litedram, commit c454a44 (2026-09-24): core/multiplexer.py steerer, core/crossbar.py, core/controller.py ControllerSettings"
+    - "TinyVCMI tools/litedram_ctrl_gen.py: --setting and the fixed hash seed"
+    - "TinyVCMI docs/ddr3-open-flow.md: Why not LiteDRAM"
+  verification: "Measured on the controller image with the built-in write alignment: nextpnr's routed timing for the default core and with timing weight 40 and --tmg-ripup, Gowin's place option 3 and route option 1 report, and tools/sim_ddr3_ctrl.sh's model of the trained PHY, which with the buffered core saw READs at the pads in an order other than the native port's and its test get word 977's data for word 335. Not checked on hardware."
 
 - record_id: PROV-001
   topic_id: PROV

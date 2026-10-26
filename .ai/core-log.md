@@ -2361,3 +2361,66 @@ Step A1 of the approved controller cycle A is met: the image trains itself at st
 - User Test: N/A
 
 ---
+
+## 72 COMMIT Unreleased 2026-10-26T03:02:30-07:00
+
+#### Coming From:
+
+Unreleased 8cb3708
+
+#### Purpose:
+
+Build the DDR3 controller image of approved cycle B1, the proven PHY training itself at start-up and handing the bus to a memory controller with a test of the whole 1 GiB, and run it on the Tang unattended over several loads.
+
+#### Outcome:
+
+`tools/ddr3_write.py` now renders the controller's top, `fpga/ddr3_ctrl/top.v`, from the write image's templates, so its primitives, instance names and constraints are the write image's, with per-pin write data and the four DFI phases in each command ball's four memory clocks; the write image's top changes only by tying off `wr_core`'s new inputs. `wr_core` gains mode 6, in which it issues nothing and the controller owns the bus, `AUTOTRAIN`, which trains once the PHY is up, retries up to three times and requests mode 6 if the controller accepts the training, `ctrl_rd` so controller READs open the trained gate, command `0x3C` and frame `0x3D`; `fpga/ddr3_write/tb_wr.v` checks mode 6 issues nothing for 20 us and precharges on leaving. `fpga/ddr3_ctrl/dfi_phy.v` delays every command three PCLK, takes write data through a copy of the fill's delay line and reads at a fixed offset settable over the link. LiteDRAM was the planned controller, but its command logic closed 77.9 MHz in the open flow and 90.0 MHz in Gowin's against the 100 MHz the 1:4 DFI needs, no timing option helped, and its buffered mode returned a port's reads out of order (TOOL-047), so at the user's direction it was replaced by `fpga/ddr3_ctrl/ddr3_ctl.v`, an in-order open-page controller with per-bank timers whose decision reads only registers, driven by the test `fpga/ddr3_ctrl/ddr3_bist.v`. Selecting the write alignment at run time put a word and a beat multiplexer on each of the 256 bits, which left the image unplaceable in nextpnr and with 18 unrouted nets in Gowin's router, so `dfi_phy` has d 1, b 2 built in and `ctrl_glue` hands over only when training found them. `tools/sim_ddr3_ctrl.sh` runs the fabric on Verilator, which Migen's core had needed, against a model of the trained PHY with DDR3-800 timing checks in memory clocks: two passes over 2^12 words return all 16,384 read, with 76 refreshes, and the model with a late read offset or write alignment and the controller with tRAS, tRP or WRITE to READ short fail; tRCD, tRC and READ to WRITE spacing cannot be shown short by this traffic. `tools/build_ddr3_ctrl.sh` was rewritten, failing on constrained cells nextpnr cannot find (TOOL-032), and `tools/ddr3_write.py --vendor --ctrl` builds the fuse reference; the earlier controller's extracted PHY, training, adapter and their benches were removed. With the whole gate passing, the image, SHA-256 `1d5617587da0a38e97b609d8f8a0185b7e08d1361fb0aa5e748e0e9564fed64d`, closes PCLK at 111.62 MHz and the link clock at 89.95 MHz, equal on all 306 DDR3 tables to Gowin's build at 97.3 MHz, which is a fuse reference only. On the Tang after a reboot, as `ddr3_ctrl.bin`, every load trained, found d 1, b 2, handed over and ran the test with nothing sent from the host; each pass writes and reads the whole 1 GiB in about 0.74 s. Loads 4 to 7 each checked about 2.84 x 10^9 words in 60 s with no error; loads 2 and 3 failed 4,468 and 1,160 words on lane 1 and 48 and 26 on every lane, the first at word `0x8260` on lane 1 in both, and load 1's report failed because the probe could not name mode 6, now fixed. That the failing loads were the first after the reboot is a hypothesis. TOOL-046 and TOOL-047 were added and `docs/ddr3-open-flow.md` gained the section. The write image itself was not rebuilt, though its simulations pass with the shared `wr_core`. Board logs are in `build/ddr3_boot/ctrl_1` to `ctrl_7`, not committed. The desktop core was restored after every load and answered `0x54`. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering and active-log capacity.
+
+#### Next Steps:
+
+Bring for approval a cycle that finds lane 1's failures: give the test a per-pin and per-beat error count and the address of every failing word's first few, run loads from a cold start and after warm-up, and check whether the failing words were written or read wrong by reading them again; then close the margin, for example by re-centring lane 1's read delay or its write timing, and requalify over repeated cold boots. After that, B2 adds the DM mask path and B3 the AE350's bridge, which will also exercise the read to write turnaround the test reaches only between passes. The mid-calibration stall, the `D108` unused-pin contradiction and the `is_mipi` bug outside the DDR context remain open.
+
+#### Files Modified:
+
+- docs/ddr3-open-flow.md
+- fpga/ddr3_ctrl/ctrl_glue.v
+- fpga/ddr3_ctrl/ddr3_bist.v
+- fpga/ddr3_ctrl/ddr3_cmdmux.v
+- fpga/ddr3_ctrl/ddr3_ctl.v
+- fpga/ddr3_ctrl/ddr3_init.v
+- fpga/ddr3_ctrl/ddr3_phy.v
+- fpga/ddr3_ctrl/ddr3_rotlatch.v
+- fpga/ddr3_ctrl/ddr3_sync.v
+- fpga/ddr3_ctrl/ddr3_train.v
+- fpga/ddr3_ctrl/ddr3_wdata.v
+- fpga/ddr3_ctrl/dfi_adapter.v
+- fpga/ddr3_ctrl/dfi_phy.v
+- fpga/ddr3_ctrl/open.sdc
+- fpga/ddr3_ctrl/tb_ctrl.v
+- fpga/ddr3_ctrl/tb_ddr3_cmdmux.v
+- fpga/ddr3_ctrl/tb_ddr3_init.v
+- fpga/ddr3_ctrl/tb_ddr3_rotlatch.v
+- fpga/ddr3_ctrl/tb_ddr3_sync.v
+- fpga/ddr3_ctrl/tb_ddr3_train.v
+- fpga/ddr3_ctrl/tb_ddr3_wdata.v
+- fpga/ddr3_ctrl/tb_dfi_adapter.v
+- fpga/ddr3_ctrl/top.cst
+- fpga/ddr3_ctrl/top.v
+- fpga/ddr3_ctrl/vendor.sdc
+- fpga/ddr3_write/tb_wr.v
+- fpga/ddr3_write/top.v
+- fpga/ddr3_write/wr_core.v
+- tools/build_ddr3_ctrl.sh
+- tools/ddr3_write.py
+- tools/ddr3_write_probe.py
+- tools/litedram_ctrl_gen.py
+- tools/sim_ddr3_ctrl.sh
+- tools/sim_dfi_adapter.sh
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: N/A
+
+---
