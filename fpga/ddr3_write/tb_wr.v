@@ -499,13 +499,13 @@ module tb;
         listen = 1;
         request(8'h39, 8'h00);
         idle_wait = 0;
-        while (rx_n < 44 && idle_wait < 1200000) begin
+        while (rx_n < 76 && idle_wait < 1200000) begin
             #1000;
             idle_wait = idle_wait + 1000;
         end
         #2000;
         listen = 0;
-        if (rx_n != 44 || rx_buf[2] !== 8'h09 || rx_buf[3] !== 8'd40 || rx_buf[4][6] !== 1'b1)
+        if (rx_n != 76 || rx_buf[2] !== 8'h09 || rx_buf[3] !== 8'd72 || rx_buf[4][6] !== 1'b1)
             fail("frame 0x39 did not report the running training");
         request(8'h38, 8'h00);
         idle_wait = 0;

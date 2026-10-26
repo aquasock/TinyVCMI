@@ -244,10 +244,10 @@ class Core:
                 "rb": [u32(24 + 4 * lane) for lane in range(4)]}
 
     def seq(self) -> dict:
-        """The hardware training's result, command 0x39: 40 payload bytes."""
-        r = self.request(0x39, expect=4 + 40)
-        if r[2] != 0x09 or r[3] != 40:
-            raise RuntimeError(f"training frame is {r[2]:#04x}/{r[3]}, expected 0x09/40")
+        """The hardware training's result, command 0x39: 72 payload bytes."""
+        r = self.request(0x39, expect=4 + 72)
+        if r[2] != 0x09 or r[3] != 72:
+            raise RuntimeError(f"training frame is {r[2]:#04x}/{r[3]}, expected 0x09/72")
         b = r[4:]
         u32 = lambda o: int.from_bytes(b[o:o + 4], "little")
         cal = int.from_bytes(b[8:10], "little")
@@ -261,7 +261,12 @@ class Core:
                 "rot": [(rot >> (3 * l)) & 7 for l in range(4)],
                 "wpass": [k for k in range(64) if int.from_bytes(b[16:24], "little") >> k & 1],
                 "total": u32(24), "class": u32(28),
-                "tried": int.from_bytes(b[32:34], "little"), "cycles": u32(34)}
+                "tried": int.from_bytes(b[32:34], "little"), "cycles": u32(34),
+                # per lane over the search before it locked: trials passed, trials
+                # in the vendor's state whose data failed, and the nearest such
+                # miss as READs not its own of READs counted
+                "diag": [tuple(int.from_bytes(b[40 + 8 * l + 2 * f:42 + 8 * l + 2 * f], "little")
+                               for f in range(4)) for l in range(4)]}
 
     def log_page(self, page: int) -> dict:
         """Copy READ-log page `page` (0x33) and read it (0x34): 148 payload bytes."""
@@ -1648,6 +1653,10 @@ def main() -> int:
                       f"rclksel {rs} after {q['cal'][l]} CALIB pulse(s) at its gate; "
                       f"{q['u'][l]} passing taps above tap 4, "
                       f"{'whole' if q['centred'] >> l & 1 else 'NOT whole'} centred; rotation {q['rot'][l]}")
+                npass, nfail, bmiss, beval = q["diag"][l]
+                near = f"nearest {bmiss} of {beval} READs not its own" if nfail else "no near miss"
+                print(f"          search: {npass} trial(s) passed, {nfail} in the vendor's state "
+                      f"failed on data, {near}")
             print(f"  write alignment {'d %d b %d' % (q['walign'], q['wbeat']) if q['wfound'] else 'none'}; "
                   f"passing alignments {[(k >> 3, k & 7) for k in q['wpass']]}; "
                   f"there {q['class']} of {q['total']} READs right on all four lanes")

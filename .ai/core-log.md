@@ -2327,3 +2327,37 @@ With the user's approval and the Tang free, measure the hypothesis first: run th
 - User Test: N/A
 
 ---
+
+## 71 COMMIT Unreleased 2026-10-25T20:50:36-07:00
+
+#### Coming From:
+
+Unreleased f9630b3
+
+#### Purpose:
+
+Measure whether rare or early wrong READs fail the DDR3 hardware sequencer's trials, rebuild it with the host's 99% data rule, a wait after each HOLD release and per-lane diagnostics, and requalify the image's own training on the Tang over several loads until all four lanes train.
+
+#### Outcome:
+
+The host's verbose training on `ddr3_hwtrain.bin` with `--log-skip 0` returned every passing trial's first 256 READs whole on all four lanes, so no early wrong READ was seen at the host's pace. `fpga/ddr3_write/wr_core.v`'s `ddr3_seq` gained the 99% rule, registered, a 1 ms wait after a search setting's HOLD is released, and per-lane diagnostics that frame `0x39`, now 72 bytes, reports and `tools/ddr3_write_probe.py hwtrain` prints; on the Tang, as `ddr3_hwtrain2.bin`, SHA-256 `8654695481a719391b64eedd72c45f4f1d5a83fce16bd9cb5945558d60ae227b`, it still locked 2 and 1 lanes, and the diagnostics showed each failing lane at 0 of 344 counted READs its own in every trial in the vendor's state. Streaming the framing pattern after a run, and after an abort before any search CALIB, showed one or two pins of those lanes 2, 4 or 6 beats from the rest, with a host-trained control checked the same way in agreement: the stream's word frame moves now and then on every pin alike (TOOL-023), and the sequencer had pulsed pins one at a time to a target chosen before such a move. Each pin is now framed against its lane's pin 0 in the same snapshot, every lane's pins must agree in eight snapshots 50 us apart, and framing is redone up to three more times before error 2. `fpga/ddr3_write/tb_seq.v` now moves the stream's frame during framing, returns rare wrong READs and wrong data within 30 cycles of a HOLD release, and checks the diagnostics; it fails with the old framing, the 100% rule or no wait, and `fpga/ddr3_write/tb_wr.v` takes the 76-byte frame. The build's gate runs Icarus Verilog 14, which refused `ddr3_seq` from its first commit because its tasks set `state` before its declaration, now moved ahead of them; this corrects entries 68 and 69, whose simulation reruns used the system's Icarus 12 and whose entry-69 build skipped the gate. With every simulation passing, the open image, SHA-256 `bd1a556d0b82612ab4bd9947b6795d808d2afd8c1625afe52ab8b991889b8164`, closes PCLK at 125.63 MHz and its Gowin build, place option 3 and route option 1, `d6417534f85c429579b69df74f8ed24964f68592fdbdc9c139f46ef87bab08c0`, closes every clock, PCLK at 103.029 MHz, equal on all 306 DDR3 tables. On the Tang, as `ddr3_hwtrain3.bin`, `hwtrain` trained all four lanes in five of five loads in 2.22 to 2.23 s and 390 trials at the host training's settings, found the write alignment at d 1, b 2, and in each load about 725,830 isolated random READs over 8 banks x 16 rows x 128 bursts held their address's data on all four lanes, RVALID-held at offset 20 and raw at offset 11, none at offset 12, every lane's 1,024-READ log its own and its pins in agreement; the Gowin control was not loaded. Whether the wait and the 99% rule matter on the board is not shown. TOOL-045 was revised and `docs/ddr3-open-flow.md` gained the section. Board logs are in `build/ddr3_boot`, not committed. After a Tang reboot the TinyTang console moved between `/dev/ttyACM1` and `/dev/ttyACM0` beside an Arduino, whose port the tools' default once reached with two loads' console and probe traffic and no Tang access, so every later board call named the port found by USB id `ffff:5454`. The desktop core was restored after every load and answered `0x54`. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering and active-log capacity.
+
+#### Next Steps:
+
+Step A1 of the approved controller cycle A is met: the image trains itself at start-up to the host-proven settings, repeatably, and its trained READs return every address's data at a fixed latency. Propose cycle A's next step for approval: carry `ddr3_seq` and the PHY into a controller-owned image with its own constraint files, run training from reset without the link, add the DM mask path, and qualify it with per-pin independent data over the full 1 GiB array, every column and back-to-back READs. Make `tools/tang_console.py` and `tools/ddr3_write_probe.py` find the console by its USB id and refuse any other port, which the user has not yet approved. The mid-calibration stall, the `D108` unused-pin contradiction and the `is_mipi` bug outside the DDR context remain open.
+
+#### Files Modified:
+
+- docs/ddr3-open-flow.md
+- fpga/ddr3_write/tb_seq.v
+- fpga/ddr3_write/tb_wr.v
+- fpga/ddr3_write/wr_core.v
+- tools/ddr3_write_probe.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: N/A
+
+---

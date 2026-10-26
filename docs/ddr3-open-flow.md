@@ -2851,3 +2851,56 @@ READs after the first 1,024.  During the search every lane's read delay is at
 tap 4, 3 or 4 taps from the edge of its window (TOOL-041), so a rare wrong READ
 fails a sequencer trial that the host would pass, and a lock needs two passing
 trials in a row.  That is the next hypothesis, untested.
+
+## The hardware training trains every lane
+
+The cause was the sequencer's per-pin framing, not its pass rule.  A first
+rebuild gave `ddr3_seq` the probe's 99% rule, a 1 ms wait after each search
+setting's HOLD is released, and per-lane diagnostics in frame `0x39`, now 72
+bytes: trials passed, trials in the vendor's state whose data failed, and the
+nearest such miss.  On the board the lanes that never locked had returned 0 of
+344 counted READs as their own in every one of 36 or 54 trials in the vendor's
+state; where the host's training sees 9% to 44% own at the wrong CALIB counts.
+Streaming the framing pattern after the run showed one or two pins in each such
+lane 2, 4 or 6 beats from the rest, and the same split was there when the
+training was aborted after framing and before any search CALIB.  The stream's
+word frame moves now and then by the same amount on every pin (TOOL-023): the
+sequencer chose a lane's target once and pulsed its pins to it one at a time
+over a few milliseconds, so a move part way through left the pins already
+framed one memory clock or more from the rest.  `calibrate` survives it by
+checking over five sessions.
+
+Each pin is now framed against its lane's pin 0 in the same snapshot, and every
+lane's eight pins must then agree in eight snapshots 50 us apart, the framing
+being redone up to three more times before error 2.  `tools/sim_ddr3_seq.sh`
+moves the stream's frame two beats on every pin after every sixth framing
+pulse, makes a whole lane return 2 of its 360 counted READs wrong and every lane
+wrong in a batch begun within 30 cycles of a HOLD release, and checks each
+lane's two passing trials and nearest miss; the old fixed-target framing fails
+it with pins split, as on the board, and so do the 100% rule and a training
+without the wait.  Whether the wait and the 99% rule are needed on the board is
+not shown: the nearest data misses at the passing gate were 165 and 198 of 344.
+
+The image, SHA-256
+`bd1a556d0b82612ab4bd9947b6795d808d2afd8c1625afe52ab8b991889b8164`, closes PCLK
+at 125.63 MHz and the link clock at 83.08 MHz, and its Gowin build, place option
+3 and route option 1, SHA-256
+`d6417534f85c429579b69df74f8ed24964f68592fdbdc9c139f46ef87bab08c0`, closes PCLK
+at 103.029 MHz and the 50 MHz clock at 51.833 MHz with no negative slack; they
+are equal on all 306 DDR3 tables.  In five loads of `ddr3_hwtrain3.bin`
+`hwtrain` trained all four lanes in 2.22 to 2.23 s and 390 trials with nothing
+set from the host, lanes 0 and 1 at delay 1, offset 1, RCLKSEL 5 and lanes 2 and
+3 at RCLKSEL 4, each after 3 CALIB pulses and centred with 46 to 59 passing taps
+above tap 4, found the write alignment at d 1, b 2 with d 1, b 3 also passing,
+and in each load about 725,830 isolated random READs over 8 banks x 16 rows x
+128 bursts held their address's data on all four lanes, held from RVALID at
+offset 20 and raw at offset 11 alike, and none raw at offset 12; every lane's
+1,024-READ log was its own with an identity beat map, and every lane's pins
+agreed afterwards.
+
+Separately, the build's simulation gate runs the OSS CAD Suite's Icarus Verilog
+14, which refused `ddr3_seq` from its first commit because its tasks set
+`state` before its declaration; Icarus 12, the system's, accepts it.  The
+reruns recorded for TinyVCMI log entries 68 and 69 used Icarus 12, and entry
+69's build skipped the gate, so the sequencer had never passed the build's own
+gate before `state` was declared ahead of the tasks.

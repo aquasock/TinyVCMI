@@ -1529,9 +1529,9 @@ module wr_core (
     // ------------------------------------------------------------------
     // The data check per lane: READs whose lane held their own pattern among
     // those the lag classifier counts (nine distinct recent patterns, about
-    // 6% of READs), against how many it counted.  Taken from the existing
-    // counters, so rd_check is unchanged: edits there have stopped nextpnr
-    // finding a legal placement (TOOL-044).
+    // 6% of READs), against how many it counted, taken from the existing
+    // counters.  The placement failures once blamed on edits to rd_check were
+    // nextpnr's attempt-budget overflow (TOOL-044).
     wire [127:0] seq_lane_own = {rc_lag_cnt_s[32*30 +: 32], rc_lag_cnt_s[32*20 +: 32],
                                  rc_lag_cnt_s[32*10 +: 32], rc_lag_cnt_s[0 +: 32]};
     reg  seq_start = 1'b0, seq_abort = 1'b0, seq_ack = 1'b0;
@@ -1543,6 +1543,7 @@ module wr_core (
     wire [15:0] seq_lane_cal, seq_tried;
     wire [63:0] seq_wpass;
     wire [11:0] seq_rot;
+    wire [255:0] seq_diag;
     ddr3_seq seq (
         .clk(sys_clk), .start(seq_start && ready), .abort(seq_abort),
         .busy(seq_busy), .done(seq_done), .err(seq_err), .phase(seq_phase),
@@ -1553,9 +1554,9 @@ module wr_core (
         .locked(seq_locked), .lane_set(seq_lane_set), .lane_cal(seq_lane_cal),
         .lane_u(seq_lane_u), .centred(seq_centred), .wpass(seq_wpass), .walign(seq_walign),
         .wfound(seq_wfound), .rot(seq_rot), .fin_total(seq_fin_total),
-        .fin_class(seq_fin_class), .tried(seq_tried), .cycles(seq_cycles));
+        .fin_class(seq_fin_class), .tried(seq_tried), .cycles(seq_cycles), .diag(seq_diag));
 
-    // Training result (command 0x39), 40 payload bytes, little-endian.
+    // Training result (command 0x39), 72 payload bytes, little-endian.
     //    0     {done, busy, 2'b0, err[3:0]}  (err 1/2 framing, 3 no write
     //          alignment, 15 aborted)
     //    1     the sequencer's state, for progress
@@ -1570,7 +1571,11 @@ module wr_core (
     //   32-33  trials in the read search
     //   34-37  sys_clk cycles since the start
     //   38-39  0
-    wire [319:0] status7 = {16'd0, seq_cycles, seq_tried, seq_fin_class, seq_fin_total,
+    //   40+8l  lane l over the search before it locked, 16 bits each: trials
+    //          that passed, trials in the vendor's state whose data failed,
+    //          the fewest READs not its own in one of those, and the READs
+    //          counted in that one
+    wire [575:0] status7 = {seq_diag, 16'd0, seq_cycles, seq_tried, seq_fin_class, seq_fin_total,
                             seq_wpass, {4'd0, seq_rot}, seq_lane_u, seq_lane_cal,
                             seq_lane_set, {seq_wfound, 1'b0, seq_walign},
                             {seq_centred, seq_locked}, {2'd0, seq_phase},
@@ -1757,14 +1762,14 @@ module wr_core (
                                         (cmd_byte == 8'h2f) ? 8'd206 :
                                         (cmd_byte == 8'h31) ? 8'd40 :
                                         (cmd_byte == 8'h34) ? 8'd148 :
-                                        (cmd_byte == 8'h39) ? 8'd40 : 8'd127;
+                                        (cmd_byte == 8'h39) ? 8'd72 : 8'd127;
                         response_index <= 8'd0;
                         frame <= (cmd_byte == 8'h27) ? {632'd0, status2} :
                                  (cmd_byte == 8'h2b) ? {1376'd0, status3} :
                                  (cmd_byte == 8'h2f) ? status4 :
                                  (cmd_byte == 8'h31) ? {1328'd0, status5} :
                                  (cmd_byte == 8'h34) ? {464'd0, status6} :
-                                 (cmd_byte == 8'h39) ? {1328'd0, status7} : {632'd0, status};
+                                 (cmd_byte == 8'h39) ? {1072'd0, status7} : {632'd0, status};
                         if (cmd_byte == 8'h38) begin
                             seq_start <= rx_data[0];
                             seq_abort <= !rx_data[0];
@@ -1925,6 +1930,7 @@ module ddr3_seq #(
     parameter integer STREAMW = 100000, // a read stream settles, 2 ms
     parameter integer PWW = 1000,       // write mode per prewritten row, 20 us
     parameter integer CALW = 2500,      // after a framing CALIB pulse, 50 us
+    parameter integer WARM = 50000,     // after a search trial's settings, before its READs, 1 ms
     parameter integer SETTLE = 16       // after any command, for its synchronizers
 ) (
     input  wire         clk,
@@ -1964,7 +1970,12 @@ module ddr3_seq #(
     output reg  [31:0]  fin_total = 32'd0,
     output reg  [31:0]  fin_class = 32'd0,
     output reg  [15:0]  tried = 16'd0,
-    output reg  [31:0]  cycles = 32'd0     // since start
+    output reg  [31:0]  cycles = 32'd0,    // since start
+    // why lanes did or did not lock, over the search's trials before each
+    // lane locked; lane l at [64l +: 64], each field saturating at 0xFFFF:
+    // {READs counted in the nearest miss, its READs not the lane's own,
+    //  trials in the vendor's state whose data failed, trials that passed}
+    output reg  [255:0] diag = 256'd0
 );
     function [7:0] rcpat(input [3:0] i);
         case (i)
@@ -1987,24 +1998,42 @@ module ddr3_seq #(
         adiff = (a > b) ? a - b : b - a;
     endfunction
 
-    // per lane, the trial just read passes; and an alignment passes
-    reg [3:0] pass_now;
+    function [15:0] sat16(input [31:0] a);
+        sat16 = (a > 32'd65535) ? 16'hffff : a[15:0];
+    endfunction
+
+    // per lane, the trial just read: in the vendor's state, one RVALID cycle
+    // and one RBURST pulse per READ, and passing when at least 99% of the
+    // READs the lag classifier counted were its own, the probe's lane_pass
+    // rule; registered, the counters being still from S_B3 on
+    reg [3:0]  vstate = 4'd0, pass_now = 4'd0;
+    reg [63:0] miss = 64'd0;            // lane l at [16l +: 16]: READs not its own
+    reg [31:0] pm;
     integer pl;
-    always @(*) begin
-        for (pl = 0; pl < 4; pl = pl + 1)
-            pass_now[pl] = (tr_reads > 32'd100) && (lag_eval > 32'd50) &&
-                           (adiff(rv_cnt[32*pl +: 32], tr_reads) <= 32'd2) &&
-                           (adiff(rb_fall[32*pl +: 32], tr_reads) <= 32'd2) &&
-                           (lane_own[32*pl +: 32] == lag_eval);
-    end
+    always @(posedge clk)
+        for (pl = 0; pl < 4; pl = pl + 1) begin
+            pm = (lane_own[32*pl +: 32] < lag_eval) ? lag_eval - lane_own[32*pl +: 32] : 32'd0;
+            vstate[pl] <= (tr_reads > 32'd100) && (lag_eval > 32'd50) &&
+                          (adiff(rv_cnt[32*pl +: 32], tr_reads) <= 32'd2) &&
+                          (adiff(rb_fall[32*pl +: 32], tr_reads) <= 32'd2);
+            pass_now[pl] <= (tr_reads > 32'd100) && (lag_eval > 32'd50) &&
+                            (adiff(rv_cnt[32*pl +: 32], tr_reads) <= 32'd2) &&
+                            (adiff(rb_fall[32*pl +: 32], tr_reads) <= 32'd2) &&
+                            ({16'd0, sat16(pm)} * 32'd100 <= lag_eval);
+            miss[16*pl +: 16] <= sat16(pm);
+        end
     wire wpass_now = (rc_total > 32'd100) && (rc_class == rc_total);
 
-    // the snapshot's normalized word of lane sl, pin p: odd pins carry ~P
+    // the snapshot's normalized word of lane li, pin pi: odd pins carry ~P.
+    // A pin is framed against its lane's pin 0 in the same snapshot, not
+    // against a fixed target, because the stream's word frame moves now and
+    // then, uniformly over every pin (TOOL-023): pins pulsed to a target
+    // chosen before a move end one memory clock or more off the rest.
     reg  [1:0] li = 2'd0;
     reg  [2:0] pi = 3'd0;
     wire [7:0] wsel = snap[64 * li + 8 * pi +: 8];
     wire [7:0] wnorm = pi[0] ? ~wsel : wsel;
-    reg  [7:0] tgt = 8'h00;
+    wire [7:0] wref = snap[64 * li +: 8];
     reg        tgt_ok;
     reg  [7:0] tgt_w;
     integer tp;
@@ -2021,6 +2050,17 @@ module ddr3_seq #(
             end
         end
     end
+    // per lane, its eight pins agree on a rotation of the framing pattern
+    reg [3:0] agree;
+    integer al, ap;
+    always @(*)
+        for (al = 0; al < 4; al = al + 1) begin
+            agree[al] = isrot(snap[64 * al +: 8]);
+            for (ap = 1; ap < 8; ap = ap + 1)
+                if (((ap % 2 == 1) ? ~snap[64 * al + 8 * ap +: 8] : snap[64 * al + 8 * ap +: 8]) !=
+                    snap[64 * al +: 8])
+                    agree[al] = 1'b0;
+        end
 
     localparam [5:0] S_IDLE = 6'd0, S_SEND = 6'd1, S_SENT = 6'd2, S_WAIT = 6'd3, S_MODEW = 6'd4,
                      S_B1 = 6'd5, S_B2 = 6'd6, S_B3 = 6'd7,
@@ -2044,6 +2084,8 @@ module ddr3_seq #(
     reg [2:0]  mtgt = 3'd0;
     reg [4:0]  pw = 5'd0;               // prewrite row
     reg [4:0]  pc = 5'd0;               // framing pulses on this pin
+    reg [1:0]  ftry = 2'd0;             // framing passes redone after a failed check
+    reg [2:0]  vcnt = 3'd0;             // framing checks passed
     reg [7:0]  tcnt = 8'd0;
     reg [4:0]  pos = 5'd0;
     reg [3:0]  cal = 4'd0;
@@ -2054,6 +2096,7 @@ module ddr3_seq #(
     reg [7:0]  cnt = 8'd0;
     reg [6:0]  widx = 7'd0;
     reg        up_failed = 1'b0;
+    reg [5:0]  state = S_IDLE;          // declared before the tasks that set it
 
     task go_send(input [7:0] c, input [7:0] a, input [5:0] r);
         begin
@@ -2085,7 +2128,6 @@ module ddr3_seq #(
         end
     endtask
 
-    reg [5:0] state = S_IDLE;
     reg [3:0] nl;
     integer q;
     always @(posedge clk) begin
@@ -2109,6 +2151,7 @@ module ddr3_seq #(
                 wfound <= 1'b0;
                 tried <= 16'd0;
                 cycles <= 32'd0;
+                diag <= {4{16'd0, 16'hffff, 16'd0, 16'd0}};
                 pw <= 5'd0;
                 go_mode(3'd0, S_PW2);
             end
@@ -2131,7 +2174,7 @@ module ddr3_seq #(
                 state <= mret;
             S_B1: go_wait(BATCH, S_B2);
             S_B2: go_mode(3'd0, S_B3);
-            S_B3: go_wait(24'd8, bret);         // the counters reach their copies
+            S_B3: go_wait(24'd16, bret);        // the counters reach their copies and the rule
             // ---- 1. prewrite
             S_PW2: go_send(8'h0f, {5'd0, pw[2:0]}, S_PW3);
             S_PW3: go_send(8'h20, {7'd0, pw[3]}, S_PW4);
@@ -2153,23 +2196,24 @@ module ddr3_seq #(
             S_FR1: go_mode(3'd3, S_FR2);
             S_FR2: begin
                 li <= 2'd0;
+                ftry <= 2'd0;
                 go_wait(STREAMW, S_FR4);
             end
             S_FR4: if (!tgt_ok) begin
                 err <= 4'd1;
                 go_mode(3'd0, S_FAIL);
             end else begin
-                tgt <= tgt_w;
-                pi <= 3'd0;
+                pi <= 3'd1;
                 pc <= 5'd0;
                 state <= S_FR5;
             end
-            S_FR5: if (wnorm == tgt) begin
+            S_FR5: if (wnorm == wref && isrot(wref)) begin
                 pc <= 5'd0;
                 if (pi == 3'd7) begin
-                    if (li == 2'd3)
-                        go_mode(3'd0, S_ST0);
-                    else begin
+                    if (li == 2'd3) begin
+                        vcnt <= 3'd0;
+                        state <= S_FR8;
+                    end else begin
                         li <= li + 2'd1;
                         state <= S_FR4;
                     end
@@ -2183,6 +2227,23 @@ module ddr3_seq #(
                 go_send(8'h08, {3'd0, li, pi}, S_FR6);
             end
             S_FR6: go_wait(CALW, S_FR5);
+            // every lane's pins agree in eight snapshots CALW apart, as the
+            // probe's calibrate checks over its sessions; else frame again
+            S_FR8: if (agree != 4'hf) begin
+                if (ftry == 2'd3) begin
+                    err <= 4'd2;
+                    go_mode(3'd0, S_FAIL);
+                end else begin
+                    ftry <= ftry + 2'd1;
+                    li <= 2'd0;
+                    state <= S_FR4;
+                end
+            end else if (vcnt == 3'd7)
+                go_mode(3'd0, S_ST0);
+            else begin
+                vcnt <= vcnt + 3'd1;
+                go_wait(CALW, S_FR8);
+            end
             // ---- the checker's settings, as the probe leaves them
             S_ST0: go_send(8'h2a, 8'h00, S_ST1);        // two-word reassembler off
             S_ST1: go_send(8'h09, 8'd40, S_ST2);        // access period
@@ -2232,14 +2293,26 @@ module ddr3_seq #(
                     endcase
                 end
             end
-            S_S5: go_batch(S_S7);
+            S_S5: go_wait(WARM, S_S6);          // the lanes settle, as between the probe's trials
+            S_S6: go_batch(S_S7);
             S_S7: begin
                 nl = locked | (pass_now & prev & ~locked);
-                for (q = 0; q < 4; q = q + 1)
+                for (q = 0; q < 4; q = q + 1) begin
                     if (!locked[q] && pass_now[q] && prev[q]) begin
                         lane_set[8*q +: 8] <= {pos, rs};
                         lane_cal[4*q +: 4] <= cal;
                     end
+                    if (!locked[q] && pass_now[q] && diag[64*q +: 16] != 16'hffff)
+                        diag[64*q +: 16] <= diag[64*q +: 16] + 16'd1;
+                    if (!locked[q] && vstate[q] && !pass_now[q]) begin
+                        if (diag[64*q + 16 +: 16] != 16'hffff)
+                            diag[64*q + 16 +: 16] <= diag[64*q + 16 +: 16] + 16'd1;
+                        if (miss[16*q +: 16] < diag[64*q + 32 +: 16]) begin
+                            diag[64*q + 32 +: 16] <= miss[16*q +: 16];
+                            diag[64*q + 48 +: 16] <= sat16(lag_eval);
+                        end
+                    end
+                end
                 prev <= pass_now & ~locked;
                 locked <= nl;
                 tried <= tried + 16'd1;

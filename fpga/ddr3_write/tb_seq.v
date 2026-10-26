@@ -9,7 +9,9 @@
 //   * the sixteen rows are prewritten, bank 0..7 and row 0 or 1 with their
 //     patterns, each in write mode;
 //   * each pin starts at its own framing and is pulsed with CALIB until it
-//     agrees with its lane, so every lane ends with one framing;
+//     agrees with its lane, so every lane ends with one framing, while the
+//     stream's word frame moves by two beats on every pin after every sixth
+//     framing pulse, as the board's does now and then (TOOL-023);
 //   * RLOADN and STEP - 4 RMOVE pulses at RDIR = 1 leave every tap at 4;
 //   * a lane is in the vendor's state only at its gate position and from its
 //     RCLKSEL up, and its words are whole only when its lane-wide CALIB count
@@ -17,6 +19,11 @@
 //     passing RCLKSEL, with the CALIB count of that sweep;
 //   * every setting the search changes after its first trial is changed under
 //     a HOLD on that lane;
+//   * a whole lane still returns 2 of its 360 counted READs wrong, which the
+//     99% rule passes, and every lane's data is wrong in a batch begun fewer
+//     than RESTART cycles after a HOLD is released, which the warm-up avoids;
+//   * the diagnostics report each lane's two passing trials and its nearest
+//     miss in the vendor's state;
 //   * centring finds each lane's window and leaves its tap at the window's
 //     middle, where it passes;
 //   * the write alignment is the first of the two that pass, and the lanes'
@@ -39,8 +46,11 @@ module tb_seq;
     integer C [0:3];                    // whole when the lane's CALIB count mod 8 is this
     integer U [0:3];                    // whole taps above tap 4
     integer F [0:31];                   // each pin's starting framing
+    integer drift = 0;                  // the stream's frame move, every pin alike
+    integer fpulses = 0;
     localparam integer W = 12;          // write alignments W and W + 1 pass
     localparam [7:0] STEP = 8'd43;
+    localparam integer RESTART = 30;    // cycles after a HOLD release before READs are right
 
     reg start = 1'b0, abort = 1'b0;
     wire busy, done, req, wfound;
@@ -52,6 +62,7 @@ module tb_seq;
     wire [15:0] lane_cal, tried;
     wire [63:0] wpass;
     wire [11:0] rot;
+    wire [255:0] diag;
 
     // the model's state and its answers
     reg [2:0] mode = 3'd0;
@@ -63,9 +74,13 @@ module tb_seq;
     integer dly [0:3], gk [0:3], rcs [0:3], tap [0:3], lcal [0:3], pinc [0:31];
     integer hold_mask = 0, trials = 0, waddr = 0, prew = 0, rowlo = 0, bank = 0;
     reg searching = 1'b0;
+    integer cyc = 0, rel_cyc = -1000000;
+    reg early = 1'b0;
+    always @(posedge clk) cyc <= cyc + 1;
     reg [15:0] prew_seen = 16'd0;
 
-    ddr3_seq #(.BATCH(200), .FILLW(50), .STREAMW(50), .PWW(20), .CALW(10), .SETTLE(4)) dut (
+    ddr3_seq #(.BATCH(200), .FILLW(50), .STREAMW(50), .PWW(20), .CALW(10), .WARM(40),
+               .SETTLE(4)) dut (
         .clk(clk), .start(start), .abort(abort), .busy(busy), .done(done), .err(err),
         .phase(phase), .req(req), .cmd(cmd), .arg(arg), .ack(ack),
         .st(st), .step(STEP), .snap(snap), .tr_reads(tr_reads), .rv_cnt(rv_cnt),
@@ -74,7 +89,8 @@ module tb_seq;
         .last_rot({3'd4, 3'd0, 3'd0, 3'd0}),
         .locked(locked), .lane_set(lane_set), .lane_cal(lane_cal), .lane_u(lane_u),
         .centred(centred), .wpass(wpass), .walign(walign), .wfound(wfound), .rot(rot),
-        .fin_total(fin_total), .fin_class(fin_class), .tried(tried), .cycles(cycles));
+        .fin_total(fin_total), .fin_class(fin_class), .tried(tried), .cycles(cycles),
+        .diag(diag));
 
     function [7:0] rotb(input [7:0] p, input integer r);
         rotb = (p << (r % 8)) | (p >> (8 - (r % 8)));
@@ -86,8 +102,8 @@ module tb_seq;
     always @(posedge clk)
         for (l = 0; l < 4; l = l + 1)
             for (p = 0; p < 8; p = p + 1)
-                snap[64*l + 8*p +: 8] = (p % 2) ? ~rotb(8'h0b, F[8*l + p] + pinc[8*l + p])
-                                                 : rotb(8'h0b, F[8*l + p] + pinc[8*l + p]);
+                snap[64*l + 8*p +: 8] = (p % 2) ? ~rotb(8'h0b, F[8*l + p] + pinc[8*l + p] + drift)
+                                                 : rotb(8'h0b, F[8*l + p] + pinc[8*l + p] + drift);
 
     function in_state(input integer ln);
         in_state = (4 * dly[ln] + gk[ln] == P[ln]) && (rcs[ln] >= R[ln]);
@@ -106,7 +122,7 @@ module tb_seq;
             for (ln = 0; ln < 4; ln = ln + 1) begin
                 rv_cnt[32*ln +: 32] = in_state(ln) ? 6000 : 18000;
                 rb_fall[32*ln +: 32] = 6000;
-                lane_own[32*ln +: 32] = whole(ln) ? 360 : 112;
+                lane_own[32*ln +: 32] = !whole(ln) ? 112 : early ? 300 : 358;
             end
             rc_class = (waddr == W || waddr == W + 1) ? 5990 : 600;
         end
@@ -125,13 +141,20 @@ module tb_seq;
                         prew_seen[{rowlo[0], bank[2:0]}] = 1'b1;
                         prew = prew + 1;
                     end
-                    if (arg[2:0] == 3'd4) trials = trials + 1;
+                    if (arg[2:0] == 3'd4) begin
+                        trials = trials + 1;
+                        early = (cyc - rel_cyc < RESTART);
+                    end
                     mode <= arg[2:0];
                 end
                 8'h0f: bank = arg;
                 8'h20: rowlo = arg;
                 8'h08: begin
                     pinc[arg[4:0]] = pinc[arg[4:0]] + 1;
+                    if (!searching) begin
+                        fpulses = fpulses + 1;
+                        if (fpulses % 6 == 0) drift = drift + 2;
+                    end
                     if (searching && arg[2:0] == 3'd7) lcal[arg[4:3]] = lcal[arg[4:3]] + 1;
                 end
                 8'h0a: begin
@@ -143,7 +166,10 @@ module tb_seq;
                         if (arg[0]) tap[n] = (tap[n] > 0) ? tap[n] - 1 : 0;
                         else tap[n] = tap[n] + 1;
                     end
-                8'h35: hold_mask = (arg[7:4] == 4'hf) ? arg[3:0] : 0;
+                8'h35: begin
+                    if (hold_mask != 0 && !(arg[7:4] == 4'hf && arg[3:0] != 0)) rel_cyc = cyc;
+                    hold_mask = (arg[7:4] == 4'hf) ? arg[3:0] : 0;
+                end
                 8'h2c, 8'h2d, 8'h2e: begin
                     if (trials > 0 && !hold_mask[arg[7:6]])
                         fail("a lane's setting changed without a HOLD on it");
@@ -202,6 +228,15 @@ module tb_seq;
                 fail("a lane locked at the wrong CALIB count");
             end
             if (lane_u[8*l +: 8] != U[l]) fail("a lane's window was measured wrong");
+            if (diag[64*l +: 16] != 2) begin
+                $display("      lane %0d passed %0d trial(s) before locking", l, diag[64*l +: 16]);
+                fail("a lane's passing trials were not its two");
+            end
+            if (diag[64*l + 16 +: 16] == 0 || diag[64*l + 32 +: 16] != 248 ||
+                diag[64*l + 48 +: 16] != 360) begin
+                $display("      lane %0d diag %h", l, diag[64*l +: 64]);
+                fail("a lane's nearest miss in the vendor's state was reported wrong");
+            end
             if (tap[l] != (4 + U[l]) / 2) begin
                 $display("      lane %0d tap %0d, want %0d", l, tap[l], (4 + U[l]) / 2);
                 fail("a lane was not left at the middle of its window");
