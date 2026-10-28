@@ -2522,3 +2522,33 @@ Get a Gowin build of these sources that routes, by `tools/ddr3_write.py --vendor
 - User Test: NOT RUN
 
 ---
+
+## 76 COMMIT Unreleased 2026-10-28T15:41:10-07:00
+
+#### Coming From:
+
+Unreleased 99ca037
+
+#### Purpose:
+
+Get a Gowin fuse reference for the DDR3 controller image with the falling-edge I/O boundary of entry 75, build and table-check that image, and run it from a cold start against entry 72's image to learn whether the boundary cures the cold failures on lane 1.
+
+#### Outcome:
+
+`tools/ddr3_write.py --vendor-sweep --ctrl --jobs 4` found that place option 1 with route option 0 routes every net in about six minutes, at PCLK 53.639 MHz and the 50 MHz clock 47.828 MHz, and at the user's direction the sweep was stopped there with three variants still routing and that build installed as `build/ddr3_ctrl/vendor`, a fuse reference only, its sources byte for byte the repository's. `tools/build_ddr3_ctrl.sh` with `TINYVCMI_SKIP_SIM=1`, the gate having passed on these sources in entry 75, closed PCLK at 101.21 MHz and the link clock at 75.17 MHz with no hold violation reported, found the image equal to the reference on all 306 DDR3 tables and wrote it, SHA-256 `5854d04ca508f512fa8702d9b1e5adea2a809ab2df0641e62e5ca05b277a5306`; no vendor control was written. On the Tang, from one cold start after the user cooled the board with air, the retimed image as `ddr3_ctrl_rt.bin` and the TOOL-046 image `1d5617587da0a38e97b609d8f8a0185b7e08d1361fb0aa5e748e0e9564fed64d` as `ddr3_ctrl_1d56.bin` were loaded in turn with `tools/ddr3_write_probe.py ctrl --watch 60 --diag` on the port found by USB id `ffff:5454`: the retimed image's start-up training never finished in either of two loads, no lane locking and the controller never taking the bus, while the old image between them trained all four lanes and failed 8,778 words on lane 1 and 76 on each other lane over about 2.7 x 10^9, the first at word `0x8260` as before, and the A/B was stopped there for approval. A Gowin build of the same sources with falling-edge `report_timing` added to its SDC put every I/O-cell crossing well inside half a PCLK, and route delays read by a nextpnr `--post-route` hook from a rerun of the open netlist were at most 3.9 ns, so the half-PCLK budget is not the fault. The fault found is in synthesis: Yosys folded the command multiplexer's select and enable into 25 of the boundary registers, the four command strobes, `rloadn_b`, `wloadn_b`, 16 `pb_addr` and 3 `pb_ba` bits, and built them as rising-edge `DFFSE` and `DFFRE` clocked by a LUT1 inverter of `pclk` on fabric routing up to 4.9 ns long, so those bits launch near the rising edge their serializers sample at while the rest of each command leaves half a PCLK earlier; that this is why training fails is the leading hypothesis, untested. TOOL-050 was revised, TOOL-049 annotated, TOOL-051 added and `docs/ddr3-open-flow.md` gained the section. Board logs are in `build/ddr3_boot/ab_rt1`, `ab_old1` and `ab_rt2`, and the Gowin boundary report in `build/ddr3_ctrl/vendor_bnd`, not committed. The desktop core was restored after every load and answered `0x54`. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering and active-log capacity.
+
+#### Next Steps:
+
+Bring for approval a change to `tools/ddr3_write.py`'s `BOUNDARY` that makes every falling-edge boundary register an instantiated `DFFN` on `pclk` with nothing absorbed into it, its input taken from a plain wire, together with a check in `tools/build_ddr3_ctrl.sh` that fails the build when any boundary register is not a `DFFN` clocked straight from the CLKDIV or any LUT drives a clock net; then rebuild with p1r0's options as the fuse reference, rerun the simulation gate, and once the user says the Tang is free and cold run the A/B again, the old image as the control, which still fails cold. If the retimed image trains and is clean cold, record it and go on to B2, the DM mask path, and B3, the AE350's bridge. Optional later work the user has deferred: about 14 of the open flow's 30 minutes per build go to the heap placer's strict legalisation since the TOOL-044 budget fix, and the 306-table check needs a Gowin build of identical sources although the tables depend only on the PHY and top, so a capped legaliser budget and a PHY-only fuse reference could each shorten every cycle. The write image's boundary remains untimed, and the mid-calibration stall, the `D108` unused-pin contradiction and the `is_mipi` bug outside the DDR context remain open.
+
+#### Files Modified:
+
+- docs/ddr3-open-flow.md
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: N/A
+
+---

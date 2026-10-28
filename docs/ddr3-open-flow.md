@@ -3142,3 +3142,54 @@ re-read compare, and the link clock passes; nextpnr reports no hold
 violation.  Gowin's default build of it left 441 nets unrouted after about
 two hours, so there is no fuse reference yet, the table check has not run and
 no raw image has been written.
+
+### The retimed boundary on the board, and what Yosys made of it
+
+A fuse reference came from `tools/ddr3_write.py --vendor-sweep --ctrl`: place
+option 1 with route option 0 routed every net in about six minutes, at PCLK
+53.639 MHz and the 50 MHz clock 47.828 MHz, and with the user's agreement the
+sweep was stopped there and that build installed as the reference only.
+`tools/build_ddr3_ctrl.sh` with `TINYVCMI_SKIP_SIM=1` then rebuilt the open
+image, PCLK 101.21 MHz and the link clock 75.17 MHz with no hold violation
+reported, and found it equal to the reference on all 306 DDR3 tables; the raw
+image is SHA-256
+`5854d04ca508f512fa8702d9b1e5adea2a809ab2df0641e62e5ca05b277a5306`.
+
+On the Tang, from one cold start after the user cooled the board with air, the
+retimed image and entry 72's image (`1d5617587da0…`) were loaded in turn with
+`ctrl --watch 60 --diag`.  The retimed image never finished its start-up
+training in either of two loads: 315 and 125 trials had run at the first
+report, no lane ever locked, and the controller never took the bus in 60 s.
+The old image between them trained all four lanes as before and failed 8,778
+words on lane 1 and 76 on each other lane over about 2.7 x 10^9, the first at
+word `0x8260` on lane 1, as in entries 72 and 73.  So the cold failure is
+still there to be fixed, and the retiming as built breaks the start-up.
+
+Gowin times the I/O cells, so a build of the same sources and options with
+`report_timing -fall_to_clock` and `-fall_from_clock` added to its SDC, whose
+bitstream is not p1r0's though its placement options are, shows what they
+need: each deserializer word reaches its falling-edge register 1.0 to 2.7 ns
+after the rising edge, RVALID 1.7 to 2.6 ns, and every falling-edge register
+reaches its serializer or DQS input with at least 2.8 ns of setup slack, hold
+being 5 ns or more everywhere.  Only fabric paths into and out of those
+registers miss, and those are the ones nextpnr times.  In the open flow's own
+placement, route delays read from a `--post-route` hook on a rerun of the same
+netlist, at the same Fmax, are at most 2.8 ns from a deserializer, 3.7 ns from
+an RVALID and 3.9 ns to a DQS input.  Half a PCLK was enough.
+
+What was not enough was the registers themselves.  Yosys folded the multiplexer
+in front of the commands, the controller's own-bus select and the core's mode
+enable, into 25 of them as a synchronous set or reset and a clock enable, and
+`synth_gowin` has no falling-edge cell for that, so it built them as
+rising-edge `DFFSE` and `DFFRE` behind a LUT1 that inverts `pclk` onto
+ordinary routing, up to 4.9 ns from the inverter to a register.  They are
+`pb_cs_n`, `pb_ras_n`, `pb_cas_n`, `pb_we_n`, `rloadn_b`, `wloadn_b`, 16 of the
+31 `pb_addr` bits and 3 of the 6 `pb_ba` bits; the rest of the boundary is
+true `DFFN` on the clock divider's net.  Those 25 launch late by the inverter
+and its route, close to the rising edge at which the serializers sample them,
+while the other bits of the same command leave half a PCLK early, so a command
+can split across two PCLK.  nextpnr cannot see it, the endpoints being
+serializers it does not time, and Gowin's report says nothing about it
+because in Gowin's build `pb_cs_n`, `rloadn_b` and `wloadn_b` are timed as
+endpoints latched on PCLK's falling edge, true falling-edge registers there.
+That this is why training fails is the leading hypothesis, not yet tested.
