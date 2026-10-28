@@ -244,46 +244,69 @@ def ctrl_cmd(p: str) -> dict:
 #: of setup and of hold whatever its routing, and the fabric side of each is
 #: an ordinary register-to-register path nextpnr times.  The consumers still
 #: see each word at the rising edge they did, so no latency changes.
-BOUNDARY = """\
-    wire [255:0] dq_io;                 // the deserializers' outputs
-    wire [3:0] rvalid_io;
-    reg [255:0] dq_q = 256'd0;
-    reg [3:0] rvalid = 4'd0;
-    reg [15:0] read_en_b = 16'd0;
-    reg [11:0] rclksel_b = 12'd0;
-    reg [3:0] hold_b = 4'd0, rmove_b = 4'd0;
-    reg rdir_b = 1'b0, rloadn_b = 1'b1, wloadn_b = 1'b1, cke_b = 1'b0;
-    reg [31:0] wstep_b = 32'd0, calib_b = 32'd0;
-    reg [255:0] wdq_b = 256'd0;
-    reg dq_drive_b = 1'b0, dqs_drive_b = 1'b0;
-    reg [3:0] pb_cs_n = 4'hf, pb_ras_n = 4'hf, pb_cas_n = 4'hf, pb_we_n = 4'hf;
-    reg [11:0] pb_ba = 12'd0;
-    reg [63:0] pb_addr = 64'd0;
-    reg pb_odt = 1'b0;
-    always @(negedge pclk) begin
-        dq_q <= dq_io;
-        rvalid <= rvalid_io;
-        read_en_b <= read_en;
-        rclksel_b <= rclksel;
-        hold_b <= hold;
-        rmove_b <= rmove;
-        rdir_b <= rdir;
-        rloadn_b <= rloadn;
-        wloadn_b <= wloadn;
-        wstep_b <= wstep;
-        calib_b <= calib;
-        wdq_b <= wdq;
-        dq_drive_b <= p_dq_drive;
-        dqs_drive_b <= p_dqs_drive;
-        pb_cs_n <= p_cs_n;
-        pb_ras_n <= p_ras_n;
-        pb_cas_n <= p_cas_n;
-        pb_we_n <= p_we_n;
-        pb_ba <= p_ba;
-        pb_addr <= p_addr;
-        pb_odt <= p_odt;
-        cke_b <= cke;
-    end"""
+#:
+#: Each of those registers is a `bnd_ff` on pclk itself: an instantiated
+#: DFFN, or DFFNS where it must start high, for Yosys.  Written as `always
+#: @(negedge pclk)`, Yosys folded the enable and set of the core registers
+#: feeding 25 of them into the copies and built them as rising-edge flops
+#: behind a LUT1 inverting pclk on fabric routing, the command bits among
+#: them (TOOL-051); build_ddr3_ctrl.sh now refuses that.  Gowin's GW5A
+#: library has no falling-edge primitive, its synthesis setting the edge in
+#: the CLS, so Gowin and the simulators get the plain falling-edge register.
+#: (output, its width, input, starts high)
+BOUNDARY_REGS = [
+    ("dq_q", 256, "dq_io", False), ("rvalid", 4, "rvalid_io", False),
+    ("read_en_b", 16, "read_en", False), ("rclksel_b", 12, "rclksel", False),
+    ("hold_b", 4, "hold", False), ("rmove_b", 4, "rmove", False),
+    ("rdir_b", 1, "rdir", False), ("rloadn_b", 1, "rloadn", True),
+    ("wloadn_b", 1, "wloadn", True), ("wstep_b", 32, "wstep", False),
+    ("calib_b", 32, "calib", False), ("wdq_b", 256, "wdq", False),
+    ("dq_drive_b", 1, "p_dq_drive", False), ("dqs_drive_b", 1, "p_dqs_drive", False),
+    ("pb_cs_n", 4, "p_cs_n", True), ("pb_ras_n", 4, "p_ras_n", True),
+    ("pb_cas_n", 4, "p_cas_n", True), ("pb_we_n", 4, "p_we_n", True),
+    ("pb_ba", 12, "p_ba", False), ("pb_addr", 64, "p_addr", False),
+    ("pb_odt", 1, "p_odt", False), ("cke_b", 1, "cke", False),
+]
+
+
+def boundary() -> str:
+    lines = ["    wire [255:0] dq_io;                 // the deserializers' outputs",
+             "    wire [3:0] rvalid_io;"]
+    for q, w, _, _ in BOUNDARY_REGS:
+        lines.append(f"    wire [{w - 1}:0] {q};" if w > 1 else f"    wire {q};")
+    for hi in (False, True):
+        regs = [r for r in BOUNDARY_REGS if r[3] == hi]
+        n = sum(r[1] for r in regs)
+        s = "hi" if hi else "lo"
+        lines += [f"    wire [{n - 1}:0] bnd_{s}_d = {{{', '.join(r[2] for r in regs)}}};",
+                  f"    wire [{n - 1}:0] bnd_{s}_q;",
+                  f"    assign {{{', '.join(r[0] for r in regs)}}} = bnd_{s}_q;",
+                  f"    genvar bnd_{s}_i;",
+                  f"    generate for (bnd_{s}_i = 0; bnd_{s}_i < {n}; bnd_{s}_i = bnd_{s}_i + 1)"
+                  f" begin : bnd_{s}",
+                  f"        bnd_ff #(.INIT(1'b{int(hi)})) ff (.CLK(pclk), .D(bnd_{s}_d[bnd_{s}_i]),"
+                  f" .Q(bnd_{s}_q[bnd_{s}_i]));",
+                  "    end endgenerate"]
+    return "\n".join(lines)
+
+
+BOUNDARY = boundary()
+
+#: one falling-edge boundary register; see BOUNDARY_REGS
+BOUNDARY_FF = """\
+module bnd_ff #(parameter [0:0] INIT = 1'b0) (input wire CLK, input wire D, output wire Q);
+`ifdef YOSYS
+    generate if (INIT) begin : s
+        DFFNS ff (.CLK(CLK), .D(D), .SET(1'b0), .Q(Q));
+    end else begin : r
+        DFFN ff (.CLK(CLK), .D(D), .Q(Q));
+    end endgenerate
+`else
+    reg q = INIT;
+    always @(negedge CLK) q <= D;
+    assign Q = q;
+`endif
+endmodule"""
 
 #: the DQS and deserializer templates' boundary nets in the controller image
 LANE_B = (LANE.replace("read_en[", "read_en_b[").replace("rclksel[", "rclksel_b[")
@@ -375,6 +398,8 @@ def render(ctrl: bool = False) -> str:
         out.append("    wr_core core (\n" + WR_CORE_PORTS + """
         .ctrl_rd(1'b0), .ctrl_accept(1'b0), .ext_status(512'd0));""")
     out.append("endmodule")
+    if ctrl:
+        out.append(BOUNDARY_FF)
     out.append("`default_nettype wire")
     return "\n".join(out) + "\n"
 

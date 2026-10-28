@@ -2552,3 +2552,36 @@ Bring for approval a change to `tools/ddr3_write.py`'s `BOUNDARY` that makes eve
 - User Test: N/A
 
 ---
+
+## 77 COMMIT Unreleased 2026-10-28T16:53:22-07:00
+
+#### Coming From:
+
+Unreleased 007a4ef
+
+#### Purpose:
+
+Make every falling-edge register of the DDR3 controller image's I/O boundary a true falling-edge cell on PCLK, make the build refuse any other mapping, and test the image from a cold start against entry 72's image.
+
+#### Outcome:
+
+Arora V has no falling-edge register primitive, each CLS's clock being set to either edge (DEV-002), and Gowin's GW5A simulation library has no `DFFN`, so `tools/ddr3_write.py` now builds each of the 715 boundary bits as a `bnd_ff`, an instantiated `DFFN`, or `DFFNS` for the 18 that start high, under Yosys and a plain falling-edge register for Gowin and the simulators, from the same source, with every boundary net's name kept; `fpga/ddr3_ctrl/top.v` was regenerated and the write image's top is unchanged. `tools/build_ddr3_ctrl.sh` now fails after synthesis unless the 697 `DFFN` and 18 `DFFNS` are there, clocked straight from the CLKDIV, and no LUT drives any clock pin; entry 76's netlist fails it. The simulation gate passed under Icarus 14 and the top elaborates against Gowin's primitive models. Gowin's place option 1 route option 0 build of these sources routed at PCLK 50.719 MHz as the fuse reference, and the open image closed PCLK at 106.52 MHz and the link clock at 81.98 MHz with no hold violation reported, equal on all 306 DDR3 tables, SHA-256 `b1dfbb5cc2ad058bcbc6621affbf2aa14cbd560b914628290a67c705411b563b`. On the Tang, now running TinyTang build `ea7272c`, the image as `ddr3_ctrl_dffn.bin` trained all four lanes in each of three loads, 422 trials at the old image's settings and d 1, b 2, but after 7 CALIB pulses on every lane where the old image takes 3 or 5, so the falling-edge cells cured the training failure of entry 76; its controller then took the bus and the memory test failed every word from `0x204`, `0x604` and `0x203`, the first re-read wrong differently, and stopped in state 5 with 33,554,432 words written and 33,559,416 checked in every load. A sweep of the read offset over 6 to 9 on a fourth load could not run, because the controller issued nothing after the hung test was stopped and restarted. Entry 72's image, loaded once between them about two minutes into the session, trained as before and ran about 2.7 x 10^9 words without error, so this session did not reproduce the cold failure. The leading hypothesis is that the boundary moved a capture or launch by one PCLK on all bits or some, which training tolerates by judging READs by lag and the controller's fixed read offset does not; no simulation covers the generated controller top's training, controller and test together. DEV-002 was added, TOOL-051 revised and `docs/ddr3-open-flow.md` gained the section. Board logs are in `build/ddr3_boot/ab2_new1`, `ab2_old1`, `ab2_new2` and `ab2_rdoff`, not committed. The desktop core was restored after every load and answered `0x54`. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering and active-log capacity.
+
+#### Next Steps:
+
+Bring for approval an offline cycle that simulates the generated controller top whole, its PHY primitives from Gowin's library with the DQS stand-in and a DDR3 model as `fpga/ddr3_write/tb_wr.v` uses, through start-up training, hand-over and at least one pass of the memory test, once with entry 72's rising-edge boundary and once with this one, and adds the run to the simulation gate; if the falling-edge top fails there, find the consumer whose latency moved and fix it, and if it passes, compare the raw read words and RVALID timing of the two images on the board through the training's READ log to find which capture moved. Then rebuild and run the cold A/B against entry 72's image from a properly cold board. Optional later work the user has deferred: a capped legaliser budget and a PHY-only fuse reference could shorten every build. The write image's boundary remains untimed, and the mid-calibration stall, the `D108` unused-pin contradiction and the `is_mipi` bug outside the DDR context remain open.
+
+#### Files Modified:
+
+- docs/ddr3-open-flow.md
+- fpga/ddr3_ctrl/top.v
+- tools/build_ddr3_ctrl.sh
+- tools/ddr3_write.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: N/A
+
+---

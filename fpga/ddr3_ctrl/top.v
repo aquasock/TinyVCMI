@@ -96,43 +96,42 @@ module top (
     wire [511:0] ext_status;
     wire [255:0] dq_io;                 // the deserializers' outputs
     wire [3:0] rvalid_io;
-    reg [255:0] dq_q = 256'd0;
-    reg [3:0] rvalid = 4'd0;
-    reg [15:0] read_en_b = 16'd0;
-    reg [11:0] rclksel_b = 12'd0;
-    reg [3:0] hold_b = 4'd0, rmove_b = 4'd0;
-    reg rdir_b = 1'b0, rloadn_b = 1'b1, wloadn_b = 1'b1, cke_b = 1'b0;
-    reg [31:0] wstep_b = 32'd0, calib_b = 32'd0;
-    reg [255:0] wdq_b = 256'd0;
-    reg dq_drive_b = 1'b0, dqs_drive_b = 1'b0;
-    reg [3:0] pb_cs_n = 4'hf, pb_ras_n = 4'hf, pb_cas_n = 4'hf, pb_we_n = 4'hf;
-    reg [11:0] pb_ba = 12'd0;
-    reg [63:0] pb_addr = 64'd0;
-    reg pb_odt = 1'b0;
-    always @(negedge pclk) begin
-        dq_q <= dq_io;
-        rvalid <= rvalid_io;
-        read_en_b <= read_en;
-        rclksel_b <= rclksel;
-        hold_b <= hold;
-        rmove_b <= rmove;
-        rdir_b <= rdir;
-        rloadn_b <= rloadn;
-        wloadn_b <= wloadn;
-        wstep_b <= wstep;
-        calib_b <= calib;
-        wdq_b <= wdq;
-        dq_drive_b <= p_dq_drive;
-        dqs_drive_b <= p_dqs_drive;
-        pb_cs_n <= p_cs_n;
-        pb_ras_n <= p_ras_n;
-        pb_cas_n <= p_cas_n;
-        pb_we_n <= p_we_n;
-        pb_ba <= p_ba;
-        pb_addr <= p_addr;
-        pb_odt <= p_odt;
-        cke_b <= cke;
-    end
+    wire [255:0] dq_q;
+    wire [3:0] rvalid;
+    wire [15:0] read_en_b;
+    wire [11:0] rclksel_b;
+    wire [3:0] hold_b;
+    wire [3:0] rmove_b;
+    wire rdir_b;
+    wire rloadn_b;
+    wire wloadn_b;
+    wire [31:0] wstep_b;
+    wire [31:0] calib_b;
+    wire [255:0] wdq_b;
+    wire dq_drive_b;
+    wire dqs_drive_b;
+    wire [3:0] pb_cs_n;
+    wire [3:0] pb_ras_n;
+    wire [3:0] pb_cas_n;
+    wire [3:0] pb_we_n;
+    wire [11:0] pb_ba;
+    wire [63:0] pb_addr;
+    wire pb_odt;
+    wire cke_b;
+    wire [696:0] bnd_lo_d = {dq_io, rvalid_io, read_en, rclksel, hold, rmove, rdir, wstep, calib, wdq, p_dq_drive, p_dqs_drive, p_ba, p_addr, p_odt, cke};
+    wire [696:0] bnd_lo_q;
+    assign {dq_q, rvalid, read_en_b, rclksel_b, hold_b, rmove_b, rdir_b, wstep_b, calib_b, wdq_b, dq_drive_b, dqs_drive_b, pb_ba, pb_addr, pb_odt, cke_b} = bnd_lo_q;
+    genvar bnd_lo_i;
+    generate for (bnd_lo_i = 0; bnd_lo_i < 697; bnd_lo_i = bnd_lo_i + 1) begin : bnd_lo
+        bnd_ff #(.INIT(1'b0)) ff (.CLK(pclk), .D(bnd_lo_d[bnd_lo_i]), .Q(bnd_lo_q[bnd_lo_i]));
+    end endgenerate
+    wire [17:0] bnd_hi_d = {rloadn, wloadn, p_cs_n, p_ras_n, p_cas_n, p_we_n};
+    wire [17:0] bnd_hi_q;
+    assign {rloadn_b, wloadn_b, pb_cs_n, pb_ras_n, pb_cas_n, pb_we_n} = bnd_hi_q;
+    genvar bnd_hi_i;
+    generate for (bnd_hi_i = 0; bnd_hi_i < 18; bnd_hi_i = bnd_hi_i + 1) begin : bnd_hi
+        bnd_ff #(.INIT(1'b1)) ff (.CLK(pclk), .D(bnd_hi_d[bnd_hi_i]), .Q(bnd_hi_q[bnd_hi_i]));
+    end endgenerate
     wire [3:0] dq_tx = {4{!dq_drive_b}};
     wire [3:0] dqs_tx = {4{!dqs_drive_b}};
     wire [3:0] rburst, rflag, wflag;
@@ -1090,5 +1089,18 @@ module top (
         .p_ba(p_ba), .p_addr(p_addr), .p_odt(p_odt), .p_dq_drive(p_dq_drive),
         .p_dqs_drive(p_dqs_drive), .wdq(wdq), .ctrl_rd(ctrl_rd), .ctrl_accept(ctrl_accept),
         .ext_status(ext_status));
+endmodule
+module bnd_ff #(parameter [0:0] INIT = 1'b0) (input wire CLK, input wire D, output wire Q);
+`ifdef YOSYS
+    generate if (INIT) begin : s
+        DFFNS ff (.CLK(CLK), .D(D), .SET(1'b0), .Q(Q));
+    end else begin : r
+        DFFN ff (.CLK(CLK), .D(D), .Q(Q));
+    end endgenerate
+`else
+    reg q = INIT;
+    always @(negedge CLK) q <= D;
+    assign Q = q;
+`endif
 endmodule
 `default_nettype wire

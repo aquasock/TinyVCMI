@@ -3193,3 +3193,42 @@ serializers it does not time, and Gowin's report says nothing about it
 because in Gowin's build `pb_cs_n`, `rloadn_b` and `wloadn_b` are timed as
 endpoints latched on PCLK's falling edge, true falling-edge registers there.
 That this is why training fails is the leading hypothesis, not yet tested.
+
+### Falling-edge cells: training restored, the controller not
+
+Arora V has no falling-edge register primitive: UG303 lists only `DFFSE`,
+`DFFRE`, `DFFPE` and `DFFCE`, rising-edge, and says each CLS's clock can be
+set to either edge, which is how Gowin's synthesis builds a falling-edge
+register, a LUT1 on the clock that its packer folds into that setting.
+Gowin's GW5A simulation library likewise has no `DFFN`.  The open flow does:
+Yosys's `DFFN` and `DFFNS`, which the nextpnr fork places as first-class
+register types.  So `tools/ddr3_write.py` now builds each of the 715 boundary
+bits as a `bnd_ff`, an instantiated `DFFN`, or `DFFNS` for the 18 that start
+high, under Yosys, and a plain falling-edge register for Gowin and the
+simulators, both reading the same source.  `tools/build_ddr3_ctrl.sh` checks
+the netlist after synthesis and fails unless the 697 `DFFN` and 18 `DFFNS`
+are there, clocked straight from the CLKDIV, and no LUT drives any clock pin;
+the netlist of the last section fails it.
+
+The simulation gate passed.  The open image closes PCLK at 106.52 MHz, its
+critical path now in `rd_align`, and is equal on all 306 DDR3 tables to
+Gowin's place 1 route 0 build of the same sources, 50.719 MHz and a fuse
+reference only; the raw image is SHA-256
+`b1dfbb5cc2ad058bcbc6621affbf2aa14cbd560b914628290a67c705411b563b`.
+
+On the Tang it trains: in three loads all four lanes locked in 422 trials at
+the settings the old image finds, write alignment d 1, b 2, but after 7 CALIB
+pulses on every lane where the old image takes 3, or 5 on lane 3.  The
+controller then took the bus and the memory test failed: every word from
+`0x204`, `0x604` and `0x203` in the three loads was wrong on every pin and
+beat, the first failing word re-read wrong differently, and after about 1 s
+the test stopped moving in state 5 with 33,554,432 words written and
+33,559,416 checked in every load.  Stopping and restarting the test left the
+controller issuing nothing, so a sweep of the read offset over 6 to 9 could
+not be run on a running image.  The old image, loaded between them, trained
+as before and ran 2.7 x 10^9 words without error, about two minutes into the
+session.  The retimed boundary therefore restores training, which judges each
+READ by its lag, but not the controller, which takes each READ's burst at a
+fixed offset; that a capture or launch has moved by a PCLK, on all bits or
+some, is the leading hypothesis.  No simulation covers the generated
+controller top with its training, controller and test together.
