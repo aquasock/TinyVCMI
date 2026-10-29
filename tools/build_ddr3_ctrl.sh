@@ -79,7 +79,7 @@ for name, c in m["cells"].items():
         if d == "output":
             for b in c["connections"][p]:
                 drv[b] = (name, c["type"])
-bad, want = [], {"bnd_lo[": ("DFFN", 697), "bnd_hi[": ("DFFNS", 18)}
+bad, want = [], {"bnd_lo[": ("DFFN", 437), "bnd_hi[": ("DFFNS", 18)}
 seen = dict.fromkeys(want, 0)
 for name, c in m["cells"].items():
     for p in ("CLK", "PCLK", "FCLK", "ICLK", "TCLK"):
@@ -97,7 +97,7 @@ bad += [f"{n} of {pre}*] found, {cnt} expected" for pre, n in seen.items()
 if bad:
     print("\n".join(bad[:20]), file=sys.stderr)
     sys.exit("the I/O boundary did not synthesise as instantiated (TOOL-051)")
-print("boundary: 697 DFFN and 18 DFFNS on the CLKDIV; no LUT drives a clock")
+print("boundary: 437 DFFN and 18 DFFNS on the CLKDIV; no LUT drives a clock")
 PY
 
 echo "[4/6] nextpnr placement and routing"

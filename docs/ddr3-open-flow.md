@@ -3266,3 +3266,55 @@ breaks reads, and the extra CALIB pulses come with registering the outbound
 side, CALIB among it, and do no harm.  That outbound retiming alone also cures
 the cold failure is what one clean load beside a failing one suggests, and
 repeated cold loads must show.
+
+### The cold A/B, and the boundary that is qualified
+
+Two cold starts and sixteen loads, alternating the TOOL-046 image
+(`ddr3_ctrl_1d56.bin`, SHA-256 `1d5617587da0a38e…`) with variant OUT
+(`ddr3_ctrl_vout.bin`, SHA-256 `eb59ee085f8e2234…`), four loads of each in
+each session and the order reversed between them, so the control went first
+after the first cold start and second after the second.  Every load ran
+`tools/ddr3_write_probe.py ctrl --watch 60` and the desktop core was restored
+afterwards, answering `0x54` after all sixteen.
+
+The control failed three of its eight loads, every one in the first three and
+a half minutes of a session and always at first-error word `0x8260` on lane 1:
+`[216, 20499, 216, 217]` as the first load after the first cold start,
+`[11, 105, 11, 11]` two loads later, and `[14, 334, 14, 14]` as the second load
+after the second.  In both sessions it then ran clean load by load, as entry
+73 measured.  Variant OUT was clean on all eight of its own loads, about
+2.7 x 10^9 words each, including the first load after the second cold start,
+the coldest point of either session, with its per-pin and per-beat counts zero
+wherever the image could report them.  That the control still failed is what
+separates this from entry 77's session, which also ran clean and proved
+nothing.
+
+Temperature is part of the result and is recorded as a standing caveat.
+Neither cold start was the multi-hour soak of entry 75: the first followed
+about 22 minutes unplugged and the second about 28, and the control failing in
+both is what shows either was cold enough to provoke the mechanism.  A run
+begun three minutes after ten minutes of full-array traffic was called cold
+when it was not; it ran 47 passes clean before it was stopped and is not
+counted.  Board results from here record the cool-down they followed.
+
+This cycle makes that boundary the design.  `tools/ddr3_write.py` keeps
+`BOUNDARY_REGS` as the full list of crossings and adds
+`BOUNDARY_REGISTER_INBOUND = False`: every outbound crossing still passes a
+`bnd_ff` on PCLK's falling edge, and the deserializers' words and RVALID are
+wired straight through.  `tools/ddr3_ctrl_variant.py` still renders either
+direction for the bisection.  `tools/build_ddr3_ctrl.sh` now requires 437
+`DFFN` and 18 `DFFNS` on the CLKDIV.  The rebuilt image is
+`eb59ee085f8e2234…` -- byte for byte variant OUT, the binary that ran those
+eight loads -- closes PCLK at 108.74 MHz, and equals its Gowin reference at
+place option 1 and route option 0 on all 306 DDR3 tables, that reference
+meeting no timing and being a fuse reference only.
+
+One defect was found in the diagnostics while qualifying.  Frame 0x3D gained
+its per-pin, per-beat and log pages in entry 74, so `ctrl --diag` against an
+image built before it read the status frame as counts: entry 72's image
+reported 33,764 failing words on DQ 0 from bytes that were its status and
+state, with every `lane_err` zero.  `tools/ddr3_write_probe.py` now refuses
+that reading on two exact consequences of the RTL: a summary with every
+`lane_err` zero has every page zero, and a summary with any `lane_err`
+non-zero has `n_log` non-zero, which the older 25-bit address field can never
+report.  Run against the older image on the board, it exits 1 and says why.

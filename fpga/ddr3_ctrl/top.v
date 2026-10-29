@@ -118,11 +118,13 @@ module top (
     wire [63:0] pb_addr;
     wire pb_odt;
     wire cke_b;
-    wire [696:0] bnd_lo_d = {dq_io, rvalid_io, read_en, rclksel, hold, rmove, rdir, wstep, calib, wdq, p_dq_drive, p_dqs_drive, p_ba, p_addr, p_odt, cke};
-    wire [696:0] bnd_lo_q;
-    assign {dq_q, rvalid, read_en_b, rclksel_b, hold_b, rmove_b, rdir_b, wstep_b, calib_b, wdq_b, dq_drive_b, dqs_drive_b, pb_ba, pb_addr, pb_odt, cke_b} = bnd_lo_q;
+    assign dq_q = dq_io;   // straight through: a falling-edge capture of it fails (TOOL-052)
+    assign rvalid = rvalid_io;   // straight through: a falling-edge capture of it fails (TOOL-052)
+    wire [436:0] bnd_lo_d = {read_en, rclksel, hold, rmove, rdir, wstep, calib, wdq, p_dq_drive, p_dqs_drive, p_ba, p_addr, p_odt, cke};
+    wire [436:0] bnd_lo_q;
+    assign {read_en_b, rclksel_b, hold_b, rmove_b, rdir_b, wstep_b, calib_b, wdq_b, dq_drive_b, dqs_drive_b, pb_ba, pb_addr, pb_odt, cke_b} = bnd_lo_q;
     genvar bnd_lo_i;
-    generate for (bnd_lo_i = 0; bnd_lo_i < 697; bnd_lo_i = bnd_lo_i + 1) begin : bnd_lo
+    generate for (bnd_lo_i = 0; bnd_lo_i < 437; bnd_lo_i = bnd_lo_i + 1) begin : bnd_lo
         bnd_ff #(.INIT(1'b0)) ff (.CLK(pclk), .D(bnd_lo_d[bnd_lo_i]), .Q(bnd_lo_q[bnd_lo_i]));
     end endgenerate
     wire [17:0] bnd_hi_d = {rloadn, wloadn, p_cs_n, p_ras_n, p_cas_n, p_we_n};

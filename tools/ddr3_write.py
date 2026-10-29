@@ -236,14 +236,22 @@ def ctrl_cmd(p: str) -> dict:
 #: arcs for IDES8_MEM, OSER8, OSER8_MEM or DQS, so no path between them and
 #: the fabric is timed, for setup or hold, and each placement routes them as
 #: it falls: an image whose layout changed with nothing else failed words
-#: from a cold start and the next did not (TOOL-049).  Every PCLK signal
-#: crossing the boundary therefore passes a register on PCLK's falling edge
-#: here: a deserializer word or RVALID launched at a rising edge is taken half
-#: a PCLK later, and everything the serializers and the DQS sample at a rising
-#: edge leaves half a PCLK before it, so each crossing has about half a PCLK
-#: of setup and of hold whatever its routing, and the fabric side of each is
-#: an ordinary register-to-register path nextpnr times.  The consumers still
-#: see each word at the rising edge they did, so no latency changes.
+#: from a cold start and the next did not (TOOL-049).  Every PCLK signal the
+#: serializers and the DQS sample therefore passes a register on PCLK's
+#: falling edge here: it leaves half a PCLK before the rising edge it is
+#: sampled at, so each such crossing has about half a PCLK of setup and of
+#: hold whatever its routing, and the fabric side of each is an ordinary
+#: register-to-register path nextpnr times.  The consumers still see each
+#: signal at the rising edge they did, so no latency changes.
+#:
+#: The inbound crossings are not registered.  Entry 75 registered them too, and
+#: an image with only them registered trains and then fails 1 to 2% of words on
+#: every lane from word 0x1, each re-read returning the same wrong word, while
+#: one with only the outbound side registered trains and runs clean (TOOL-052).
+#: Why the falling-edge capture of a deserializer's word fails is not known;
+#: Gowin's timing of its own placement gives those paths at least 1.8 ns of
+#: setup slack.  The deserializers are read straight, as the TOOL-046 image
+#: read them, and that is the boundary qualified from two cold starts.
 #:
 #: Each of those registers is a `bnd_ff` on pclk itself: an instantiated
 #: DFFN, or DFFNS where it must start high, for Yosys.  Written as `always
@@ -268,15 +276,33 @@ BOUNDARY_REGS = [
     ("pb_odt", 1, "p_odt", False), ("cke_b", 1, "cke", False),
 ]
 
+#: The crossings from the lanes into the fabric.  They are wired straight
+#: through rather than registered; see BOUNDARY_REGISTER_INBOUND and TOOL-052.
+BOUNDARY_INBOUND = {"dq_q", "rvalid"}
+
+#: Whether the inbound crossings above pass a falling-edge register too.  False
+#: is the qualified design: TOOL-052 measured that registering them breaks the
+#: controller's reads.  True is what entry 75 built, kept so that
+#: tools/ddr3_ctrl_variant.py still renders either direction for the bisection.
+BOUNDARY_REGISTER_INBOUND = False
+
 
 def boundary() -> str:
     lines = ["    wire [255:0] dq_io;                 // the deserializers' outputs",
              "    wire [3:0] rvalid_io;"]
     for q, w, _, _ in BOUNDARY_REGS:
         lines.append(f"    wire [{w - 1}:0] {q};" if w > 1 else f"    wire {q};")
+    regs_all = [r for r in BOUNDARY_REGS
+                if BOUNDARY_REGISTER_INBOUND or r[0] not in BOUNDARY_INBOUND]
+    for r in BOUNDARY_REGS:
+        if r not in regs_all:
+            lines.append(f"    assign {r[0]} = {r[2]};"
+                         "   // straight through: a falling-edge capture of it fails (TOOL-052)")
     for hi in (False, True):
-        regs = [r for r in BOUNDARY_REGS if r[3] == hi]
+        regs = [r for r in regs_all if r[3] == hi]
         n = sum(r[1] for r in regs)
+        if not n:
+            continue
         s = "hi" if hi else "lo"
         lines += [f"    wire [{n - 1}:0] bnd_{s}_d = {{{', '.join(r[2] for r in regs)}}};",
                   f"    wire [{n - 1}:0] bnd_{s}_q;",

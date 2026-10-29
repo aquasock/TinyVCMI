@@ -295,10 +295,32 @@ class Core:
         return r[4:]
 
     def ctrl_diag(self) -> dict:
-        """The memory test's per-pin and per-lane-and-beat counts and its log."""
+        """The memory test's per-pin and per-lane-and-beat counts and its log.
+
+        Only an image built from sources at or after the diagnostic pages has
+        them.  An older one ignores `0x3C 0x40 + p` and returns its status frame
+        for every page, which decodes as plausible nonsense: entry 78's
+        ddr3_ctrl_1d56.bin read as 33,764 failing words on DQ 0 from bytes that
+        were its status and state.  Two consequences of the RTL, both exact, tell
+        the images apart.  A word cannot fail without a lane failing, so a
+        summary with every lane_err zero has every page zero.  And an error
+        writes the log before it counts, so a summary with any lane_err non-zero
+        has n_log non-zero -- while the older frame spends only 25 bits on the
+        address and can never report one.  Neither holds for a page-less image.
+        """
         u16 = lambda b, i: int.from_bytes(b[2 * i:2 * i + 2], "little")
+        before = self.ctrl()
         p1, p2, p3 = self.ctrl_page(1), self.ctrl_page(2), self.ctrl_page(3)
         self.ctrl_page(0)
+        after = self.ctrl()
+        clean = not any(before["lane_err"]) and not any(after["lane_err"])
+        if (clean and (any(p1) or any(p2) or any(p3))) or \
+                (not clean and after["n_log"] == 0):
+            raise RuntimeError(
+                "this image has no diagnostic pages: it ignores 0x3C 0x40 + p and "
+                "returns its status frame for every page, so the pages are not "
+                "counts (built before entry 74); only the summary's lane_err, "
+                "error flag, err_addr and err_diff apply")
         log = []
         for e in range(8):
             v = int.from_bytes(p3[8 * e:8 * e + 8], "little")
@@ -1731,7 +1753,11 @@ def main() -> int:
                     break
                 time.sleep(1.0)
             if args.diag:
-                g = core.ctrl_diag()
+                try:
+                    g = core.ctrl_diag()
+                except RuntimeError as exc:
+                    print(f"diagnostics unavailable: {exc}")
+                    return 1
                 print("failing words per DQ: " + " ".join(
                     f"{q}:{n}" for q, n in enumerate(g["pins"]) if n) or "none")
                 for l in range(4):

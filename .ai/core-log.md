@@ -2617,3 +2617,36 @@ Only once the user says the Tang is free and cold, qualify variant OUT against e
 - User Test: N/A
 
 ---
+## 79 COMMIT Unreleased 2026-10-28T21:02:00-07:00
+
+#### Coming From:
+
+Unreleased a48124b
+
+#### Purpose:
+
+Qualify the controller's outbound-only falling-edge I/O boundary from repeated cold starts against the image that fails cold, and make it the design.
+
+#### Outcome:
+
+Two cold starts and sixteen loads qualified the boundary that entry 78 had left resting on one clean load. Entry 72's image, `ddr3_ctrl_1d56.bin` (SHA-256 `1d561758…`), alternated with variant OUT, `ddr3_ctrl_vout.bin` (`eb59ee08…`), four loads of each in each session with the order reversed between them, so the control went first after the first cold start and second after the second; every load ran `tools/ddr3_write_probe.py ctrl --watch 60` and the desktop core was restored after each. The control failed three of its eight loads, every one within the first three and a half minutes of a session and always at first-error word `0x8260` on lane 1: lane errors `[216, 20499, 216, 217]` as the first load after the first cold start, `[11, 105, 11, 11]` two loads later, and `[14, 334, 14, 14]` as the second load after the second, then clean load by load in both sessions as entry 73 measured. Variant OUT was clean in all eight of its own loads, about 2.7 x 10^9 words each with per-pin and per-beat counts zero wherever the image could report them, including the first load after the second cold start, the coldest point of either session. Neither cold start was the multi-hour soak of entry 75, the first following about 22 minutes unplugged and the second about 28, and the control failing in both is what shows either was cold enough to provoke the mechanism; a run begun three minutes after ten minutes of full-array traffic was wrongly labelled cold, ran 47 passes clean before it was stopped and is not counted, so temperature is recorded as a standing caveat on board results. At the user's approval this cycle made that boundary the design: `tools/ddr3_write.py` keeps `BOUNDARY_REGS` as the full list of crossings and adds `BOUNDARY_INBOUND` and `BOUNDARY_REGISTER_INBOUND = False`, so every outbound crossing still passes a `bnd_ff` on PCLK's falling edge and the deserializers' words and RVALID are wired straight through, with `tools/ddr3_ctrl_variant.py` still rendering either direction, and `tools/build_ddr3_ctrl.sh` now requires 437 `DFFN` and 18 `DFFNS` on the CLKDIV; the regenerated `fpga/ddr3_ctrl/top.v` has exactly those counts. The simulation gate passed on the new top, `tools/sim_ddr3_ctrl.sh` including the injected diagnostics and its five mutants, and the image, SHA-256 `eb59ee085f8e22343c34bd1f5f5a135ec3cb8c1de677a586ecb5ff087f2bb2ac`, is byte for byte variant OUT, closes PCLK at 108.74 MHz and equals its Gowin reference at place option 1 and route option 0 on all 306 DDR3 tables, that reference meeting no timing and being a fuse reference only. A defect found while qualifying was fixed in the same cycle: frame 0x3D gained its diagnostic pages only in entry 74, so `ctrl --diag` against entry 72's image read its status frame as counts and reported 33,764 failing words on DQ 0 with every `lane_err` zero, and `tools/ddr3_write_probe.py` now refuses that reading on two exact consequences of the RTL, a zero `lane_err` meaning every page is zero and any `lane_err` implying a non-zero `n_log` the older frame cannot report, which was checked against that image on the board where it exits 1 and says why. Board logs are in `build/ddr3_boot/coldA_1_old` to `coldA_8_out`, `coldB_1_out` to `coldB_8_old`, and the rejected run in `build/ddr3_boot/warmX_1_out`, none committed; the desktop core was restored after every load and answered `0x54`. TOOL-052 was revised and `docs/ddr3-open-flow.md` gained the section. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering and active-log capacity.
+
+#### Next Steps:
+
+Bring for approval B2, the DM mask path, and then B3, the AE350's bridge, which will also exercise the read to write turnaround the memory test reaches only between passes, and record each board result with the cool-down it followed. Why the inbound falling-edge capture fails when Gowin's timing gives it at least 1.8 ns of setup slack is still unexplained and worth recording if found; the whole-top simulation of the generated controller top remains on hold by agreement, and the write image's boundary remains untimed. The mid-calibration stall, the `D108` unused-pin contradiction and the `is_mipi` bug outside the DDR context remain open. Optional later work the user has deferred: a capped legaliser budget and a PHY-only fuse reference could each shorten every build.
+
+#### Files Modified:
+
+- docs/ddr3-open-flow.md
+- fpga/ddr3_ctrl/top.v
+- tools/build_ddr3_ctrl.sh
+- tools/ddr3_write.py
+- tools/ddr3_write_probe.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: N/A
+
+---
