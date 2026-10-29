@@ -169,6 +169,7 @@ Topic IDs are the `record_id` prefix. An entry reserves a namespace; it does not
 | Does write leveling cure the cold failures, and what did a new placement do? | TOOL | TOOL-049 |
 | Does nextpnr time the paths between the DDR3 I/O cells and the fabric? | TOOL | TOOL-050 |
 | How does Yosys map the controller's falling-edge boundary registers? | TOOL | TOOL-051 |
+| Which direction of the falling-edge I/O boundary breaks the controller? | TOOL | TOOL-052 |
 | Why did the Gowin control miss PCLK timing? | TOOL | TOOL-028 |
 | Which sources and licenses constrain reuse? | PROV | PROV-001 |
 
@@ -243,6 +244,7 @@ TOOL-048: "Under the controller's test every lane reads cleanly 20 taps either s
 TOOL-049: "Leveled write strobes still failed cold as before; the image rebuilt with test diagnostics, the PHY and controller unchanged, failed no word in four cold loads, so the failures follow the placement"
 TOOL-050: "nextpnr's Gowin timing model has no arcs for IDES8_MEM, OSER8, OSER8_MEM or DQS, so no path between them and the fabric is timed for setup or hold; Gowin's timing puts every such crossing inside half a PCLK, but the retimed controller image does not train on the board (TOOL-051)"
 TOOL-051: "synth_gowin builds a falling-edge register with an absorbed synchronous set or reset and enable as a rising-edge DFFSE or DFFRE clocked by a LUT1 inverter of pclk on fabric routing; 25 of the controller's boundary registers, the command bits among them, were built so; as instantiated DFFN and DFFNS the image trains, but its controller fails every word"
+TOOL-052: "Capturing the deserializers' words and RVALID on PCLK's falling edge breaks the controller's reads; registering only the outbound side on it trains and ran clean in one load beside the old image failing cold"
 TOOL-031: "LiteDRAM's control layer alone generates, synthesises and places in the open flow at ~1% of the LUTs, with none of TOOL-025's three gaps"
 TOOL-030: "Closed-page scatter READs do not reach the read capture in the open or the vendor build of the same RTL; no cadence, gate position or shared RCLKSEL recovers them, and failing READs return other rows' patterns"
 PROV-001: "Reuse source and interface ideas with their original license boundaries and attribution intact"
@@ -1163,6 +1165,18 @@ PROV-001: "Reuse source and interface ideas with their original license boundari
     - "TinyVCMI tools/ddr3_write.py: BOUNDARY"
     - "TinyVCMI docs/ddr3-open-flow.md: The retimed boundary on the board, and what Yosys made of it"
   verification: "Read from the synthesised netlist with a script that classified each boundary register by cell type and clock driver; route delays from a nextpnr --post-route hook calling getNetinfoRouteDelay on a rerun of the same netlist, whose routed JSON is not byte-identical to the built image's but closes the same 101.21 MHz. Gowin's endpoints from a build with report_timing -fall_to_clock in its SDC. Revised 2026-10-28: with each boundary bit an instantiated DFFN, or DFFNS where it starts high, through bnd_ff in tools/ddr3_write.py, and tools/build_ddr3_ctrl.sh refusing any other mapping or a LUT on a clock pin, the image, .bin SHA-256 b1dfbb5cc2ad058bcbc6621affbf2aa14cbd560b914628290a67c705411b563b, trained all four lanes in three of three loads, after 7 CALIB pulses per lane where the old image takes 3 or 5, and its controller then failed every word from about 0x200 or 0x600 and hung in the test's state 5, while the old image loaded between them ran clean."
+
+- record_id: TOOL-052
+  topic_id: TOOL
+  title: "Only the inbound falling-edge capture breaks the DDR3 controller"
+  status: VERIFIED
+  verified_date: 2026-10-28
+  statement: "Built by tools/ddr3_ctrl_variant.py and tools/build_ddr3_ctrl_variant.sh from commit b073a48's sources, each equal to its own Gowin reference on all 306 DDR3 tables: variant IN, with only dq_q and rvalid on falling-edge DFFN and the outbound side wired straight through, .bin SHA-256 305afe63f6460afc2ac999f31c2746cd52c1251755df9705ba6ee190857abf00, trained with 3 or 5 CALIB pulses per lane and then failed 1 to 2% of words on every lane from word 0x1, each re-read returning the same wrong word, in 5 passes over 60 s; variant OUT, with only the outbound side on falling-edge DFFN and DFFNS and the deserializers wired straight through, .bin SHA-256 eb59ee085f8e22343c34bd1f5f5a135ec3cb8c1de677a586ecb5ff087f2bb2ac, trained with 7 CALIB pulses per lane and ran 76 passes, about 2.56 x 10^9 words, without an error. The TOOL-046 image loaded next failed 4,033 words on lane 1 and 54 on each other lane. In the open placement pclk reaches the I/O cells and the fabric over the same global clock network, and nextpnr models all its sinks at one delay."
+  consequence: "Registering the deserializers' outputs on PCLK's falling edge is the fault in the retimed boundary of TOOL-050 and TOOL-051, not the falling-edge cells as such or the outbound side; the extra CALIB pulses come with the outbound retiming and are harmless. The candidate boundary is variant OUT, outbound registered on the falling edge and the deserializers read straight as in the TOOL-046 image. That it also cures the cold failures of TOOL-048 rests on one clean load beside a failing one."
+  sources:
+    - "TinyVCMI tools/ddr3_ctrl_variant.py, tools/build_ddr3_ctrl_variant.sh"
+    - "TinyVCMI docs/ddr3-open-flow.md: Which direction of the boundary breaks the controller"
+  verification: "One load of each variant and of the TOOL-046 image with tools/ddr3_write_probe.py ctrl --watch 60 --diag on 2026-10-28, minutes after the Tang was powered; the desktop core was restored after each and answered 0x54. Why the falling-edge capture of the deserializers' words fails is not known; Gowin's timing of its own placement gives those paths at least 1.8 ns of setup slack."
 
 - record_id: PROV-001
   topic_id: PROV

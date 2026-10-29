@@ -3232,3 +3232,37 @@ READ by its lag, but not the controller, which takes each READ's burst at a
 fixed offset; that a capture or launch has moved by a PCLK, on all bits or
 some, is the leading hypothesis.  No simulation covers the generated
 controller top with its training, controller and test together.
+
+### Which direction of the boundary breaks the controller
+
+Clock skew between the I/O cells and the fabric was the first suspect and is
+not supported.  In the open placement `pclk` reaches the I/O cells and the
+fabric registers over the same global network, `GT00` taps, `GB20` branches
+and the tiles' `CLK0` to `CLK2`, with no fabric wire anywhere on the net, and
+nextpnr models every one of its sinks at the same 0.909 ns, so it cannot
+report a skew; Gowin's report of its own placement puts the I/O cells' clock
+0.4 to 0.5 ns ahead of the fabric's.  A zero-delay simulation cannot tell the
+retimed top from the old one either: every rising-edge consumer sees each word
+at the edge it did, and the fabric's only falling-edge logic samples RBURST,
+which does not cross the boundary.
+
+So `tools/ddr3_ctrl_variant.py` renders the top with one direction registered
+and the other wired straight through, and `tools/build_ddr3_ctrl_variant.sh`
+builds each as `tools/build_ddr3_ctrl.sh` does, with its own Gowin reference.
+Variant IN, only the deserializers' words and RVALID on falling-edge cells,
+closes PCLK at 106.59 MHz, SHA-256 `305afe63f6460afc…`; variant OUT, only
+what the serializers and the DQS sample, 108.74 MHz, SHA-256
+`eb59ee085f8e2234…`; both equal their references on all 306 DDR3 tables.
+
+One load of each on the Tang, minutes after it was powered: variant IN
+trained with 3 or 5 CALIB pulses, as the old image does, then failed 1 to 2%
+of words on every lane from word `0x1`, each re-read returning the same wrong
+word, and finished only 5 passes in 60 s.  Variant OUT trained with 7 CALIB
+pulses on every lane and ran 76 passes, about 2.6 x 10^9 words, without an
+error.  Entry 72's image loaded straight after it failed 4,033 words on lane 1
+and 54 on each other lane, the first at word `0x11680` on lane 1: the cold
+failure.  Capturing the deserializers' outputs on PCLK's falling edge is what
+breaks reads, and the extra CALIB pulses come with registering the outbound
+side, CALIB among it, and do no harm.  That outbound retiming alone also cures
+the cold failure is what one clean load beside a failing one suggests, and
+repeated cold loads must show.

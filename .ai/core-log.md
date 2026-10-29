@@ -2585,3 +2585,35 @@ Bring for approval an offline cycle that simulates the generated controller top 
 - User Test: N/A
 
 ---
+
+## 78 COMMIT Unreleased 2026-10-28T18:33:30-07:00
+
+#### Coming From:
+
+Unreleased b073a48
+
+#### Purpose:
+
+Find which part of the falling-edge I/O boundary breaks the DDR3 controller of entry 77, by measuring the clock skew the open flow gives it and by building and loading variants with only one direction registered, and hand the work over at the user's request.
+
+#### Outcome:
+
+A whole-top simulation was put on hold with the user's agreement, because a zero-delay simulation cannot tell the retimed top from the old one: every rising-edge consumer sees each word at the edge it did, and the fabric's only falling-edge logic samples RBURST, which does not cross the boundary. Clock skew is not supported as the cause: a nextpnr `--post-route` hook on a rerun of entry 77's netlist found `pclk` routed to the I/O cells and the fabric over the same global network with no fabric wire, nextpnr modelling all its sinks at 0.909 ns, and Gowin's report of its own placement puts the skew at 0.4 to 0.5 ns. `tools/ddr3_ctrl_variant.py` now renders the controller top with only one direction registered and `tools/build_ddr3_ctrl_variant.sh` builds it as `tools/build_ddr3_ctrl.sh` does, with its own Gowin reference at place option 1 and route option 0; both reproduce the images loaded byte for byte at the top, and `fpga/ddr3_ctrl/top.v` is unchanged. Variant IN, only `dq_q` and `rvalid` on falling-edge cells, SHA-256 `305afe63f6460afc2ac999f31c2746cd52c1251755df9705ba6ee190857abf00`, closed PCLK at 106.59 MHz, and variant OUT, only the outbound side, SHA-256 `eb59ee085f8e22343c34bd1f5f5a135ec3cb8c1de677a586ecb5ff087f2bb2ac`, at 108.74 MHz, each equal to its reference on all 306 DDR3 tables. On the Tang, one load each minutes after it was powered: variant IN trained with 3 or 5 CALIB pulses and then failed 1 to 2% of words on every lane from word `0x1`, re-reads returning the same wrong words, in 5 passes over 60 s; variant OUT trained with 7 CALIB pulses and ran 76 passes, about 2.56 x 10^9 words, without an error; and entry 72's image loaded next failed 4,033 words on lane 1 and 54 on each other lane, the cold failure. So the falling-edge capture of the deserializers' outputs is what breaks the controller, the outbound retiming trains and runs clean, and whether it cures the cold failure rests so far on one load. The images are on the card as `ddr3_ctrl_vin.bin` and `ddr3_ctrl_vout.bin`, beside `ddr3_ctrl_dffn.bin`, `ddr3_ctrl_rt.bin` and `ddr3_ctrl_1d56.bin`, and the board was left on the desktop core. TOOL-052 was added and `docs/ddr3-open-flow.md` gained the section. Board logs are in `build/ddr3_boot/bis_vin`, `bis_vout` and `bis_old`, and the variant builds in `build/ddr3_ctrl/var_in` and `var_out`, not committed. The desktop core was restored after every load and answered `0x54`. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering and active-log capacity.
+
+#### Next Steps:
+
+Only once the user says the Tang is free and cold, qualify variant OUT against entry 72's image from cold starts, alternating `ddr3_ctrl_vout.bin` and `ddr3_ctrl_1d56.bin` with `tools/ddr3_write_probe.py ctrl --watch 60 --diag` on the port found by USB id `ffff:5454`, at least four loads each and over more than one cold start, the old image being the control that must still fail. If variant OUT stays clean, bring for approval making it the design: `BOUNDARY_REGS` in `tools/ddr3_write.py` registering only the outbound side, `dq_q` and `rvalid` wired straight from the deserializers, `tools/build_ddr3_ctrl.sh`'s check expecting 437 `DFFN` and 18 `DFFNS`, then the simulation gate, the build and a cold requalification, and on to B2, the DM mask path, and B3, the AE350's bridge. Why the inbound falling-edge capture fails, when Gowin's timing gives it at least 1.8 ns of setup slack, is unexplained and worth recording if found. The whole-top simulation is on hold. Optional later work the user has deferred: a capped legaliser budget and a PHY-only fuse reference could shorten every build. The write image's boundary remains untimed, and the mid-calibration stall, the `D108` unused-pin contradiction and the `is_mipi` bug outside the DDR context remain open.
+
+#### Files Modified:
+
+- docs/ddr3-open-flow.md
+- tools/build_ddr3_ctrl_variant.sh
+- tools/ddr3_ctrl_variant.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: N/A
+
+---
