@@ -171,6 +171,7 @@ Topic IDs are the `record_id` prefix. An entry reserves a namespace; it does not
 | How does Yosys map the controller's falling-edge boundary registers? | TOOL | TOOL-051 |
 | Which direction of the falling-edge I/O boundary breaks the controller? | TOOL | TOOL-052 |
 | How is an image loaded and measured without TinyTang? | TOOL | TOOL-053 |
+| Can a failed word's bytes be attributed to one of the test's two writes, or to another address? | TOOL | TOOL-054 |
 | Why did the Gowin control miss PCLK timing? | TOOL | TOOL-028 |
 | Which sources and licenses constrain reuse? | PROV | PROV-001 |
 
@@ -247,6 +248,7 @@ TOOL-050: "nextpnr's Gowin timing model has no arcs for IDES8_MEM, OSER8, OSER8_
 TOOL-051: "synth_gowin builds a falling-edge register with an absorbed synchronous set or reset and enable as a rising-edge DFFSE or DFFRE clocked by a LUT1 inverter of pclk on fabric routing; 25 of the controller's boundary registers, the command bits among them, were built so; as instantiated DFFN and DFFNS the image trains, but its controller fails every word"
 TOOL-052: "Capturing the deserializers' words and RVALID on PCLK's falling edge breaks the controller's reads; registering only the outbound side is the qualified boundary, now the design, eight loads clean across two cold starts against the old image failing three of eight"
 TOOL-053: "One-wire mode reaches this project's images directly: the .fs over JTAG on FT2232 interface 0, and the FPGA UART on /dev/ttyUSB1 at 2 Mbaud answering AA 00 01 01 with core ID 0x56"
+TOOL-054: "The memory test's gen() was linear in the address, 32 of 256 bits apart for adjacent addresses and about 4 bits a byte between its two write patterns, so a returned word could not be attributed to an address; an adder in the fold fixes it and the probe replicates the RTL exactly"
 TOOL-031: "LiteDRAM's control layer alone generates, synthesises and places in the open flow at ~1% of the LUTs, with none of TOOL-025's three gaps"
 TOOL-030: "Closed-page scatter READs do not reach the read capture in the open or the vendor build of the same RTL; no cadence, gate position or shared RCLKSEL recovers them, and failing READs return other rows' patterns"
 PROV-001: "Reuse source and interface ideas with their original license boundaries and attribution intact"
@@ -1192,6 +1194,19 @@ PROV-001: "Reuse source and interface ideas with their original license boundari
     - "TinyTang .ai/core-reference.md TOOL-012, TOOL-013 and BRD-006 (read from the local checkout at /run/media/vash/GIT/TinyTang)"
     - "TinyVCMI runs of 2026-10-29: openFPGALoader -c ft2232 --detect, .fs loads of fpga/ddr3_ctrl images, and tools/ddr3_write_probe.py --port /dev/ttyUSB1 --baud 2000000"
   verification: "Measured on 2026-10-29 on the Tang Console 138K: idcode read, three images loaded, cmd 0x01 and cmd 0x03 answered, and the qualified controller image ran 710 passes with no lane error over this path. The one-wire and two-wire arrangements cannot run together (TinyTang BRD-007), so switching modes takes a cold power-up."
+
+- record_id: TOOL-054
+  topic_id: TOOL
+  title: "The memory test's data was linear in the address, so a word could not be attributed to one"
+  status: VERIFIED
+  verified_date: 2026-10-29
+  statement: "ddr3_bist's gen() folded the address into each 32-bit beat with XOR and shifts only, which are linear over GF(2), so a one-bit address step moved only the few bits three xorshift stages spread it to: gen(0) and gen(1) differed in 32 of 256 bits, addresses two apart in 48, and the test's second write differed from its first by about four bits a byte, taking only four distinct byte values across five addresses. Folding the address through a 32-bit adder instead, x = x + {7'd0, a}, makes the carry propagate it: neighbouring addresses then differ in 100 to 120 of 256 bits and the two writes in 109 to 119. tools/ddr3_write_probe.py's replica of gen() and of mgen() and merge() reproduces the RTL bit for bit, checked in Icarus 14 on six addresses."
+  consequence: "A word read back from the array could not be matched to the address it belonged to before this, so a read that returned a neighbouring request's burst looked like a mask or a write fault; entry 80's closest-17-bits analysis was measured with the linear generator and is not evidence either way. With the adder, `tools/ddr3_write_probe.py ctrl --classify` rebuilds the first failing word from err_addr and err_diff, prints which of the two patterns each lane and beat holds, and searches four addresses either side for an exact whole-lane match, naming the address whose word a lane holds. The generator still cannot detect an address-decode fault as well as a per-address random pattern would, and 32-bit multiplies were avoided because the test logic is already near the timing edge."
+  sources:
+    - "TinyVCMI fpga/ddr3_ctrl/ddr3_bist.v: gen(), mgen(), merge()"
+    - "TinyVCMI tools/ddr3_write_probe.py: BIST_SEED, BIST_SEED_B, bist_gen, bist_mgen, bist_merge, bist_classify, bist_origin"
+    - "TinyVCMI docs/ddr3-open-flow.md: The mask measurement, and the instrument that could not read it"
+  verification: "Measured host-side and in Icarus: the replica and the RTL agree on addresses 0, 1, 33, 2000, 8189 and 33554431 for both seeds, the mask and the merge; address separation was counted before and after the adder; the origin search was checked by offering the word of address 9 as address 7 and getting B@+2 on all four lanes. tools/sim_ddr3_ctrl.sh passes on the changed generator, including its nodm mutant, since the testbench's array takes data and mask from the DUT's pads and never calls gen()."
 
 - record_id: PROV-001
   topic_id: PROV

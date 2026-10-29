@@ -106,6 +106,123 @@ def adata_pattern(bank: int, row4: int, burst: int) -> int:
     return AD_PATTERNS[h]
 
 
+# ---- the memory test's data, to read a failed word back -----------------
+# fpga/ddr3_ctrl/ddr3_bist.v: a word is written twice, its pattern whole and
+# then a second pattern through a byte mask, and the test checks the merge.
+# The status frame carries the first failing address and its XOR against that
+# merge, so the byte the array actually returned is recoverable host-side and
+# a mask can be judged by what each lane and beat holds, not only by pass or
+# fail.  The generators below are the RTL's, bit for bit.
+BIST_SEED = 0x2545F491        # ddr3_bist.v: seed
+BIST_SEED_B = 0x5BF03635      # ddr3_bist.v: seed_b, the second write of a word
+
+
+def bist_gen(addr: int, seed: int) -> int:
+    """ddr3_bist's gen(): the 256-bit word at `addr`, beat-major, DQ bit
+    32*beat + 8*lane + pin."""
+    out = 0
+    for beat in range(8):
+        x = (((addr << 3) | beat) & 0xFFFFFFFF) ^ seed
+        x ^= (0x9E3779B9 * (beat + 1)) & 0xFFFFFFFF
+        x &= 0xFFFFFFFF
+        x = (x + addr) & 0xFFFFFFFF          # the address again, through carries
+        x ^= (x << 13) & 0xFFFFFFFF
+        x ^= x >> 17
+        x ^= (x << 5) & 0xFFFFFFFF
+        out |= (x & 0xFFFFFFFF) << (32 * beat)
+    return out
+
+
+def bist_mgen(addr: int) -> int:
+    """ddr3_bist's mgen(): 1 suppresses beat b, lane l at bit 4b + l."""
+    cls = addr & 0x1F
+    if cls == 0:
+        return 0                    # write every byte
+    if cls == 1:
+        return 0xFFFFFFFF           # suppress every byte
+    return 1 << (cls - 2)           # one bit: 0 .. 29
+
+
+def bist_merge(a: int, b: int, m: int) -> int:
+    """ddr3_bist's merge(): a suppressed byte keeps `a`, the rest take `b`."""
+    out = 0
+    for beat in range(8):
+        for lane in range(4):
+            sh = 32 * beat + 8 * lane
+            src = a if m >> (4 * beat + lane) & 1 else b
+            out |= ((src >> sh) & 0xFF) << sh
+    return out
+
+
+def bist_classify(addr: int, diff: int) -> dict:
+    """Which of a failed word's two writes each byte holds.
+
+    `diff` is the test's err_diff, the read XOR the expectation it built from
+    these same generators, so diff ^ merge(a, b, mask) is the word the array
+    returned at `addr`.
+    """
+    a, b, m = bist_gen(addr, BIST_SEED), bist_gen(addr, BIST_SEED_B), bist_mgen(addr)
+    got = bist_merge(a, b, m) ^ diff
+    grid = [[None] * 4 for _ in range(8)]
+    count = {"A": 0, "B": 0, "=": 0, "0": 0, "x": 0}
+    for beat in range(8):
+        for lane in range(4):
+            sh = 32 * beat + 8 * lane
+            av, bv = (a >> sh) & 0xFF, (b >> sh) & 0xFF
+            gv = (got >> sh) & 0xFF
+            c = ("=" if av == bv and gv == av else
+                 "A" if gv == av else
+                 "B" if gv == bv else
+                 "0" if gv == 0 else "x")
+            grid[beat][lane] = c
+            count[c] += 1
+    return {"addr": addr, "mask": m, "grid": grid, "count": count,
+            "suppressed": sum(m >> i & 1 for i in range(32)),
+            "origin": bist_origin(addr, got)}
+
+
+def bist_origin(addr: int, got: int, span: int = 4) -> list:
+    """Which address's word each lane holds, by exact 64-bit match.
+
+    With gen() carrying the address through the adder, neighbouring words
+    differ in about 100 of 256 bits, so an exact lane match names the word's
+    origin.  `E` is the merge a masked write should leave.
+    """
+    def lane_word(w: int, lane: int) -> int:
+        return sum(((w >> (32 * beat + 8 * lane)) & 0xFF) << (8 * beat)
+                   for beat in range(8))
+
+    out = []
+    for lane in range(4):
+        g = lane_word(got, lane)
+        hits = []
+        for a2 in range(max(0, addr - span), addr + span + 1):
+            for name, w in (("A", bist_gen(a2, BIST_SEED)),
+                            ("B", bist_gen(a2, BIST_SEED_B)),
+                            ("E", bist_merge(bist_gen(a2, BIST_SEED),
+                                             bist_gen(a2, BIST_SEED_B), bist_mgen(a2)))):
+                if lane_word(w, lane) == g:
+                    hits.append(f"{name}@{a2 - addr:+d}")
+        out.append(hits)
+    return out
+
+
+def classify_report(c: dict) -> None:
+    """One failing word, read back byte by byte."""
+    print(f"first failure at word {c['addr']:#x} (a[4:0] {c['addr'] & 0x1F}, mask "
+          f"{c['mask']:#010x}, {c['suppressed']} of 32 bytes suppressed)")
+    print("  what each lane and beat holds, beats down and lanes across:")
+    print("        " + "  ".join(f"l{l}" for l in range(4)))
+    for beat in range(8):
+        print(f"    b{beat}   " + "   ".join(c["grid"][beat]))
+    print("  A the first write's byte, B the second write's, = the same in both, "
+          "0 zero, x neither")
+    print("  " + ", ".join(f"{k} {v}" for k, v in c["count"].items() if v))
+    if "origin" in c:
+        for lane, hits in enumerate(c["origin"]):
+            print(f"  lane {lane} holds exactly: " + (", ".join(hits) if hits else "no word near this address"))
+
+
 def exp_pat(e: dict) -> int:
     """A logged READ's expected pattern: its address data, else its row's."""
     return e["exp"] if "exp" in e else RC_PATTERNS[e["loc"]]
@@ -1387,6 +1504,9 @@ def main() -> int:
                     help="seconds to report the test's progress for, once a second")
     ct.add_argument("--diag", action="store_true",
                     help="then the test's per-pin and per-lane-and-beat counts and its log")
+    ct.add_argument("--classify", action="store_true",
+                    help="then read the first failing word back byte by byte: which lane and "
+                         "beat holds the first write's pattern, the second's, zero, or neither")
     mg = sub.add_parser("margin", help="the controller image: each lane's read delay stepped away "
                                        "from where training left it, under the memory test")
     mg.add_argument("--lanes", type=int, nargs="+", default=[0, 1, 2, 3])
@@ -1766,17 +1886,25 @@ def main() -> int:
                 if time.time() - t0 >= args.watch:
                     break
                 time.sleep(1.0)
+            if args.classify or args.diag:
+                c = core.ctrl()
+                if c["err"]:
+                    classify_report(bist_classify(c["err_addr"], c["err_diff"]))
+                else:
+                    print("no failing word to classify")
             if args.diag:
                 try:
                     g = core.ctrl_diag()
                 except RuntimeError as exc:
                     print(f"diagnostics unavailable: {exc}")
                     return 1
+                sat = lambda n: "65535+" if n == 0xFFFF else str(n)
                 print("failing words per DQ: " + " ".join(
-                    f"{q}:{n}" for q, n in enumerate(g["pins"]) if n) or "none")
+                    f"{q}:{sat(n)}" for q, n in enumerate(g["pins"]) if n) or "none")
                 for l in range(4):
                     if any(g["beats"][l]):
-                        print(f"  lane {l} by beat 0..7: {g['beats'][l]}")
+                        print(f"  lane {l} by beat 0..7: "
+                              f"[{', '.join(sat(n) for n in g['beats'][l])}]")
                 n_log = core.ctrl()["n_log"]
                 for e, en in enumerate(g["log"][:n_log]):
                     how = ("not re-read" if not en["checked"] else

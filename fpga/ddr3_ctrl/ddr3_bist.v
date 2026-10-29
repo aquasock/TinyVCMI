@@ -77,6 +77,11 @@ module ddr3_bist #(
             for (gk = 0; gk < 8; gk = gk + 1) begin
                 g3 = gk;
                 x = {a, g3} ^ s ^ (32'h9e3779b9 * (gk + 1));
+                // the address again, through the adder's carries.  XOR and
+                // shifts are linear, so a one-bit address step came out a few
+                // bits apart and the test could not tell one address's word
+                // from its neighbour's; a carry spreads it through the word.
+                x = x + {7'd0, a};
                 x = x ^ (x << 13);
                 x = x ^ (x >> 17);
                 x = x ^ (x << 5);

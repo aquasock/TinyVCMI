@@ -3374,3 +3374,73 @@ and `--baud` for it.  On the board's USB power the qualified image ran 710
 passes, about 1.8 x 10^12 words, without an error, which is more traffic than
 any battery-pack session and makes the supply a variable worth recording
 beside cool-down time.
+
+### The mask measurement, and the instrument that could not read it
+
+The mask image was rebuilt from `c65f546` with a fresh fuse reference built at
+place option 1 and route option 0: 469 `DFFN` and 18 `DFFNS` on the CLKDIV with
+no LUT driving a clock, PCLK at 101.63 MHz on the placer's default seed,
+`ctrl.bin` SHA-256 `8696fdb2…`, equal on all 306 DDR3 tables.  Every result
+below was taken with the board in one-wire mode and on the supply the user
+changed to this session; that supply is recorded here because the board's
+power is a variable, as entry 80 established.
+
+The board is healthy and the qualified image is still clean.  `eb59ee08…`,
+loaded between two runs of the mask image, trained all four lanes and ran 54
+passes in 45 s, about 1.9 x 10^9 words, with every lane error zero.
+
+The mask image trains -- 422 trials, all four lanes, write alignment d 1 b 2,
+seven CALIB pulses a lane, and tap windows of 54, 58, 47 and 50 -- and then
+fails 99.99% of words on all four lanes, at read offsets 0, 1, 2 and 3, so no
+capture offset explains it.  Restarts that caught the same first failing word
+reproduced the same bytes for the same lanes exactly, which rules out a
+marginal bus and points at something deterministic.  The test also hangs in
+state 4, `S_RDW`, waiting for a READ that never returns, so the read queue
+never drains.
+
+Reading the first failing word back byte by byte says the mask suppresses
+nothing.  At word `0x1`, the all-suppress case, no byte anywhere holds the
+first write's pattern; lane 3 holds the second pattern exactly, and lanes 0
+and 2 hold it with a constant XOR of `0x31` and `0x42` across every beat, lane
+1 with `0x02` except at beat 0.  A DM fault cannot produce that: it substitutes
+whole bytes between the two patterns, never a handful of bits inside them.
+
+The reason no reading could be trusted is the test's own data.  `gen()` folded
+the address into each 32-bit beat with XOR and shifts only, which are linear
+over GF(2), so a one-bit address step moved only the few bits three xorshift
+stages spread it to: `gen(0)` and `gen(1)` differed in 32 of 256 bits, two
+addresses apart in 48, and the second write differed from the first by about
+four bits a byte, taking only four distinct byte values across five addresses.
+A word read back from the array therefore could not be matched to the address
+it belonged to; entry 80's "closest 17 bits off" was measured with this
+generator.  Folding the address through a 32-bit adder (`x = x + {7'd0, a}`)
+lets the carry propagate it, and neighbouring addresses now differ in 100 to
+120 of 256 bits while the two writes differ in 109 to 119.  `tools/
+ddr3_write_probe.py`'s replica of `gen()` reproduces the RTL bit for bit --
+checked in Icarus on six addresses, including the merge -- which is what makes
+the new `ctrl --classify` possible: it rebuilds the first failing word from
+`err_addr` and `err_diff`, prints for every lane and beat which of the two
+patterns the byte holds, and searches four addresses either side for an exact
+whole-lane match, so a lane's word can be named by the address it came from.
+Checked host-side, the word of address 9 offered as address 7 comes back
+`B@+2` on all four lanes.
+
+Entry 80's isolation experiment was run again and is still unanswered.  The
+image rebuilt from the same sources with `mgen` forced to zero came out byte
+for byte `29f01c97…`, its own image, 306 tables equal at PCLK 103.18 MHz, and
+on this supply and a warm board it does not train: `error 0`, lanes locked
+`0000`, write alignment none.  Training really does follow placement alone, as
+TOOL-049 and TOOL-050 say, so the doubled write has still not been measured.
+
+The instrumented image builds clean -- 306 tables equal, 469 `DFFN` and 18
+`DFFNS`, PCLK 100.75 MHz at seed 1 and 101.85 MHz at seed 2, `.bin`
+`60024e48…` and `6b769a4d…` -- but neither placement trains: `error 3`, lanes
+locked `1111`, 390 trials, write alignment none, so the test never runs.  The
+added adder per beat moved the placement and the training did not survive it,
+which is the same failure the isolation image shows.
+
+One defect recorded in entry 80 is withdrawn.  The error-log page decodes
+correctly on the mask image: words `0x1` to `0x8`, lanes and beats populated,
+and the re-read flag set, so the zero fields that entry saw came from log
+entries that had been cleared, not from a page decode or an entry layout
+error.

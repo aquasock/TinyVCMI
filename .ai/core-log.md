@@ -2689,3 +2689,35 @@ Bring for approval a build with a constant all-suppressing mask, whose expectati
 - User Test: N/A
 
 ---
+
+## 81 COMMIT Unreleased 2026-10-29T13:40:00-07:00
+
+#### Coming From:
+
+Unreleased c65f546
+
+#### Purpose:
+
+Measure the controller's write mask with an instrument that can attribute a failing word's bytes, and settle whether the mask, the doubled write or the read stream is what fails on the board.
+
+#### Outcome:
+
+The mask image was rebuilt from `c65f546` against a fresh fuse reference at place option 1 and route option 0: 469 `DFFN` and 18 `DFFNS` on the CLKDIV with no LUT driving a clock, PCLK 101.63 MHz on the default seed, `.bin` SHA-256 `8696fdb2…`, equal on all 306 DDR3 tables; every board result this cycle was taken in one-wire mode, warm, on the supply the user changed to mid-session, which is recorded here because entry 80 asked for supply beside cool-down. The board is healthy: the qualified image `eb59ee08…` ran 54 passes, about 1.9 x 10^9 words, with every lane error zero, and was loaded again last, so the board is left on it with 20 passes and no error. The mask image trains, 422 trials, all four lanes, d 1 b 2, seven CALIB pulses a lane, and then fails 99.99% of words on all four lanes at read offsets 0, 1, 2 and 3; restarts catching the same first failing word reproduced the same bytes on the same lanes exactly, so the fault is deterministic and not a marginal bus, and the test hangs in state 4, `S_RDW`, waiting for a READ that never returns. Reading the first failing word back says DM suppresses nothing at word `0x1`, the all-suppress case: no byte holds the first write's pattern, lane 3 holds the second pattern exactly, lanes 0 and 2 hold the second pattern XOR `0x31` and `0x42` on every beat, and lane 1 XOR `0x02` except at beat 0, which no DM fault produces. That reading could not be trusted because the test's own data was blind to the address: `gen()` folded the address in with XOR and shifts only, which are linear, so `gen(0)` and `gen(1)` differed in 32 of 256 bits, addresses two apart in 48, and the second write differed from the first by about four bits a byte with only four distinct byte values across five addresses, which is also why entry 80's closest-17-bits analysis proves nothing. Folding the address through a 32-bit adder, `x = x + {7'd0, a}`, makes the carry spread it: neighbours now differ in 100 to 120 of 256 bits and the two writes in 109 to 119, the probe's replica of `gen()`, `mgen()` and `merge()` agrees with the RTL bit for bit in Icarus 14 on six addresses, `tools/sim_ddr3_ctrl.sh` still passes including its `nodm` mutant, and `ctrl --classify` now rebuilds the first failing word from `err_addr` and `err_diff`, prints which pattern each lane and beat holds, and names the address a lane's word came from by exact match within four addresses, checked host-side where the word of address 9 offered as address 7 returns `B@+2` on all four lanes. Entry 80's isolation experiment was run again and is still unanswered: the image rebuilt with `mgen` forced to zero came out byte for byte `29f01c97…`, its own image, 306 tables equal at 103.18 MHz, and on this supply and a warm board it does not train, `error 0`, lanes locked `0000`, write alignment none, so training follows placement alone as TOOL-049 and TOOL-050 say and the doubled write has still not been measured. The instrumented image builds clean at seed 1, `60024e48…` at PCLK 100.75 MHz, and at seed 2, `6b769a4d…` at 101.85 MHz, 306 tables equal both times, but neither placement trains either, `error 3`, lanes locked `1111`, 390 trials, write alignment none, so it has not yet handed the bus over, and a seed-4 attempt was stopped at the user's direction before it routed. Entry 80's error-log defect is withdrawn: the page decodes correctly on the mask image, words `0x1` to `0x8` with lanes and beats populated and the re-read flag set, so the zero fields it saw came from entries that had been cleared, not from a decode or layout error. TOOL-054 was added and `docs/ddr3-open-flow.md` gained the section. Board logs are in `build/ddr3_boot/gen_v1`, `gen_v2`, `mask_classify_1` to `mask_classify_3`, `mask_repeat`, `mask_offsets`, `iso_29f0` and `final_vout`, not committed. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering and active-log capacity.
+
+#### Next Steps:
+
+Get the instrumented image to hand the bus over before measuring anything on it: retry nextpnr placements, or cut the test's added logic so it fits again, and require `training: done, error 0` before reading a result, since two of its placements and the isolation image all stopped at write alignment. Then run `ctrl --classify` on the first failing word and let it say what each lane holds: bytes equal to the second pattern where the mask suppresses mean DM never reaches the pads, and the pad-level DM path is then the place to look, among the serializer's D inputs, the beat a mask bit is gathered into, and the boundary bit; bytes equal to another address's word mean the read stream returned a neighbouring request's burst and the controller's read offset and gate are at fault. Either answer retires the other, and the read stream's frame, the state-4 hang, the still-unmeasured doubled write, the write image's untimed boundary, the mid-calibration stall, the `D108` unused-pin contradiction and the `is_mipi` bug outside the DDR context remain open. Every board result from now on records the supply beside the cool-down, and the supply changed again this session.
+
+#### Files Modified:
+
+- docs/ddr3-open-flow.md
+- fpga/ddr3_ctrl/ddr3_bist.v
+- tools/ddr3_write_probe.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: N/A
+
+---
