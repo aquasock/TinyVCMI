@@ -3318,3 +3318,59 @@ that reading on two exact consequences of the RTL: a summary with every
 `lane_err` zero has every page zero, and a summary with any `lane_err`
 non-zero has `n_log` non-zero, which the older 25-bit address field can never
 report.  Run against the older image on the board, it exits 1 and says why.
+
+### The write mask, and what the board says about it
+
+Byte-granular writes are the next thing the controller needs: the AE350 does
+byte and halfword stores, and until now DM has been tied low so every write
+covered all 32 bits.  The mask path runs from the test through the
+controller to the pads: `cmd_wmask[31:0]`, bit `4*beat + lane`, one meaning
+suppress, which is DDR3-002's polarity, carried in `ddr3_ctl`'s request FIFO
+and presented on the DFI a PCLK after the command as the data is; delayed
+beside the data in `dfi_phy`'s line and gathered per lane into a DM byte that
+takes the same shift the data does, so a beat's mask bit lands where that
+beat's data does; and registered on the falling edge with the rest of the
+outbound boundary, 469 `DFFN` and 18 `DFFNS` now.  `ctrl_glue` muxes the
+training's all-write against the controller's mask.  The memory test writes
+each word twice, its pattern whole and then a second pattern through the
+mask, so the read must return the merge.
+
+The image closes PCLK at 101.63 MHz, equal to its Gowin reference on all 306
+DDR3 tables.  Getting there needed one fix that had nothing to do with the
+mask: the critical path was the test's log entry, `ck_got` through eight
+cascaded LUT4s into `elog`, 4.62 ns of logic and 6.04 ns of routing on one
+placement, because `lane_bad` and `beat_bad` are wide reductions of the XOR
+and the entry lands in a slice indexed by `n_log`.  Registering the entry a
+PCLK before it is written leaves the write a register-to-register copy, and
+the design then closes on the placer's default seed.  Before that fix the
+same sources reached 86 to 99 MHz across six seeds and one seed could not
+place at all; the added test logic had taken the design to the edge.
+
+On the board the mask does not work yet, and the way it fails is not a mask
+mapping error.  With the generator set to a single mask bit per address --
+one address writing every byte, the next suppressing every byte -- the first
+failure is word `0x1`, the all-suppress case, where nothing should be
+written: lane 3 takes the second pattern on all eight beats while lanes 0, 1
+and 2 hold neither pattern, and every word after it fails.  Lanes 0 to 2 and
+lane 3 therefore fail in opposite directions, and no permutation, inversion,
+rotation or transpose of the 32 mask bits reproduces the word that came
+back.  The netlist is not at fault: `dm0` to `dm3` take `bnd_lo[80..111]`,
+each DQ lane starts exactly 64 bits later, and every DM serializer sits in
+its own pad's IOLOGIC, so the mask reaches the pads where it should and the
+306-table check, which compares configuration and not connection, would not
+see a mistake there either.  What remains open is whether DM itself is at
+fault or whether the first of a back-to-back pair of writes to one address is
+lost, and the next experiment separates them: a build with a constant
+all-suppressing mask expects the *first* write's pattern, so a dropped first
+write shows up at once.
+
+The board is now reached without TinyTang, which is a capability this project
+did not have before.  In the board's one-wire mode the OTG cable is an FT2232
+bridge: JTAG on interface 0 loads the `.fs` (never the `.bin`, which is only
+TinyTang's packing) with `openFPGALoader -c ft2232`, and the FPGA UART on
+interface 1 answers the same `AA 00 <cmd> <arg>` frames at 2 Mbaud, with no
+shell and no desktop in the path.  `tools/ddr3_write_probe.py` takes `--port`
+and `--baud` for it.  On the board's USB power the qualified image ran 710
+passes, about 1.8 x 10^12 words, without an error, which is more traffic than
+any battery-pack session and makes the supply a variable worth recording
+beside cool-down time.

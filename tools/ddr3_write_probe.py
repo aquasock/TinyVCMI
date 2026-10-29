@@ -121,11 +121,20 @@ TOTAL = 4 + PAYLOAD
 
 
 class Core:
-    def __init__(self, port: str):
-        self.ser = serial.Serial(port, 115200, timeout=0.2, write_timeout=10)
+    def __init__(self, port: str, baud: int = 115200):
+        """Open the core's link.
+
+        Two paths reach it and both speak `AA 00 <cmd> <arg>`: TinyTang's CDC
+        console, which the host hands to the core with `fpgapipe`, and, in the
+        board's one-wire mode, the OTG cable's FT2232 UART at 2 Mbaud straight
+        to the FPGA's transport pins (TinyTang TOOL-012), where there is no
+        shell to type at.  Only the CDC path needs the hand-off.
+        """
+        self.ser = serial.Serial(port, baud, timeout=0.2, write_timeout=10)
         self.ser.reset_input_buffer()
-        self.ser.write(b"\r\nfpgapipe\r\n")
-        time.sleep(0.6)
+        if "ttyACM" in port:
+            self.ser.write(b"\r\nfpgapipe\r\n")
+            time.sleep(0.6)
         self.ser.reset_input_buffer()
 
     def close(self):
@@ -279,7 +288,7 @@ class Core:
         return {"own": b[0] >> 7, "trained": b[0] >> 6 & 1, "running": b[0] >> 5 & 1,
                 "bad_phase": b[0] >> 4 & 1, "rd_off": b[0] >> 2 & 3, "err": b[0] >> 1 & 1,
                 "state": b[1] & 15, "walign_ok": b[1] >> 7, "passes": int.from_bytes(b[2:4], "little"),
-                "written": u32(4), "checked": u32(8),
+                "written": u32(4), "checked": u32(8),   # the test writes each word twice
                 "lane_err": [u32(12 + 4 * l) for l in range(4)],
                 "err_addr": u32(28) & 0x1FFFFFF, "n_log": u32(28) >> 25 & 15,
                 "err_diff": int.from_bytes(b[32:64], "little")}
@@ -302,11 +311,14 @@ class Core:
         for every page, which decodes as plausible nonsense: entry 78's
         ddr3_ctrl_1d56.bin read as 33,764 failing words on DQ 0 from bytes that
         were its status and state.  Two consequences of the RTL, both exact, tell
-        the images apart.  A word cannot fail without a lane failing, so a
-        summary with every lane_err zero has every page zero.  And an error
+        the images apart.  A word cannot fail without a lane failing, and
+        pin_err and beat_err are incremented in the same cycle as lane_err, so a
+        summary with every lane_err zero has those two pages zero.  And an error
         writes the log before it counts, so a summary with any lane_err non-zero
         has n_log non-zero -- while the older frame spends only 25 bits on the
-        address and can never report one.  Neither holds for a page-less image.
+        address and can never report one.  The log page is no evidence either
+        way: it survives a test restart, which resets the state machine but not
+        the log, so it can hold entries while the counters read zero.
         """
         u16 = lambda b, i: int.from_bytes(b[2 * i:2 * i + 2], "little")
         before = self.ctrl()
@@ -314,7 +326,7 @@ class Core:
         self.ctrl_page(0)
         after = self.ctrl()
         clean = not any(before["lane_err"]) and not any(after["lane_err"])
-        if (clean and (any(p1) or any(p2) or any(p3))) or \
+        if (clean and (any(p1) or any(p2))) or \
                 (not clean and after["n_log"] == 0):
             raise RuntimeError(
                 "this image has no diagnostic pages: it ignores 0x3C 0x40 + p and "
@@ -1214,6 +1226,8 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--port", default="/dev/ttyACM0")
+    ap.add_argument("--baud", type=int, default=115200,
+                    help="the CDC console ignores this; the one-wire FT2232 UART needs 2000000")
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("status")
     lv = sub.add_parser("level")
@@ -1425,7 +1439,7 @@ def main() -> int:
         log_report(json.load(open(args.file)))
         return 0
 
-    core = Core(args.port)
+    core = Core(args.port, args.baud)
     try:
         if core.request(0x01)[4] != 0x56:
             raise RuntimeError("the loaded core is not TinyVCMI's")
@@ -1737,7 +1751,7 @@ def main() -> int:
                 line = (f"controller {'owns the bus' if c['own'] else 'not yet'}"
                         f"{', trained' if c['trained'] else ''}, read offset {6 + c['rd_off']}, "
                         f"test {'running' if c['running'] else 'stopped'} in state {c['state']}: "
-                        f"{c['passes']} passes, {c['written']} written, {c['checked']} checked, "
+                        f"{c['passes']} passes, {c['written']} writes, {c['checked']} checked, "
                         f"lane errors {c['lane_err']}")
                 if not c["walign_ok"]:
                     line += "; the training's write alignment is not the PHY's, so no hand-over"

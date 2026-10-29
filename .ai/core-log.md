@@ -2650,3 +2650,42 @@ Bring for approval B2, the DM mask path, and then B3, the AE350's bridge, which 
 - User Test: N/A
 
 ---
+## 80 COMMIT Unreleased 2026-10-29T03:00:00-07:00
+
+#### Coming From:
+
+Unreleased 59443aa
+
+#### Purpose:
+
+Add byte-granular write masking to the controller's path from the test to the DM pads, and make the image close 100 MHz on the placer's default seed rather than by seed luck.
+
+#### Outcome:
+
+The mask path is implemented end to end and every offline gate passes, but it does not work on the board and the way it fails is not yet explained. `ddr3_ctl` carries `cmd_wmask[31:0]`, bit `4*beat + lane` meaning suppress, in its request FIFO and presents `dfi_wrmask` a PCLK after the command as the data is; `dfi_phy` delays the mask in a line beside the data and gathers it per lane into a DM byte that takes the same shift the data takes; `ctrl_glue` muxes the training's all-write against the controller's mask; the mask joins the outbound falling-edge boundary, which is now 469 `DFFN` and 18 `DFFNS`; and `ddr3_bist` writes each word twice, its pattern whole and then a second pattern through the mask, with a merge expectation, addresses whose `a[4:0]` is 0 writing every byte and 1 suppressing every byte. The simulation gate passes including a sixth mutant whose memory ignores DM. Timing needed a fix with nothing to do with the mask: the critical path was the test's log entry, `ck_got` through eight cascaded LUT4s into `elog`, 4.62 ns of logic and 6.04 ns of routing in one placement, because `lane_bad` and `beat_bad` are wide reductions of the XOR and the entry lands in a `n_log`-indexed slice; registering the entry a PCLK before it is written leaves the write register to register, and the image then closed 101.63 MHz on the default seed and 103.18 MHz for the isolation build, equal on all 306 DDR3 tables both times, where before the fix six seeds reached 86.64 to 99.09 MHz and one could not place at all. The board is now reached without TinyTang, which this project had not done before: one-wire mode enumerates a Sipeed FT2232, the `.fs` loads over JTAG with `openFPGALoader -c ft2232`, and the FPGA UART on `/dev/ttyUSB1` at 2 Mbaud answers the same `AA 00 <cmd> <arg>` frames, with `tools/ddr3_write_probe.py` gaining `--port` and `--baud`; cmd 0x00 is the TinyTang desktop's identify and reads as silence on these images, which cost a session before it was found. Over that path on the hub's USB power the qualified image ran 710 passes, about 1.8 x 10^12 words, with no lane error, more traffic than any battery-pack session. The mask itself fails on the board in a way no mask mapping explains: with a single mask bit per address the first failure is word `0x1`, the all-suppress case where nothing should be written, and lane 3 takes the second pattern on all eight beats while lanes 0, 1 and 2 hold neither pattern, with every word after it failing; neither the correct mask nor its inverse, a beat rotation, a lane permutation, a transpose nor an A/B swap reproduces the word that came back, closest 17 bits off. The netlist is not the fault -- `dm0` to `dm3` take `bnd_lo[80..111]`, each DQ lane starts exactly 64 bits later, and every DM serializer sits in its own pad's IOLOGIC -- and the 306-table check compares configuration, not connection, so it would not see a mistake there. The isolation build of the same sources with every write unmasked, `29f01c97`, closed 103.18 MHz and equal on all 306 tables but never handed the bus over: training reported error 3 and no write alignment, 390 trials, so nothing about the doubled write was measured and that experiment is open rather than answered. TOOL-053 was added and `docs/ddr3-open-flow.md` gained the section. Board logs are in `build/ddr3_boot/onewire_qual`, `onewire_dm`, `onewire_sbit` and `onewire_nomask`, not committed; one-wire mode has no TinyTang, so no desktop core was restored and the board was left running the last image loaded. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering and active-log capacity.
+
+#### Next Steps:
+
+Bring for approval a build with a constant all-suppressing mask, whose expectation is the first write's pattern, so that a dropped first write of a back-to-back pair shows up at once and the DM fault is separated from a fault in writing the same address twice; confirm the image trains before drawing any conclusion from it, since `29f01c97` did not and by TOOL-049 and TOOL-050 whether an image trains can depend on placement alone. Then fix the mask path against what the measurement says rather than by inference, and requalify over repeated loads. The diagnostics have a defect of their own to settle: the error-log page decodes as entries whose lane and beat fields are zero, which cannot happen for a logged entry, so either the page read or the field layout is wrong. The whole-top simulation of the generated controller top remains on hold, the write image's boundary remains untimed, and the mid-calibration stall, the `D108` unused-pin contradiction and the `is_mipi` bug outside the DDR context remain open. Every board result from now on records the supply configuration beside the cool-down, since the hub's USB power and the battery pack are different sources and the qualified image ran longer clean on USB than any battery session.
+
+#### Files Modified:
+
+- docs/ddr3-open-flow.md
+- fpga/ddr3_ctrl/ctrl_glue.v
+- fpga/ddr3_ctrl/ddr3_bist.v
+- fpga/ddr3_ctrl/ddr3_ctl.v
+- fpga/ddr3_ctrl/dfi_phy.v
+- fpga/ddr3_ctrl/tb_ctrl.v
+- fpga/ddr3_ctrl/top.v
+- tools/build_ddr3_ctrl.sh
+- tools/ddr3_write.py
+- tools/ddr3_write_probe.py
+- tools/sim_ddr3_ctrl.sh
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: N/A
+
+---

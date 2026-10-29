@@ -32,11 +32,14 @@
 // switch rows in a bank, and every word must come back as written, with no
 // READ or WRITE off phase 0.
 //
-// With MODEL_FAULTS the model writes word 100 wrong the first time, lane 1
+// With MODEL_FAULTS the model writes word 33 wrong the first time, lane 1
 // pin 1 beat 3 flipped, and reads word 2000 wrong the first time, lane 2
 // pin 1 beat 5 flipped, and the test's diagnostics must say so: those pins
 // and beats counted and nothing else, both words logged, the first re-read
-// as wrong as the first read and the second right.
+// as wrong as the first read and the second right.  Word 33 is one whose
+// second, masked write suppresses every byte -- addresses with a[4:0] of 1
+// do -- so the flipped byte survives it; any other word could have had that
+// byte rewritten by its masked write and the fault washed out.
 //
 // MODEL_RDO and MODEL_D override the model's read offset and write
 // alignment, so that a design whose offset or alignment were not the
@@ -80,6 +83,7 @@ module tb_ctrl;
     wire [63:0]  p_addr;
     wire         p_odt, p_dq_drive, p_dqs_drive, ctrl_rd, ctrl_accept;
     wire [255:0] wdq;
+    wire [31:0]  dm;
     wire [511:0] ext_status;
 
     ctrl_glue #(.N_LOG2(NL), .R_LOG2(NL), .SNAP_LOG2(4)) dut (
@@ -91,7 +95,7 @@ module tb_ctrl;
         .ctrl_rot(12'd0), .ext_cmd(ext_cmd), .ext_tog(ext_tog),
         .p_cs_n(p_cs_n), .p_ras_n(p_ras_n), .p_cas_n(p_cas_n), .p_we_n(p_we_n),
         .p_ba(p_ba), .p_addr(p_addr), .p_odt(p_odt), .p_dq_drive(p_dq_drive),
-        .p_dqs_drive(p_dqs_drive), .wdq(wdq), .ctrl_rd(ctrl_rd), .ctrl_accept(ctrl_accept),
+        .p_dqs_drive(p_dqs_drive), .wdq(wdq), .dm(dm), .ctrl_rd(ctrl_rd), .ctrl_accept(ctrl_accept),
         .ext_status(ext_status));
 
     // a controller a timing short, so the monitor is seen to catch it
@@ -128,8 +132,9 @@ module tb_ctrl;
     integer     rd_key [0:63];
     integer     rd_n = 0;
     reg [255:0] wdq_hist [0:15];        // the serializers' words, newest at 0
+    reg [31:0]  dm_hist [0:15];         // and their DM words
     reg [15:0]  drv_hist = 16'd0;
-    integer     n_reads = 0, n_writes = 0, n_bad_pin = 0, n_refs = 0;
+    integer     n_reads = 0, n_writes = 0, n_bad_pin = 0, n_refs = 0, n_masked = 0, n_all = 0;
     reg         fault_w = 1'b0, fault_r = 1'b0;
     // timing, in memory clocks; -1000 is long ago
     integer     t_act [0:7], t_pre [0:7], t_rd [0:7], t_wr [0:7];
@@ -145,10 +150,11 @@ module tb_ctrl;
         end
     endtask
 
-    integer i, ph, k, pn, bb, key;
+    integer i, ph, k, pn, bb, key, ml;
     reg [2:0]  cb;
     reg [15:0] ca;
-    reg [255:0] burst, w_first, w_second;
+    reg [255:0] burst, w_first, w_second, merged;
+    reg [31:0]  m_first, m_second, mburst, d_first, d_second;
     reg        cmd_cs, cmd_ras, cmd_cas, cmd_we;
     initial begin
         for (i = 0; i < 8; i = i + 1) begin
@@ -157,15 +163,22 @@ module tb_ctrl;
         end
         for (i = 0; i < 4; i = i + 1) t_act4[i] = -1000;
         for (i = 0; i < (1 << NL); i = i + 1) mem[i] = 256'd0;
-        for (i = 0; i < 16; i = i + 1) wdq_hist[i] = 256'd0;
+        for (i = 0; i < 16; i = i + 1) begin
+            wdq_hist[i] = 256'd0;
+            dm_hist[i] = 32'd0;
+        end
     end
 
     // the pads hold a PCLK's values from one rising edge to the next; read
     // them at the falling edge, and set dq_q there for the next rising edge
     always @(negedge pclk) begin
         cyc = cyc + 1;
-        for (i = 15; i > 0; i = i - 1) wdq_hist[i] = wdq_hist[i - 1];
+        for (i = 15; i > 0; i = i - 1) begin
+            wdq_hist[i] = wdq_hist[i - 1];
+            dm_hist[i] = dm_hist[i - 1];
+        end
         wdq_hist[0] = wdq;
+        dm_hist[0] = dm;
         drv_hist = {drv_hist[14:0], p_dq_drive && p_dqs_drive};
 
         // our drive against a read burst on the bus in this PCLK
@@ -250,18 +263,39 @@ module tb_ctrl;
         while (wr_n > 0 && cyc == wr_cyc[0] + WD + 1) begin
             w_first = wdq_hist[1];
             w_second = wdq_hist[0];
+            d_first = dm_hist[1];
+            d_second = dm_hist[0];
             if (!drv_hist[0] || !drv_hist[1]) fail("DQ or DQS not driven over a burst");
             for (pn = 0; pn < 32; pn = pn + 1)
                 for (bb = 0; bb < 8; bb = bb + 1)
                     burst[8*pn + bb] = (bb < 8 - WB) ? w_first[8*pn + WB + bb]
                                                      : w_second[8*pn + bb - (8 - WB)];
+            // DM takes the same shift as the data, so a beat's mask bit lands
+            // where that beat's byte does
+            for (ml = 0; ml < 4; ml = ml + 1)
+                for (bb = 0; bb < 8; bb = bb + 1)
+                    mburst[4*bb + ml] = (bb < 8 - WB) ? d_first[8*ml + WB + bb]
+                                                      : d_second[8*ml + bb - (8 - WB)];
 `ifdef MODEL_FAULTS
-            if (wr_key[0] == 100 && !fault_w) begin
+            if (wr_key[0] == 33 && !fault_w) begin
                 burst[8*9 + 3] = ~burst[8*9 + 3];
                 fault_w = 1'b1;
             end
 `endif
-            mem[wr_key[0]] = burst;
+            // a suppressed byte keeps what was there; the rest take the burst
+`ifdef MODEL_NODM
+            mem[wr_key[0]] = burst;     // the mutant: DM ignored entirely
+`endif
+            merged = mem[wr_key[0]];
+            for (pn = 0; pn < 32; pn = pn + 1)
+                for (bb = 0; bb < 8; bb = bb + 1)
+                    if (!mburst[4*bb + (pn >> 3)])
+                        merged[8*pn + bb] = burst[8*pn + bb];
+`ifndef MODEL_NODM
+            mem[wr_key[0]] = merged;
+`endif
+            n_masked = n_masked + ((mburst == 32'h00000000) ? 0 : 1);
+            if (mburst == 32'hffffffff) n_all = n_all + 1;
             for (i = 0; i < wr_n - 1; i = i + 1) begin
                 wr_cyc[i] = wr_cyc[i + 1];
                 wr_key[i] = wr_key[i + 1];
@@ -309,7 +343,7 @@ module tb_ctrl;
                 en = dut.bist.elog[64*e +: 64];
                 $display("      log %0d: word %0d lanes %b beats %b re-read issued %b checked %b right %b same %b",
                          e, en[24:0], en[28:25], en[36:29], en[37], en[38], en[39], en[40]);
-                if (en[24:0] == 100 && en[28:25] == 4'b0010 && en[36:29] == 8'b0000_1000) begin
+                if (en[24:0] == 33 && en[28:25] == 4'b0010 && en[36:29] == 8'b0000_1000) begin
                     found_w = found_w + 1;
                     if (e == 0 && !(en[38] && !en[39] && en[40]))
                         fail("the written-wrong word's re-read was not as wrong as its read");
@@ -339,10 +373,16 @@ module tb_ctrl;
         // two passes: 2 x (2^10 written, 2^10 + 2^10 read)
         wait (dut.bist.passes == 16'd2);
         repeat (40) @(posedge sys_clk);
-        $display("      %0d WRITEs, %0d READs at the pads; status: %0d passes, %0d written, %0d checked",
-                 n_writes, n_reads, st_passes, st_written, st_checked);
+        $display("      %0d WRITEs, %0d READs at the pads, %0d of the WRITEs masked and %0d suppressing every byte; status: %0d passes, %0d written, %0d checked",
+                 n_writes, n_reads, n_masked, n_all, st_passes, st_written, st_checked);
         if (st_passes < 2) fail("the status frame did not report two passes");
         if (dut.bist.n_checked < 2 * 2 * (1 << NL)) fail("fewer words checked than read");
+        // a masked byte must have been seen to keep its word, and a write to
+        // an all-suppressing mask must have left its word alone
+`ifndef NOMASK
+        if (n_masked == 0) fail("no masked write reached the pads");
+        if (n_all == 0) fail("no word was written through an all-suppressing mask");
+`endif
 `ifdef MODEL_FAULTS
         check_faults;
 `else
@@ -360,7 +400,7 @@ module tb_ctrl;
         if (!ctrl_accept || !ext_status[15]) fail("the controller did not accept the trained alignment");
 `ifndef MODEL_FAULTS
         if (errors == 0)
-            $display("PASS  ddr3_ctl through dfi_phy: %0d words written and %0d read back whole",
+            $display("PASS  ddr3_ctl through dfi_phy: %0d words written and %0d read back whole, a masked write leaving the bytes it suppresses",
                      dut.bist.n_written, dut.bist.n_checked);
         else
 `endif

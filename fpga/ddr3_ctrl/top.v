@@ -85,6 +85,7 @@ module top (
         .STEP(step), .LOCK(dll_lock));
 
     wire [255:0] wdq;                   // lane l, pin p, beat b at 64l + 8p + b
+    wire [31:0]  dm;                    // 1 suppresses beat b, lane l at 4b + l
     wire [3:0] p_cs_n, p_ras_n, p_cas_n, p_we_n;
     wire [11:0] p_ba;                   // phase p at 3p +: 3
     wire [63:0] p_addr;                 // phase p at 16p +: 16
@@ -108,6 +109,7 @@ module top (
     wire [31:0] wstep_b;
     wire [31:0] calib_b;
     wire [255:0] wdq_b;
+    wire [31:0] dm_b;
     wire dq_drive_b;
     wire dqs_drive_b;
     wire [3:0] pb_cs_n;
@@ -120,11 +122,11 @@ module top (
     wire cke_b;
     assign dq_q = dq_io;   // straight through: a falling-edge capture of it fails (TOOL-052)
     assign rvalid = rvalid_io;   // straight through: a falling-edge capture of it fails (TOOL-052)
-    wire [436:0] bnd_lo_d = {read_en, rclksel, hold, rmove, rdir, wstep, calib, wdq, p_dq_drive, p_dqs_drive, p_ba, p_addr, p_odt, cke};
-    wire [436:0] bnd_lo_q;
-    assign {read_en_b, rclksel_b, hold_b, rmove_b, rdir_b, wstep_b, calib_b, wdq_b, dq_drive_b, dqs_drive_b, pb_ba, pb_addr, pb_odt, cke_b} = bnd_lo_q;
+    wire [468:0] bnd_lo_d = {read_en, rclksel, hold, rmove, rdir, wstep, calib, wdq, dm, p_dq_drive, p_dqs_drive, p_ba, p_addr, p_odt, cke};
+    wire [468:0] bnd_lo_q;
+    assign {read_en_b, rclksel_b, hold_b, rmove_b, rdir_b, wstep_b, calib_b, wdq_b, dm_b, dq_drive_b, dqs_drive_b, pb_ba, pb_addr, pb_odt, cke_b} = bnd_lo_q;
     genvar bnd_lo_i;
-    generate for (bnd_lo_i = 0; bnd_lo_i < 437; bnd_lo_i = bnd_lo_i + 1) begin : bnd_lo
+    generate for (bnd_lo_i = 0; bnd_lo_i < 469; bnd_lo_i = bnd_lo_i + 1) begin : bnd_lo
         bnd_ff #(.INIT(1'b0)) ff (.CLK(pclk), .D(bnd_lo_d[bnd_lo_i]), .Q(bnd_lo_q[bnd_lo_i]));
     end endgenerate
     wire [17:0] bnd_hi_d = {rloadn, wloadn, p_cs_n, p_ras_n, p_cas_n, p_we_n};
@@ -141,7 +143,6 @@ module top (
     // the strobe toggles each half clock; odd DQ carry the inverse
     wire [7:0] dqs_d = 8'b01010101;
     wire [7:0] dq_npat = ~dq_pat;
-    wire [7:0] dm_d = 8'h00;    // DM low: every byte written
     wire dqsi_0, r90_0, w0_0, w270_0;
     wire [2:0] rp_0, wp_0;
     DQS #(.FIFO_MODE_SEL(1'b0), .RD_PNTR(3'b000), .DQS_MODE("X4"), .HWL("true")) dqs_0 (
@@ -318,10 +319,11 @@ module top (
         .Q0(dq_io[56]), .Q1(dq_io[57]), .Q2(dq_io[58]), .Q3(dq_io[59]),
         .Q4(dq_io[60]), .Q5(dq_io[61]), .Q6(dq_io[62]), .Q7(dq_io[63]));
 
+    wire [7:0] dm0_d = dm_b[0 +: 8];
     wire dm0_o, dm0_t;
     OSER8_MEM #(.HWL("false"), .TCLK_SOURCE("DQSW"), .TXCLK_POL(1'b0)) dm0_ser (
-        .D0(dm_d[0]), .D1(dm_d[1]), .D2(dm_d[2]), .D3(dm_d[3]),
-        .D4(dm_d[4]), .D5(dm_d[5]), .D6(dm_d[6]), .D7(dm_d[7]),
+        .D0(dm0_d[0]), .D1(dm0_d[1]), .D2(dm0_d[2]), .D3(dm0_d[3]),
+        .D4(dm0_d[4]), .D5(dm0_d[5]), .D6(dm0_d[6]), .D7(dm0_d[7]),
         .TX0(dq_tx[0]), .TX1(dq_tx[1]), .TX2(dq_tx[2]), .TX3(dq_tx[3]),
         .PCLK(pclk), .FCLK(mclk), .TCLK(w0_0), .RESET(phy_rst),
         .Q0(dm0_o), .Q1(dm0_t));
@@ -503,10 +505,11 @@ module top (
         .Q0(dq_io[120]), .Q1(dq_io[121]), .Q2(dq_io[122]), .Q3(dq_io[123]),
         .Q4(dq_io[124]), .Q5(dq_io[125]), .Q6(dq_io[126]), .Q7(dq_io[127]));
 
+    wire [7:0] dm1_d = dm_b[8 +: 8];
     wire dm1_o, dm1_t;
     OSER8_MEM #(.HWL("false"), .TCLK_SOURCE("DQSW"), .TXCLK_POL(1'b0)) dm1_ser (
-        .D0(dm_d[0]), .D1(dm_d[1]), .D2(dm_d[2]), .D3(dm_d[3]),
-        .D4(dm_d[4]), .D5(dm_d[5]), .D6(dm_d[6]), .D7(dm_d[7]),
+        .D0(dm1_d[0]), .D1(dm1_d[1]), .D2(dm1_d[2]), .D3(dm1_d[3]),
+        .D4(dm1_d[4]), .D5(dm1_d[5]), .D6(dm1_d[6]), .D7(dm1_d[7]),
         .TX0(dq_tx[0]), .TX1(dq_tx[1]), .TX2(dq_tx[2]), .TX3(dq_tx[3]),
         .PCLK(pclk), .FCLK(mclk), .TCLK(w0_1), .RESET(phy_rst),
         .Q0(dm1_o), .Q1(dm1_t));
@@ -688,10 +691,11 @@ module top (
         .Q0(dq_io[184]), .Q1(dq_io[185]), .Q2(dq_io[186]), .Q3(dq_io[187]),
         .Q4(dq_io[188]), .Q5(dq_io[189]), .Q6(dq_io[190]), .Q7(dq_io[191]));
 
+    wire [7:0] dm2_d = dm_b[16 +: 8];
     wire dm2_o, dm2_t;
     OSER8_MEM #(.HWL("false"), .TCLK_SOURCE("DQSW"), .TXCLK_POL(1'b0)) dm2_ser (
-        .D0(dm_d[0]), .D1(dm_d[1]), .D2(dm_d[2]), .D3(dm_d[3]),
-        .D4(dm_d[4]), .D5(dm_d[5]), .D6(dm_d[6]), .D7(dm_d[7]),
+        .D0(dm2_d[0]), .D1(dm2_d[1]), .D2(dm2_d[2]), .D3(dm2_d[3]),
+        .D4(dm2_d[4]), .D5(dm2_d[5]), .D6(dm2_d[6]), .D7(dm2_d[7]),
         .TX0(dq_tx[0]), .TX1(dq_tx[1]), .TX2(dq_tx[2]), .TX3(dq_tx[3]),
         .PCLK(pclk), .FCLK(mclk), .TCLK(w0_2), .RESET(phy_rst),
         .Q0(dm2_o), .Q1(dm2_t));
@@ -873,10 +877,11 @@ module top (
         .Q0(dq_io[248]), .Q1(dq_io[249]), .Q2(dq_io[250]), .Q3(dq_io[251]),
         .Q4(dq_io[252]), .Q5(dq_io[253]), .Q6(dq_io[254]), .Q7(dq_io[255]));
 
+    wire [7:0] dm3_d = dm_b[24 +: 8];
     wire dm3_o, dm3_t;
     OSER8_MEM #(.HWL("false"), .TCLK_SOURCE("DQSW"), .TXCLK_POL(1'b0)) dm3_ser (
-        .D0(dm_d[0]), .D1(dm_d[1]), .D2(dm_d[2]), .D3(dm_d[3]),
-        .D4(dm_d[4]), .D5(dm_d[5]), .D6(dm_d[6]), .D7(dm_d[7]),
+        .D0(dm3_d[0]), .D1(dm3_d[1]), .D2(dm3_d[2]), .D3(dm3_d[3]),
+        .D4(dm3_d[4]), .D5(dm3_d[5]), .D6(dm3_d[6]), .D7(dm3_d[7]),
         .TX0(dq_tx[0]), .TX1(dq_tx[1]), .TX2(dq_tx[2]), .TX3(dq_tx[3]),
         .PCLK(pclk), .FCLK(mclk), .TCLK(w0_3), .RESET(phy_rst),
         .Q0(dm3_o), .Q1(dm3_t));
@@ -1089,7 +1094,7 @@ module top (
         .ctrl_rot(ctrl_rot), .ext_cmd(ext_cmd), .ext_tog(ext_tog),
         .p_cs_n(p_cs_n), .p_ras_n(p_ras_n), .p_cas_n(p_cas_n), .p_we_n(p_we_n),
         .p_ba(p_ba), .p_addr(p_addr), .p_odt(p_odt), .p_dq_drive(p_dq_drive),
-        .p_dqs_drive(p_dqs_drive), .wdq(wdq), .ctrl_rd(ctrl_rd), .ctrl_accept(ctrl_accept),
+        .p_dqs_drive(p_dqs_drive), .wdq(wdq), .dm(dm), .ctrl_rd(ctrl_rd), .ctrl_accept(ctrl_accept),
         .ext_status(ext_status));
 endmodule
 module bnd_ff #(parameter [0:0] INIT = 1'b0) (input wire CLK, input wire D, output wire Q);

@@ -47,6 +47,7 @@ module ddr3_bist #(
     output reg           cmd_we = 1'b0,
     output reg  [AW-1:0] cmd_addr = {AW{1'b0}},
     output wire [255:0]  cmd_wdata,
+    output wire [31:0]   cmd_wmask,     // 1 suppresses beat b, lane l at 4b + l
     input  wire          rdata_valid,
     input  wire [255:0]  rdata_data,
 
@@ -63,6 +64,10 @@ module ddr3_bist #(
     output reg  [511:0]  elog = 512'd0,         // entry e at [64e +: 64]
     output reg  [3:0]    n_log = 4'd0
 );
+    // the log entry on its way to elog, one PCLK behind the check
+    reg         log_v = 1'b0;
+    reg  [2:0]  log_idx = 3'd0;
+    reg  [63:0] log_d = 64'd0;
 
     function [255:0] gen(input [AW-1:0] a, input [31:0] s);
         integer gk;
@@ -96,6 +101,8 @@ module ddr3_bist #(
     localparam [31:0] RLAST = (1 << R_LOG2) - 1;
 
     reg [31:0]   seed = 32'h2545f491;
+    reg [31:0]   seed_b = 32'h5bf03635;  // the second write of a word
+    reg          w2nd = 1'b0;           // the masked write of the current word
     reg [31:0]   rcnt = 32'd0;
     reg [31:0]   lfsr = 32'h1;
 
@@ -105,7 +112,39 @@ module ddr3_bist #(
     reg [6:0]    rq_n = 7'd0;
     wire         take = cmd_valid && cmd_ready;
     wire         rpop = rdata_valid && (rq_n != 7'd0);
-    assign cmd_wdata = gen(cmd_addr, seed);
+
+    // A word is written twice: its pattern whole, then a second pattern
+    // through a mask, so the read must see the two merged.  The mask never
+    // lets the test forget what a masked byte is meant to keep: some
+    // addresses write every byte, and some suppress every byte, whose word
+    // must stay exactly as the first write left it.
+    function [31:0] mgen(input [AW-1:0] a, input [31:0] s);
+        reg [31:0] x;
+        begin
+            if (a[4:0] == 5'd0)
+                mgen = 32'h00000000;        // write every byte
+            else if (a[4:0] == 5'd1)
+                mgen = 32'hffffffff;        // suppress every byte
+            else begin
+                x = 32'd1 << (a[4:0] - 5'd2);   // one bit: 0 .. 29
+                mgen = x;
+            end
+        end
+    endfunction
+
+    // what a masked write leaves: the masked bytes of a, the rest of b
+    function [255:0] merge(input [255:0] a, input [255:0] b, input [31:0] m);
+        integer mk, mb;
+        begin
+            for (mb = 0; mb < 8; mb = mb + 1)
+                for (mk = 0; mk < 4; mk = mk + 1)
+                    merge[32*mb + 8*mk +: 8] = m[4*mb + mk] ? a[32*mb + 8*mk +: 8]
+                                                           : b[32*mb + 8*mk +: 8];
+        end
+    endfunction
+
+    assign cmd_wdata = w2nd ? gen(cmd_addr, seed_b) : gen(cmd_addr, seed);
+    assign cmd_wmask = w2nd ? mgen(cmd_addr, seed) : 32'h0;
 
     // the check, a PCLK behind the word
     reg          ck_v = 1'b0, ck_retry = 1'b0;
@@ -167,7 +206,8 @@ module ddr3_bist #(
         ck_retry <= rq[rq_r][AW];
         ck_a <= rq[rq_r][AW-1:0];
         ck_got <= rdata_data;
-        ck_exp <= gen(rq[rq_r][AW-1:0], seed);
+        ck_exp <= merge(gen(rq[rq_r][AW-1:0], seed), gen(rq[rq_r][AW-1:0], seed_b),
+                        mgen(rq[rq_r][AW-1:0], seed));
         if (take && cmd_we && n_written != 32'hffffffff)
             n_written <= n_written + 32'd1;
         if (ck_v && ck_retry) begin
@@ -176,14 +216,25 @@ module ddr3_bist #(
             elog[64*retry_idx + 40] <= (ck_got == retry_got);
             retry_fly <= 1'b0;
         end
+        // The log entry is captured here and written a PCLK later.  Written in
+        // place, its data cone ran from the comparator through eight LUT4s into
+        // the register -- 4.62 ns of logic and 6.04 ns of routing in one
+        // placement, and the critical path of the whole image at 93.81 MHz --
+        // because lane_bad and beat_bad are wide reductions of the XOR and the
+        // entry lands in a n_log-indexed slice.  Registering the entry first
+        // leaves the write a register-to-register copy.
+        log_v <= !rst && ck_v && !ck_retry && (|lane_bad) && (n_log != 4'd8);
+        log_idx <= n_log[2:0];
+        log_d <= {8'd0, passes[13:0], state == S_RR, 4'd0, beat_bad, lane_bad, ck_a};
+        if (log_v)
+            elog[64*log_idx +: 64] <= log_d;
+
         if (ck_v && !ck_retry) begin
             for (ql = 0; ql < 32; ql = ql + 1) begin
                 if (pin_bad[ql]) pin_err[16*ql +: 16] <= inc16(pin_err[16*ql +: 16]);
                 if (lb_bad[ql]) beat_err[16*ql +: 16] <= inc16(beat_err[16*ql +: 16]);
             end
             if (|lane_bad && n_log != 4'd8) begin
-                elog[64*n_log[2:0] +: 64] <= {8'd0, passes[13:0], state == S_RR, 4'd0,
-                                             beat_bad, lane_bad, ck_a};
                 n_log <= n_log + 4'd1;
                 if (!retry_pend && !retry_fly && (state == S_RD || state == S_RR)) begin
                     retry_pend <= 1'b1;
@@ -215,6 +266,7 @@ module ddr3_bist #(
             beat_err <= 512'd0;
             elog <= 512'd0;
             n_log <= 4'd0;
+            log_v <= 1'b0;
             retry_pend <= 1'b0;
         end
 
@@ -227,11 +279,16 @@ module ddr3_bist #(
                 state <= S_WR;
             end
             S_WR: if (take) begin
-                if (cmd_addr == LAST) begin
-                    cmd_valid <= 1'b0;
-                    state <= S_WRW;
-                end else
-                    cmd_addr <= cmd_addr + 1'b1;
+                if (!w2nd)
+                    w2nd <= 1'b1;               // the word's masked write next
+                else begin
+                    w2nd <= 1'b0;
+                    if (cmd_addr == LAST) begin
+                        cmd_valid <= 1'b0;
+                        state <= S_WRW;
+                    end else
+                        cmd_addr <= cmd_addr + 1'b1;
+                end
             end
             S_WRW: begin
                 cmd_we <= 1'b0;
@@ -299,6 +356,7 @@ module ddr3_bist #(
                 if (passes != 16'hffff)
                     passes <= passes + 16'd1;
                 seed <= seed + 32'h9e3779b9;
+                seed_b <= seed_b + 32'h7f4a7c15;
                 cmd_we <= 1'b1;
                 cmd_addr <= {AW{1'b0}};
                 cmd_valid <= 1'b1;
@@ -309,6 +367,7 @@ module ddr3_bist #(
         if (rst) begin
             state <= S_IDLE;
             cmd_valid <= 1'b0;
+            w2nd <= 1'b0;
             rq_w <= 6'd0; rq_r <= 6'd0; rq_n <= 7'd0;
             ck_v <= 1'b0;
             cmd_retry <= 1'b0;

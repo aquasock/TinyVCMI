@@ -37,8 +37,9 @@
 // anyway, and a PRECHARGE holds the bank's PRECHARGE timer for one PCLK so a
 // stale flag cannot repeat it.  Gowin's build of a single-stage decision put
 // 15.6 ns, twelve levels, from the FIFO through the row compare.  The DFI's other
-// signals -- CKE, ODT, the masks -- are not driven here: wr_core holds CKE
-// and dfi_phy makes ODT from the WRITEs.
+// signals -- CKE and ODT -- are not driven here: wr_core holds CKE and
+// dfi_phy makes ODT from the WRITEs.  A request's write mask is carried with
+// its data and reaches the DFI a PCLK after the command, as the data does.
 module ddr3_ctl #(
     parameter integer T_RCD = 2,
     parameter integer T_RP = 2,
@@ -62,6 +63,7 @@ module ddr3_ctl #(
     input  wire          cmd_we,
     input  wire [24:0]   cmd_addr,
     input  wire [255:0]  cmd_wdata,     // beat b, DQ q at 32b + q
+    input  wire [31:0]   cmd_wmask,     // 1 suppresses beat b, lane l at 4b + l
     output reg           rdata_valid = 1'b0,
     output reg  [255:0]  rdata = 256'd0,
 
@@ -73,6 +75,7 @@ module ddr3_ctl #(
     output wire [59:0]   dfi_address,
     output wire [11:0]   dfi_bank,
     output reg  [255:0]  dfi_wrdata = 256'd0,
+    output reg  [31:0]   dfi_wrmask = 32'd0,
     output wire [3:0]    dfi_wrdata_en,
     output wire [3:0]    dfi_rddata_en,
     input  wire [255:0]  dfi_rddata,
@@ -82,19 +85,20 @@ module ddr3_ctl #(
     output reg  [31:0]   n_ref = 32'd0
 );
     // ---- the request FIFO, four deep, then nxt and cur ---------------------
-    reg [281:0] fq [0:3];               // {we, addr, data}
+    reg [313:0] fq [0:3];               // {mask, we, addr, data}
     reg [1:0]   fq_w = 2'd0, fq_r = 2'd0;
     reg [2:0]   fq_n = 3'd0;
-    wire [281:0] head = fq[fq_r];
+    wire [313:0] head = fq[fq_r];
     wire         h_v = (fq_n != 3'd0);
     assign cmd_ready = (fq_n < 3'd3);   // one slot spare: the ready is registered
     reg          nxt_v = 1'b0, cur_v = 1'b0;
-    reg [281:0]  nxt = 282'd0, cur = 282'd0;
+    reg [313:0]  nxt = 314'd0, cur = 314'd0;
     wire         c_we = cur[281];
     wire [14:0]  c_row = cur[280:266];
     wire [2:0]   h_bank = cur[265:263];
     wire [6:0]   c_col = cur[262:256];
     wire [255:0] h_data = cur[255:0];
+    wire [31:0]  h_mask = cur[313:282];
     wire [14:0]  n_row = nxt[280:266];
     wire [2:0]   n_bank = nxt[265:263];
     reg          hit = 1'b0, c_open = 1'b0;   // cur's bank on cur's row / open
@@ -184,6 +188,7 @@ module ddr3_ctl #(
     assign dfi_wrdata_en = {3'b000, q_c == C_WR};
     assign dfi_rddata_en = {3'b000, q_c == C_RD};
     reg [255:0] wr_hold = 256'd0;
+    reg [31:0]  wm_hold = 32'd0;
 
     function [2:0] max3(input [2:0] a, input integer b);
         max3 = (a > b) ? a : b;
@@ -199,14 +204,16 @@ module ddr3_ctl #(
         q_b <= go_b;
         q_a <= go_a;
         wr_hold <= h_data;
+        wm_hold <= h_mask;
         dfi_wrdata <= wr_hold;
+        dfi_wrmask <= wm_hold;
         rdata_valid <= !rst && dfi_rddata_valid[0];
         rdata <= dfi_rddata;
 
         // the FIFO, nxt and cur: cur moves on when served, nxt follows, the
         // FIFO refills nxt; cur's flags are made from the banks' registers
         if (cmd_valid && cmd_ready) begin
-            fq[fq_w] <= {cmd_we, cmd_addr, cmd_wdata};
+            fq[fq_w] <= {cmd_wmask, cmd_we, cmd_addr, cmd_wdata};
             fq_w <= fq_w + 2'd1;
         end
         if (nxt_v && (!cur_v || go_pop)) begin

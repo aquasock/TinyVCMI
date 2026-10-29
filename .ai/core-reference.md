@@ -170,6 +170,7 @@ Topic IDs are the `record_id` prefix. An entry reserves a namespace; it does not
 | Does nextpnr time the paths between the DDR3 I/O cells and the fabric? | TOOL | TOOL-050 |
 | How does Yosys map the controller's falling-edge boundary registers? | TOOL | TOOL-051 |
 | Which direction of the falling-edge I/O boundary breaks the controller? | TOOL | TOOL-052 |
+| How is an image loaded and measured without TinyTang? | TOOL | TOOL-053 |
 | Why did the Gowin control miss PCLK timing? | TOOL | TOOL-028 |
 | Which sources and licenses constrain reuse? | PROV | PROV-001 |
 
@@ -245,6 +246,7 @@ TOOL-049: "Leveled write strobes still failed cold as before; the image rebuilt 
 TOOL-050: "nextpnr's Gowin timing model has no arcs for IDES8_MEM, OSER8, OSER8_MEM or DQS, so no path between them and the fabric is timed for setup or hold; Gowin's timing puts every such crossing inside half a PCLK, but the retimed controller image does not train on the board (TOOL-051)"
 TOOL-051: "synth_gowin builds a falling-edge register with an absorbed synchronous set or reset and enable as a rising-edge DFFSE or DFFRE clocked by a LUT1 inverter of pclk on fabric routing; 25 of the controller's boundary registers, the command bits among them, were built so; as instantiated DFFN and DFFNS the image trains, but its controller fails every word"
 TOOL-052: "Capturing the deserializers' words and RVALID on PCLK's falling edge breaks the controller's reads; registering only the outbound side is the qualified boundary, now the design, eight loads clean across two cold starts against the old image failing three of eight"
+TOOL-053: "One-wire mode reaches this project's images directly: the .fs over JTAG on FT2232 interface 0, and the FPGA UART on /dev/ttyUSB1 at 2 Mbaud answering AA 00 01 01 with core ID 0x56"
 TOOL-031: "LiteDRAM's control layer alone generates, synthesises and places in the open flow at ~1% of the LUTs, with none of TOOL-025's three gaps"
 TOOL-030: "Closed-page scatter READs do not reach the read capture in the open or the vendor build of the same RTL; no cadence, gate position or shared RCLKSEL recovers them, and failing READs return other rows' patterns"
 PROV-001: "Reuse source and interface ideas with their original license boundaries and attribution intact"
@@ -1178,6 +1180,18 @@ PROV-001: "Reuse source and interface ideas with their original license boundari
     - "TinyVCMI tools/ddr3_write.py: BOUNDARY, BOUNDARY_INBOUND, BOUNDARY_REGISTER_INBOUND"
     - "TinyVCMI docs/ddr3-open-flow.md: Which direction of the boundary breaks the controller; The cold A/B, and the boundary that is qualified"
   verification: "One load of each variant and of the TOOL-046 image with tools/ddr3_write_probe.py ctrl --watch 60 --diag on 2026-10-28, minutes after the Tang was powered; the desktop core was restored after each and answered 0x54. Why the falling-edge capture of the deserializers' words fails is not known; Gowin's timing of its own placement gives those paths at least 1.8 ns of setup slack. Revised 2026-10-28: qualified from two cold starts of about 22 and 28 minutes unplugged, four loads each and the order of the two images reversed between them, so the control went first once and second once. Variant OUT was clean in all eight of its loads, about 2.7 x 10^9 words each with per-pin and per-beat counts zero, including the first load after the second cold start; the control failed three of eight at first-error word 0x8260 on lane 1, lane errors [216, 20499, 216, 217] as a first load, [11, 105, 11, 11] two loads later and [14, 334, 14, 14] as a second, then ran clean load by load in both sessions. The image rebuilt from the promoted generator is .bin SHA-256 eb59ee085f8e22343c34bd1f5f5a135ec3cb8c1de677a586ecb5ff087f2bb2ac, byte for byte variant OUT, closes PCLK at 108.74 MHz and equals its place-1 route-0 Gowin reference on all 306 DDR3 tables."
+
+- record_id: TOOL-053
+  topic_id: TOOL
+  title: "The board's one-wire mode reaches this project's images directly"
+  status: VERIFIED
+  verified_date: 2026-10-29
+  statement: "With the board's power input unplugged and only the OTG cable attached, the cable enumerates a SIPEED USB Debugger (FTDI FT2232, 0403:6010) instead of the TinyTang CDC device, and both halves of the link reach the FPGA: JTAG on interface 0, where `openFPGALoader -c ft2232 <image.fs>` loads SRAM and `--detect` reports idcode 0x0001081b, GW5AST-138; and the FPGA UART on interface 1, /dev/ttyUSB1 at 2 Mbaud, which answers the same `AA 00 <cmd> <arg>` frames as the TinyTang link -- cmd 0x01 with `aa 00 02 01 56`, cmd 0x03 with the 131-byte status frame -- with no shell, desktop or TinyTang process in the path. Interface 0 also appears as /dev/ttyUSB0, where it echoes whatever is written to it with an 0xFA preceding each byte: that is the JTAG channel read as a UART, not a reply."
+  consequence: "An image can be built, loaded and measured with no TinyTang and no SD card, which is the fastest loop this project has and the one to use when a measurement matters more than the desktop being visible. An SRAM load must be the `.fs`, never the `.bin`, which is only TinyTang's packing of it. `tools/ddr3_write_probe.py` takes `--port` and `--baud` for this path and must not send the `fpgapipe` hand-off, which only the CDC console needs. The TinyTang desktop core answers its core ID to cmd 0x00; these images do not, so 0x00 reads as silence and is easily mistaken for a broken cable."
+  sources:
+    - "TinyTang .ai/core-reference.md TOOL-012, TOOL-013 and BRD-006 (read from the local checkout at /run/media/vash/GIT/TinyTang)"
+    - "TinyVCMI runs of 2026-10-29: openFPGALoader -c ft2232 --detect, .fs loads of fpga/ddr3_ctrl images, and tools/ddr3_write_probe.py --port /dev/ttyUSB1 --baud 2000000"
+  verification: "Measured on 2026-10-29 on the Tang Console 138K: idcode read, three images loaded, cmd 0x01 and cmd 0x03 answered, and the qualified controller image ran 710 passes with no lane error over this path. The one-wire and two-wire arrangements cannot run together (TinyTang BRD-007), so switching modes takes a cold power-up."
 
 - record_id: PROV-001
   topic_id: PROV

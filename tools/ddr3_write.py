@@ -202,6 +202,7 @@ WR_CORE_PORTS = """\
 #: passes the core's through until the controller owns the bus
 CTRL_WIRES = """\
     wire [255:0] wdq;                   // lane l, pin p, beat b at 64l + 8p + b
+    wire [31:0]  dm;                    // 1 suppresses beat b, lane l at 4b + l
     wire [3:0] p_cs_n, p_ras_n, p_cas_n, p_we_n;
     wire [11:0] p_ba;                   // phase p at 3p +: 3
     wire [63:0] p_addr;                 // phase p at 16p +: 16
@@ -269,6 +270,7 @@ BOUNDARY_REGS = [
     ("rdir_b", 1, "rdir", False), ("rloadn_b", 1, "rloadn", True),
     ("wloadn_b", 1, "wloadn", True), ("wstep_b", 32, "wstep", False),
     ("calib_b", 32, "calib", False), ("wdq_b", 256, "wdq", False),
+    ("dm_b", 32, "dm", False),
     ("dq_drive_b", 1, "p_dq_drive", False), ("dqs_drive_b", 1, "p_dqs_drive", False),
     ("pb_cs_n", 4, "p_cs_n", True), ("pb_ras_n", 4, "p_ras_n", True),
     ("pb_cas_n", 4, "p_cas_n", True), ("pb_we_n", 4, "p_we_n", True),
@@ -368,8 +370,9 @@ def render(ctrl: bool = False) -> str:
             "    wire [11:0] rpoint, wpoint;",
             "    // the strobe toggles each half clock; odd DQ carry the inverse",
             "    wire [7:0] dqs_d = 8'b01010101;",
-            "    wire [7:0] dq_npat = ~dq_pat;",
-            "    wire [7:0] dm_d = 8'h00;    // DM low: every byte written"]
+            "    wire [7:0] dq_npat = ~dq_pat;"]
+    if not ctrl:
+        out.append("    wire [7:0] dm_d = 8'h00;    // DM low: every byte written")
     if not ctrl:
         out += ["    // lane n, DQ 8n+k, IDES8_MEM output b at 64n + 8k + b",
                 "    wire [255:0] dq_q;"]
@@ -392,8 +395,10 @@ def render(ctrl: bool = False) -> str:
             out.append((DQ_B if ctrl else DQ).format(i=i, l=l, b=b, b1=b + 1, b2=b + 2,
                                                      b3=b + 3, b4=b + 4, b5=b + 5, b6=b + 6,
                                                      b7=b + 7))
+        if ctrl:
+            out.append(f"    wire [7:0] dm{l}_d = dm_b[{8 * l} +: 8];")
         out.append(OSER_MEM.format(n=f"dm{l}", src='"DQSW"', tclk=f"w0_{l}",
-                                   d="dm_d", t="dq_tx"))
+                                   d=(f"dm{l}_d" if ctrl else "dm_d"), t="dq_tx"))
         out.append(f"    TBUF dm{l}_buf (.I(dm{l}_o), .OEN(dm{l}_t), .O(ddr_dm[{l}]));")
     out.append("    OBUF reset_buf (.I(ddr_rst_n), .O(ddr_reset_n));")
     out.append(CK)
@@ -418,7 +423,7 @@ def render(ctrl: bool = False) -> str:
         .ctrl_rot(ctrl_rot), .ext_cmd(ext_cmd), .ext_tog(ext_tog),
         .p_cs_n(p_cs_n), .p_ras_n(p_ras_n), .p_cas_n(p_cas_n), .p_we_n(p_we_n),
         .p_ba(p_ba), .p_addr(p_addr), .p_odt(p_odt), .p_dq_drive(p_dq_drive),
-        .p_dqs_drive(p_dqs_drive), .wdq(wdq), .ctrl_rd(ctrl_rd), .ctrl_accept(ctrl_accept),
+        .p_dqs_drive(p_dqs_drive), .wdq(wdq), .dm(dm), .ctrl_rd(ctrl_rd), .ctrl_accept(ctrl_accept),
         .ext_status(ext_status));""")
     else:
         out.append("    wr_core core (\n" + WR_CORE_PORTS + """

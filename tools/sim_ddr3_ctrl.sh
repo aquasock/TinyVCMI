@@ -45,9 +45,11 @@ grep -q "^PASS" "$out/faults.log"
 # since the registered decision already waits two PCLK after an ACTIVATE;
 # tRC, which tRAS and tRP already exceed; and READ to WRITE, since the test
 # turns from reading to writing only between passes, its READs all returned.
+# The last one is the mask path itself: a model that writes every byte when a
+# mask suppresses some is what a DM that never reaches the pads looks like.
 for m in "late_read +define+MODEL_RDO=8" "late_write +define+MODEL_D=2" \
          "short_ras +define+CTL_T_RAS=2" "short_rp +define+CTL_T_RP=1" \
-         "short_wtr +define+CTL_T_WTR=2"; do
+         "short_wtr +define+CTL_T_WTR=2" "nodm +define+MODEL_NODM"; do
     set -- $m
     run "$1" "$2"
     if grep -q "^PASS" "$out/$1.log"; then
