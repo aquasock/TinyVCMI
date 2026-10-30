@@ -2721,3 +2721,33 @@ Get the instrumented image to hand the bus over before measuring anything on it:
 - User Test: N/A
 
 ---
+
+## 82 COMMIT Unreleased 2026-10-29T23:06:00-07:00
+
+#### Coming From:
+
+Unreleased d553524
+
+#### Purpose:
+
+Find out whether the instrumented controller image's failure to train was a matter of placement, by rebuilding it at further nextpnr seeds and running the first gate-clean placement on the Tang.
+
+#### Outcome:
+
+Four more seeds were built four at a time and only one was gate-clean, and it failed on the board exactly as the two earlier placements had. Seed 4 placed and routed but closed `pclk` at 95.14 MHz, so the build refused the image and wrote nothing; seeds 3 and 6 were stopped mid-route at the user's direction once a clean placement existed; seed 5 closed `pclk` at 103.02 MHz with 469 `DFFN` and 18 `DFFNS` on the CLKDIV, no LUT on a clock and all 306 tables equal to the vendor reference, and its `.bin`, `a2ce843aee6403c36451734230bb495d4cb62c7609541f5dd654fff5e789de09`, is the first gate-clean instrumented image, built in 2024 s. Loaded from the card as `ddr3_ctrl_sweep5.bin` through TinyTang's `tangload` it reported `training: done, error 3, lanes locked 1111, 390 trials`, 3 CALIB pulses a lane, passing windows of 53, 57, 46 and 50 taps centred at taps 28, 30, 25 and 27, every lane's rotation zero, and no write alignment: with no write alignment there is no hand-over, so the memory test never ran and `ctrl --classify` had no first failing word to read. Three placements now give one failure, so the placement hypothesis that entry 81's Next Steps rested on is rejected, and the difference from the mask image, which trained `d 1 b 2` on every load, is the data rather than the placement: the address adder did not break training, it exposed what the degenerate patterns had hidden. Reading the pass rule explains the mechanism, because `wpass_now` requires every classified read to equal `merge(gen(a), gen(a, seed_b), mgen(a))` exactly, so the write-alignment search is already a full data check driven through the mask path and its failure says the array disagrees with the expectation at a suppressed address. That leaves the two branches entry 80 could not separate, a wrong masked second write or a wrong doubled write, and the isolation build never answered them because it never trained and so never measured anything. The board was restored to the desktop core after the load and answered `0x54`, the seed-5 report is in `build/ddr3_boot/sweep5/ctrl.txt`, and `docs/ddr3-open-flow.md` gained the section with the exact per-seed build command, the seed sweep driver itself having been session-local. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering and active-log capacity.
+
+#### Next Steps:
+
+Bring for approval the two-variant bisect that names the faulty stage without another seed lottery, each a one-line change to the test's data in `fpga/ddr3_ctrl/ddr3_bist.v`, gated as usual and measured with one board load apiece: forcing `mgen` to zero so every byte is written, where training would clear the doubled write and implicate the suppression path, and reusing the first seed for the second write so both patterns are equal and `merge` returns the first whatever the mask does, where training would clear the doubling and implicate the mask gather. The alternative for the user to weigh is the direct instrument, extending the write-alignment search to log its first failing address with the expected and actual bytes, a larger RTL change that answers which bytes and which pattern in one step. The read stream's frame, the state-4 hang in `S_RDW`, the still-unmeasured doubled write, the write image's untimed boundary, the mid-calibration stall, the `D108` unused-pin contradiction and the `is_mipi` bug outside the DDR context remain open, and the user has deferred a capped legaliser budget and a PHY-only fuse reference. Every board result records the supply beside the cool-down, and this one was taken warm on TinyTang mode rather than one-wire.
+
+#### Files Modified:
+
+- docs/ddr3-open-flow.md
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: N/A
+
+---

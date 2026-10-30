@@ -3444,3 +3444,43 @@ correctly on the mask image: words `0x1` to `0x8`, lanes and beats populated,
 and the re-read flag set, so the zero fields that entry saw came from log
 entries that had been cleared, not from a page decode or an entry layout
 error.
+
+## The seed sweep, and why placement is not the explanation
+
+The instrumented image was rebuilt at four more nextpnr seeds to test whether
+its failure to train was placement luck.  Each build ran
+`TINYVCMI_PN_SEED=<n> TINYVCMI_CTRL_DIR=build/sweep/s<n> tools/build_ddr3_ctrl.sh`,
+four at a time; the gate is placement-independent, so the simulation suite ran
+once, in seed 3.  Seed 4 placed and routed but `pclk` closed at 95.14 MHz, so
+the build refused the image and wrote nothing, which is the timing gate doing
+its job rather than a candidate lost.  Seeds 3 and 6 were stopped mid-route at
+the user's direction once a clean placement existed.  Seed 5 passed every gate
+-- `pclk` 103.02 MHz, 469 `DFFN` and 18 `DFFNS` on the CLKDIV with no LUT on a
+clock, all 306 tables equal to the vendor reference -- and its `.bin`,
+`a2ce843aee6403c36451734230bb495d4cb62c7609541f5dd654fff5e789de09`, is the
+first gate-clean instrumented image.
+
+On the Tang, loaded from the card as `ddr3_ctrl_sweep5.bin` through TinyTang's
+`tangload`, it trained read alignment on all four lanes and then found no write
+alignment, exactly as the two earlier placements did: `training: done, error 3,
+lanes locked 1111, 390 trials`, with 3 CALIB pulses a lane, passing windows of
+53, 57, 46 and 50 taps, centred at taps 28, 30, 25 and 27, and every lane's
+rotation zero.  With no write alignment there is no hand-over, so the memory
+test never ran and `ctrl --classify` had no first failing word to read.
+
+Three placements, one failure.  The same design with the linear generator
+trained `d 1 b 2` on every load of the mask image, so the difference is the
+data and not the placement: the address adder did not break training, it
+exposed what the degenerate patterns had hidden.
+
+The mechanism is in the pass rule.  `wpass_now` requires every classified read
+to equal `merge(gen(a), gen(a, seed_b), mgen(a))` exactly, so the
+write-alignment search is already a full data check driven through the mask
+path.  Its failure therefore says the array's contents disagree with the
+expectation at a suppressed address, which leaves the two branches entry 80
+could not separate: the second, masked write is wrong, or writing the same
+address twice is wrong whatever the mask says.  The isolation build never
+answered this because it never trained, so it never measured anything.
+
+The board was restored to the desktop core afterwards and answered `0x54`,
+and the seed-5 report is in `build/ddr3_boot/sweep5/ctrl.txt`.
