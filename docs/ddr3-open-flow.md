@@ -3686,3 +3686,43 @@ which refresh mid-row repeatedly, read back whole.
 training for its write alignment and uses it, refusing to run without one
 unless `--wstep` is given, so this particular mistake cannot be repeated by
 default.  `--pace` is unchanged and still scales the fill window to the pace.
+
+## The hand-over image's failures are reads, and the mask is not their cause
+
+The image of the last section can be put to the question entry 81 could not
+ask, because it hands the bus over: seed 6's `c9890193...` trains itself to
+`error 0`, `d 1 b 2` in 422 trials with every lane centred and seven CALIB
+pulses a lane, and the controller then owns the bus and runs the memory test
+without a host command.  Over about 657 million checked words in twenty
+seconds the test fails steadily on lanes 1 and 2 and not at all on lanes 0 and
+3, at roughly 0.45 and 0.14 per cent of words.
+
+The first failure is at word `0x8e`, whose mask is `0x00001000` -- beat 3 of
+lane 0, one byte of thirty-two suppressed.  Read back byte by byte, that byte
+holds the first write's pattern, as a suppressing mask requires, and thirty of
+the thirty-two hold the second write's.  One byte, lane 1 beat 2, holds
+neither pattern and belongs to no word within four addresses of the address
+read.  The counters agree on where the damage sits: per DQ, 9 and 11 on lane 1
+and 23 on lane 2 are saturated, with 17 at 9,970 and 22 at 794; per beat, lane
+1 fails at beat 2 and lane 2 at beat 6.  Six of the eight logged failures
+report that their re-read returned the word correctly, which is the
+instrument's way of saying the word was written right and read wrong.
+
+The controller's fixed read offset is the only one that works on this
+placement: offset 7 reads, and offsets 8 and 9 fail every word from word 0 on
+every lane.  Against that, moving one lane's read delay trades one lane
+against the other -- lane 1 eight taps later leaves it five failures in 72
+million while lane 2 goes to 864,168 -- so the two lanes share a capture that
+is marginal under this traffic rather than each having its own.
+
+What separates this image from the qualified one is measured the same way.
+`eb59ee08...`, loaded between these runs on the same board with the same
+supply, trained to the same settings and ran 21 passes with zero lane errors
+on every lane.  Its test writes each word once; this image's writes each word
+twice, its second write through the mask, and reads it back immediately.  So
+the failures are read-side, they appear only in the image whose test writes
+twice, and the mask's suppression is exonerated for the byte it suppressed.
+Whether the doubled write alone accounts for them, or the address adder's new
+data patterns change the bus enough to matter, is not yet separated: the two
+changes arrived together, and the next experiment has to test the turnaround
+between the masked write and its read on its own.

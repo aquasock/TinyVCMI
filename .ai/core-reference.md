@@ -176,6 +176,7 @@ Topic IDs are the `record_id` prefix. An entry reserves a namespace; it does not
 | What does the training's write-alignment search compare, and does it exercise the write mask? | TOOL | TOOL-055 |
 | Does a filled row return each burst's own address data, and where does a mismatch sit? | TOOL | TOOL-056 |
 | Does a filled row return its own data at every WRITE rate, and what does a displaced burst index mean? | TOOL | TOOL-057 |
+| Does the controller test's failure live in the mask, the write or the read? | TOOL | TOOL-058 |
 | Why did the Gowin control miss PCLK timing? | TOOL | TOOL-028 |
 | Which sources and licenses constrain reuse? | PROV | PROV-001 |
 
@@ -257,6 +258,7 @@ TOOL-054: "The memory test's gen() was linear in the address, 32 of 256 bits apa
 TOOL-055: "wpass_now compares the training's own patterns on all four lanes over more than 100 READs, with dm held low and the test in reset, so the write-alignment search tests neither the write mask nor the test's data; on the board paced writes and reads are whole (1,203,340 of 1,203,340), and the fill sweep that gave 59.60% at WSTEP 8 tried only the b 0 alignments 0, 8, 16, 32 and 48 -- at the trained d 1 b 2 it reads back whole, so no WSTEP sweep at b 0 shows the fill's ceiling (TOOL-057)"
 TOOL-056: "At WRITE alignment d 1 b 0 a per-burst fill reads back with its burst index displaced -- 609 of 1024 READs own, 259 of 415 failures differing in one burst bit (3, 4 and 5 at 171, 60 and 25), nearest class plus or minus 8 bursts for 173 -- and at the trained d 1 b 2 the same fill reads back 1024 of 1024, so the displacement is a two-beat data slip and not a column address fault (TOOL-057); a row written with one pattern cannot see per-burst faults at all, and at 8 PCLK the random reads are marginal as well (4.09% against 59.7%)"
 TOOL-057: "A per-burst fill at the trained WRITE alignment d 1 b 2 reads back 1024 of 1024 own on all four lanes at paces 0, 1, 4, 16, 63 and 255 -- one burst per PCLK through one per 2.56 us -- while d 1 b 0 gives 609 of 1024 at pace 0 and 0 at every pace above it, with the paced logs byte-identical to one another"
+TOOL-058: "On the seed-6 doubled-write image the write mask suppresses correctly -- the one suppressed byte of 32 holds the first write's pattern -- while the test fails 0.45 and 0.14 per cent of words on lanes 1 and 2, read-side (six of eight logged failures re-read right), at lane 1 beat 2 / DQ 9 and 11 and lane 2 beat 6 / DQ 23; the qualified image eb59ee08, same board and session, runs 21 passes clean, and only read offset 7 of 7 to 9 works at all"
 TOOL-031: "LiteDRAM's control layer alone generates, synthesises and places in the open flow at ~1% of the LUTs, with none of TOOL-025's three gaps"
 TOOL-030: "Closed-page scatter READs do not reach the read capture in the open or the vendor build of the same RTL; no cadence, gate position or shared RCLKSEL recovers them, and failing READs return other rows' patterns"
 PROV-001: "Reuse source and interface ideas with their original license boundaries and attribution intact"
@@ -924,6 +926,19 @@ PROV-001: "Reuse source and interface ideas with their original license boundari
     - "TinyVCMI tools/ddr3_fill_attrib.py, and .ai/core-log.md entry 86"
     - "TinyVCMI fpga/ddr3_write/tb_wr.v and tools/sim_ddr3_write.sh (the paced fill check)"
   verification: "Measured over one session on the seed-6 controller image (SHA-256 c989019307e79c32c1d51279a15f3aaf379dd6b2fa5f4c7380f44d3743fec5b3, pclk 100.01 MHz, 306 DDR3 tables equal to its vendor reference) loaded in TinyTang mode, powered from the host's 5 V over USB-C OTG (BRD-002) with the cooldown not recalled. The fill ran with address data on, READ spacing 12 PCLK, and the first 1,024 logged READs attributed; the paced logs were compared entry by entry. The same result is required in simulation at paces 0, 4 and 16 with one beat offset across paces, and the refresh interval holds there."
+
+- record_id: TOOL-058
+  topic_id: TOOL
+  title: "The doubled-write image's test failures are reads, not the mask"
+  status: VERIFIED
+  verified_date: 2026-10-30
+  statement: "On the seed-6 controller image (SHA-256 c9890193..., which trains to error 0 and d 1 b 2 in 422 trials and hands the bus over), the memory test fails steadily on lanes 1 and 2 and not at all on lanes 0 and 3, about 0.45 and 0.14 per cent of checked words. The first failing word is 0x8e, mask 0x00001000: the suppressed byte, lane 0 beat 3, holds the first write's pattern as the mask requires, 30 of 32 bytes hold the second write's, and one byte, lane 1 beat 2, holds neither pattern and belongs to no word within four addresses. Failures saturate DQ 9 and 11 on lane 1 and DQ 23 on lane 2, with DQ 17 at 9,970 and DQ 22 at 794, and sit at lane 1 beat 2 and lane 2 beat 6. Six of eight logged failures re-read correctly, so the words were written right and read wrong. Of read offsets 7, 8 and 9 only 7 reads at all, and moving one lane's read delay trades one lane against the other."
+  consequence: "The mask path suppresses correctly on this image, so the mask is not the cause of these failures, and entry 81's reading that DM suppresses nothing does not hold for this build. The failures are read-side and appear only in the image whose test writes each word twice and reads it back at once: the qualified image eb59ee08, loaded on the same board in the same session with the same supply, trains to the same settings and runs 21 passes with zero lane errors. The doubled write and the address adder's new data patterns arrived together and are not yet separated, so the next experiment must vary the turnaround between the masked write and its read on its own."
+  sources:
+    - "TinyVCMI tools/ddr3_write_probe.py (ctrl --diag, --classify, --rd-off, margin)"
+    - "TinyVCMI fpga/ddr3_ctrl/ddr3_bist.v, ctrl_glue.v (the doubled write, the error log, DM)"
+    - "TinyVCMI .ai/core-log.md entries 81, 86 and 88"
+  verification: "Measured on the Tang in one session, several minutes apart, on the seed-6 image c9890193... and the qualified image eb59ee08..., both loaded with tangload in TinyTang mode, powered from the host's 5 V over USB-C OTG (BRD-002), the cooldown not recalled. Lane errors were read from the status frame over 15 to 20 s of test per reading, and the classification, the per-DQ and per-beat counters and the re-read flags come from the test's own diagnostic pages. Read offsets 8 and 9 were set and cleared with the probe's counters reset between readings."
 
 - record_id: TOOL-031
   topic_id: TOOL

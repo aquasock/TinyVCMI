@@ -2908,3 +2908,33 @@ Nothing here needs repeating. The next engineering cycle is the one entry 86 nam
 - User Test: N/A
 
 ---
+
+## 88 COMMIT Unreleased 2026-10-30T13:38:44-07:00
+
+#### Coming From:
+
+Unreleased 0c569b3
+
+#### Purpose:
+
+Attribute the controller test's failures on the image that hands the bus over, which entry 81 could not do from an image that kept the pads.
+
+#### Outcome:
+
+The failures are reads, and the write mask is not their cause. With the seed-6 image of entry 86, SHA-256 `c989019307e79c32c1d51279a15f3aaf379dd6b2fa5f4c7380f44d3743fec5b3`, loaded in TinyTang mode, the image trains itself to `error 0`, `d 1 b 2` in 422 trials with every lane centred and seven CALIB pulses a lane, and hands the bus over; the test then fails steadily on lanes 1 and 2 at about 0.45 and 0.14 per cent of checked words over 657 million in twenty seconds, and not at all on lanes 0 and 3. The first failing word is `0x8e` with mask `0x00001000`, one byte of thirty-two suppressed, and reading it back byte by byte shows the suppressed byte holding the first write's pattern as the mask requires, thirty of thirty-two bytes holding the second write's, and exactly one byte, lane 1 beat 2, holding neither pattern and belonging to no word within four addresses of the address read, so the mask suppresses and the damaged byte is not a displaced one. The counters place the damage at DQ 9 and 11 on lane 1 and DQ 23 on lane 2, saturated, with DQ 17 at 9,970 and DQ 22 at 794, and at lane 1 beat 2 and lane 2 beat 6, and six of the eight logged failures report that their re-read returned the word correctly, which is the instrument's statement that the word was written right and read wrong. Of read offsets 7, 8 and 9 only 7 reads at all, 8 and 9 failing every word from word 0 on every lane, and moving one lane's read delay trades one lane against the other, lane 1 eight taps later leaving five failures in 72 million while lane 2 rises to 864,168, so the capture the two lanes share is marginal under this traffic. The discriminating control was run in the same session on the same board with the same supply and the cooldown not recalled: the qualified image `eb59ee08...` trained to the same settings and ran 21 passes with zero lane errors on every lane. Its test writes each word once, where this image writes each word twice and reads it back immediately, so the failures are read-side and belong to the doubled-write traffic, while the address adder's new data patterns arrived in the same change and are not yet separated from the doubled write. Entry 81's reading that DM suppresses nothing does not hold for this build and is answered here rather than revised, since its image was a different netlist. TOOL-058 was added and `docs/ddr3-open-flow.md` gained the section. Both images were loaded with `tangload`, the console port found by USB id `ffff:5454` because an Arduino enumerates beside it, and the desktop core was restored afterwards and answered `0x54`. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering and active-log capacity.
+
+#### Next Steps:
+
+Separate the doubled write from the data patterns, which is one RTL knob and one build: give the test a settable number of idle PCLK between its masked second write and the read of that word, default zero so the qualified behaviour is unchanged, gate it in `sim_ddr3_ctrl.sh` with the model's write-to-read turnaround checked at the PHY boundary rather than only as a command rule, and sweep it on the board beside a variant whose `gen()` reverts to the linear fold, which separates the data from the doubling. If idle PCLK removed the failures the capture is a turnaround margin and the fix belongs in the controller's command spacing; if the reverted fold is also clean the adder's patterns are implicated instead. The read path's 8 PCLK marginality, the read stream's frame, the state-4 hang in `S_RDW`, the write image's untimed boundary, the mid-calibration stall, the `D108` unused-pin contradiction and the `is_mipi` bug outside the DDR context remain open, the whole-top simulation stays on hold, and the user has deferred a capped legaliser budget and a PHY-only fuse reference.
+
+#### Files Modified:
+
+- docs/ddr3-open-flow.md
+
+#### Status:
+
+- Build: N/A
+- Deployment: PASS
+- User Test: N/A
+
+---
