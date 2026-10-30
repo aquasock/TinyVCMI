@@ -96,7 +96,12 @@ def main() -> int:
                     help="random READ spacing in PCLK (0x09).  At 8 PCLK the capture itself "
                          "fails as well and the address attribution washes out; 12 and above "
                          "settle to the same answer")
-    ap.add_argument("--fill-ms", type=float, default=2.0, help="fill time in ms")
+    ap.add_argument("--pace", type=int, default=0,
+                    help="idle PCLK between the fill's WRITEs (command 0x30).  Zero writes a "
+                         "burst every PCLK, as the training's fill always has; the region takes "
+                         "longer to fill at a higher pace and --fill-ms is scaled to match")
+    ap.add_argument("--fill-ms", type=float, default=None,
+                    help="fill time in ms; default covers the whole region at --pace")
     ap.add_argument("--reads-ms", type=float, default=200.0,
                     help="random-mode time in ms; the log keeps the first 1024 READs")
     ap.add_argument("--json", metavar="FILE", help="save the raw log and the attribution")
@@ -105,8 +110,13 @@ def main() -> int:
     core = P.Core(args.port, args.baud)
     core.request(0x37, 1)                      # address data on
     core.request(0x36, ((args.wstep >> 3) & 7) << 4 | (args.wstep & 7))
+    core.request(0x30, args.pace)
+    # 128 rows of 128 bursts, each burst one PCLK plus the pace, plus a refresh
+    # pause a row; a third again for margin
+    fill_s = args.fill_ms / 1000 if args.fill_ms is not None else \
+        1.35 * 128 * (128 * (args.pace + 1) + 40) / 100e6
     core.mode(5)
-    time.sleep(args.fill_ms / 1000)
+    time.sleep(fill_s)
     core.mode(0)
     core.request(0x09, args.gap)               # READ spacing, PCLK
     core.request(0x32, 0)                      # the log from the first READ after the arm
@@ -118,7 +128,8 @@ def main() -> int:
 
     a = analyse(ents)
     pct = 100.0 * a["good"] / max(a["reads"], 1)
-    print(f"WSTEP {args.wstep}, READ spacing {args.gap} PCLK: {a['good']} of {a['reads']} "
+    print(f"WSTEP {args.wstep}, fill pace {args.pace}, READ spacing {args.gap} PCLK: "
+          f"{a['good']} of {a['reads']} "
           f"READs held their own address's data ({pct:.2f}%)")
     print("nearest burst holding the captured class, per failing READ:")
     for off, n in a["nearest_burst_offset"].most_common(8):

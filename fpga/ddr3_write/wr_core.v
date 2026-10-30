@@ -391,6 +391,7 @@ module wr_core #(
     reg [31:0] calib_mask = 32'd0;
     reg [7:0] read_run_req = 8'd32;
     reg [7:0] read_gap_req = 8'd8;
+    reg [7:0] fill_pace_req = 8'd0;
     reg [11:0] read_delay_req = {4{3'd3}};  // lane n at [3n +: 3]
     reg [2:0] bank_req = 3'd0;
     reg [14:0] row_req = 15'd0;
@@ -425,6 +426,7 @@ module wr_core #(
     reg [31:0] calib_p1 = 32'd0, calib_p2 = 32'd0;
     reg [7:0] read_run_p1 = 8'd32, read_run_p2 = 8'd32;
     reg [7:0] read_gap_p1 = 8'd8, read_gap_p2 = 8'd8;
+    reg [7:0] fill_pace_p1 = 8'd0, fill_pace_p2 = 8'd0;
     reg [11:0] read_delay_p1 = {4{3'd3}}, read_delay_p2 = {4{3'd3}};
     reg [2:0] bank_p1 = 3'd0, bank_p2 = 3'd0;
     reg [14:0] row_p1 = 15'd0, row_p2 = 15'd0;
@@ -461,6 +463,7 @@ module wr_core #(
         calib_p1 <= calib_mask;         calib_p2 <= calib_p1;
         read_run_p1 <= read_run_req;      read_run_p2 <= read_run_p1;
         read_gap_p1 <= read_gap_req;      read_gap_p2 <= read_gap_p1;
+        fill_pace_p1 <= fill_pace_req;    fill_pace_p2 <= fill_pace_p1;
         read_delay_p1 <= read_delay_req;  read_delay_p2 <= read_delay_p1;
         bank_p1 <= bank_req;            bank_p2 <= bank_p1;
         row_p1 <= row_req;              row_p2 <= row_p1;
@@ -596,6 +599,13 @@ module wr_core #(
     reg fill_wr = 1'b0;                 // the WRITE of the word set last PCLK
     reg [2:0] fill_wr_b = 3'd0;
     reg [6:0] fill_wr_c = 7'd0;
+    // idle PCLK between the fill's WRITEs, so that the column can be made to
+    // change more slowly than one per PCLK: the fill is the only path here
+    // that writes a different word to every burst, and with it the only way
+    // to tell a column that is captured wrong at speed from one that is
+    // wrong whatever the speed (TOOL-056).  Zero is the register's reset
+    // value and keeps the fill back to back, as it always was.
+    reg [7:0] fill_gap = 8'd0;
     wire [2:0] wa_d = walign_p2[6:4];
     wire [2:0] wa_b = walign_p2[2:0];
     wire [79:0] wq_all = {wq, wq_in, 8'd0};       // word k at [8k + 8 +: 8]
@@ -957,6 +967,7 @@ module wr_core #(
                             dqs_drive <= 1'b1;
                             fb <= 3'd0;
                             fr <= 4'd0;
+                            fill_gap <= 8'd0;
                             step_no <= 4'd1;
                             pause(17'd8, R_FILL);               // the bus settles
                         end
@@ -981,14 +992,19 @@ module wr_core #(
                             end
                         end
                         4'd2: begin
-                            fill_wr <= 1'b1;
-                            fill_wr_b <= fb;
-                            fill_wr_c <= fc;
-                            wq_in <= adata(fb, fr, fc);
-                            fc <= fc + 7'd1;
-                            if (fc == 7'd127) begin
-                                step_no <= 4'd3;
-                                pause(17'd8, R_FILL);           // the last WRITE, tWR, the burst tail
+                            if (fill_gap != 8'd0)
+                                fill_gap <= fill_gap - 8'd1;
+                            else begin
+                                fill_wr <= 1'b1;
+                                fill_wr_b <= fb;
+                                fill_wr_c <= fc;
+                                wq_in <= adata(fb, fr, fc);
+                                fc <= fc + 7'd1;
+                                fill_gap <= fill_pace_p2;
+                                if (fc == 7'd127) begin
+                                    step_no <= 4'd3;
+                                    pause(17'd8, R_FILL);       // the last WRITE, tWR, the burst tail
+                                end
                             end
                         end
                         4'd3: begin
@@ -1676,7 +1692,7 @@ module wr_core #(
                     (c == 8'h2e) || (c == 8'h2f) || (c == 8'h31) || (c == 8'h32) ||
                     (c == 8'h33) || (c == 8'h34) || (c == 8'h35) || (c == 8'h36) ||
                     (c == 8'h37) || (c == 8'h38) || (c == 8'h39) || (c == 8'h3c) ||
-                    (c == 8'h3d);
+                    (c == 8'h3d) || (c == 8'h30);
         end
     endfunction
 
@@ -1706,6 +1722,7 @@ module wr_core #(
                         calib_tog <= ~calib_tog;
                     end
                     8'h09: read_gap_req <= a == 8'd0 ? 8'd1 : a;
+                    8'h30: fill_pace_req <= a;
                     8'h0a: begin
                         rload_tog <= ~rload_tog;
                         moves <= 32'd0;

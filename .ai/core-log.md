@@ -2813,3 +2813,35 @@ Separate the write's column from the read's, which needs a path whose column is 
 - User Test: N/A
 
 ---
+
+## 85 COMMIT Unreleased 2026-10-30T01:16:00-07:00
+
+#### Coming From:
+
+Unreleased 0e144bc
+
+#### Purpose:
+
+Give the training's fill a settable pace so the write's column can be made to change more slowly than one per PCLK, and hand the measurement over after the placements were stopped for the night.
+
+#### Outcome:
+
+The knob is in and everything offline that can pass without a placement does pass, but no image was built and nothing was measured with it. `wr_core` gained command `0x30`, which sets `fill_pace_req`, pipelined two flops into `fill_pace_p2` as the other link registers are; `R_FILL`'s burst state now waits `fill_pace_p2` idle PCLK between its WRITEs through a `fill_gap` counter that entering the fill clears, and its reset value is zero, so a fill with no pace command issues a burst every PCLK exactly as before and the shared core keeps its behaviour for the write image, the controller and every simulation; `known()` admits the new command. `tools/ddr3_fill_attrib.py` gained `--pace`, which sends the command and scales the fill window to cover the whole region at that pace -- 128 rows of 128 bursts, a PCLK plus the pace each, plus a refresh pause a row and a third again for margin -- and prints the pace beside the attribution, since the paced fill is only meaningful if the region it reads back was written by it. All five simulations passed on the changed core: `sim_ddr3_write.sh` in 12 minutes 22 seconds with the fill's 512-WRITE check and its per-burst patterns, `sim_ddr3_ctrl.sh` with its six mutants including `nodm`, and `sim_rd_align.sh`, `sim_rd_check.sh` and `sim_ddr3_seq.sh`. The vendor fuse reference was rebuilt from the changed sources, `python3 tools/ddr3_write.py --vendor --ctrl --place-option 1 --route-option 0` in 4 minutes 24 seconds, because `build_ddr3_ctrl.sh`'s image check compares its copies of `wr_core.v` and its siblings against the sources. Three open-flow placements were then started at seeds 1, 2 and 3 with `TINYVCMI_SKIP_SIM=1 TINYVCMI_PN_SEED=n TINYVCMI_CTRL_DIR=build/pace/sn`; at the user's direction the cycle was stopped for the night, and the three died in Yosys synthesis when the shell that had launched them ended, so no placement was reached, no image exists, `build/pace/s1` to `s3` hold only `synth.log`, and nothing was loaded. The board was not touched and still runs the seed-5 instrumented image in TinyTang mode, warm, on the supply the previous session left. `docs/ddr3-open-flow.md` gained the section, stating plainly that nothing has been measured with the knob. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering and active-log capacity.
+
+#### Next Steps:
+
+Build again and take the measurement. Run the simulations separately and then each placement with `TINYVCMI_SKIP_SIM=1 TINYVCMI_PN_SEED=n TINYVCMI_CTRL_DIR=build/pace/sn`, keeping a seed only if `pclk` closes, the boundary is 469 `DFFN` and 18 `DFFNS` on the CLKDIV with no LUT on a clock, and the image equals the rebuilt vendor reference on all 306 DDR3 tables; expecting the same placement lottery as before, so build several seeds at a time. Then load the image in TinyTang mode and first confirm the fill still faults at pace 0, because the fault is a property of one netlist and a new placement may not have it; if it does, run `tools/ddr3_fill_attrib.py --pace 4`, `--pace 16`, `--pace 63` and `--pace 255` and compare the share of READs that held their own address's data and the burst-bit histogram. If the fault recedes as the pace rises, the column is captured wrong while it changes, and the write's column path is where to look, with the doubled write in the memory test sharing that rate regime; if it survives at 255, where a burst is written once every 2.56 us, the column is wrong whatever the speed and the fault is in the address value rather than its timing. The read path's 8 PCLK marginality, the read stream's frame, the state-4 hang in `S_RDW`, the write image's untimed boundary, the mid-calibration stall, the `D108` unused-pin contradiction and the `is_mipi` bug outside the DDR context remain open, the whole-top simulation stays on hold, and the user has deferred a capped legaliser budget and a PHY-only fuse reference. Every board result records the supply beside the cool-down.
+
+#### Files Modified:
+
+- docs/ddr3-open-flow.md
+- fpga/ddr3_write/wr_core.v
+- tools/ddr3_fill_attrib.py
+
+#### Status:
+
+- Build: NOT RUN
+- Deployment: NOT RUN
+- User Test: NOT RUN
+
+---

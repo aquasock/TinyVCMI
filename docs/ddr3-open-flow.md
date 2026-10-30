@@ -3594,3 +3594,28 @@ here do not yet say whether the column presented on a WRITE or the column
 presented on a READ is the one that goes wrong, and the READ log cannot tell
 them apart because it records the request, not what the device saw.  The
 measurements are in `build/ddr3_boot/pw_chk/`, not committed.
+
+## A pace knob for the fill
+
+The fault in the previous section is either a column captured wrong while it
+changes every PCLK or a column wrong whatever the speed, and the two are told
+apart by slowing the only path here that writes a different word to every
+burst.  Command `0x30` now sets `fill_pace_req`, which reaches `R_FILL` two
+flops later as `fill_pace_p2`; the fill waits that many idle PCLK between its
+WRITEs, and entering the fill clears the gap.  Its reset value is zero, so a
+fill with no pace command is the back-to-back fill it always was, and the
+shared `wr_core` keeps its behaviour for the write image, the controller and
+every simulation.
+
+`tools/ddr3_fill_attrib.py --pace n` sends the command and holds the fill long
+enough to cover the whole region at that pace -- 128 rows of 128 bursts, each
+burst a PCLK plus the pace, plus a refresh pause a row -- and prints the pace
+beside the attribution.
+
+Nothing has been measured with it yet.  The five simulations pass on the
+changed core, the vendor fuse reference was rebuilt from the changed sources
+because the image check compares its copies of them, and three open-flow
+placements at seeds 1, 2 and 3 were started and stopped in synthesis before
+any of them reached placement, so no image exists and the board still runs the
+seed-5 image the last two sections measured.  The pace sweep is the first
+thing to run when the board is next free.
