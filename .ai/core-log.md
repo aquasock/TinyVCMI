@@ -2938,3 +2938,33 @@ Separate the doubled write from the data patterns, which is one RTL knob and one
 - User Test: N/A
 
 ---
+
+## 89 COMMIT Unreleased 2026-10-30T14:12:15-07:00
+
+#### Coming From:
+
+Unreleased 06ba685
+
+#### Purpose:
+
+Restore the operator's LoRa path after this project's desktop restore loaded an image that answers the same core ID but is not the desktop build the board's card uses.
+
+#### Outcome:
+
+The board's card carries four Tang desktop images, and the project's convention of restoring `tinytang.bin` after every hardware cycle loaded the wrong one: `tinytang.bin` is 4,479,158 bytes and `tinytang-lora.bin` is 4,447,414 bytes, both load with `tangload` and both answer core ID `0x54` to command `0x01`, so every restore looked correct from the link while the operator's LoRa was dead. This cycle read the card over TinyTang's console, listed the four images, compared their sizes, and loaded `/root/cores/console138k/tinytang-lora.bin`, which reported `core loaded` and then `aa 00 02 01 54`; the board is left on that image. The operator reports that LoRa works only with the `-lora` build, which is a hardware behaviour the agent did not measure, and `tinytang-abi16-open.bin` is a third desktop at the same size as `tinytang.bin` whose purpose is not established here. `PROT-002` was added to the reference library so that a future agent does not choose by the plainest name on the card, and it records plainly that this project's own log convention caused the problem. No engineering file changed and no build ran in this cycle, though the seed sweep for the test-variable cycle continues in the background and was not interrupted. The board is powered from the host's 5 V over USB-C OTG and the cooldown was not recalled. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering and active-log capacity.
+
+#### Next Steps:
+
+Confirm with the operator that LoRa is working on the `-lora` image, and treat `tinytang-lora.bin` as the restore target from now on, with the core ID never used as evidence that the right desktop is loaded. Establish what `tinytang-abi16-open.bin` is before any cycle relies on the desktop image's behaviour, since three desktops on one card with two distinct sizes and one shared core ID is a trap that has now cost one session. The test-variable cycle of entry 88 continues: eight seeds were building when this interruption arrived, and the sweep of `0x3C 0x50 + m` over the two variables still has to be run on the board once a placement passes the gates.
+
+#### Files Modified:
+
+None.
+
+#### Status:
+
+- Build: N/A
+- Deployment: PASS
+- User Test: N/A
+
+---

@@ -117,6 +117,7 @@ Topic IDs are the `record_id` prefix. An entry reserves a namespace; it does not
 | What do the Logitech keyboard and mouse report? | INPUT | INPUT-001 |
 | Can TinyTang already send keyboard and mouse input into a core? | INPUT | INPUT-002 |
 | How do TinyNES and TinyGBC load AE350 programs? | PROT | PROT-001 |
+| Which desktop core does this board's card hold, and which one keeps LoRa working? | PROT | PROT-002 |
 | Which VCMI revision did the MiSTer port use? | VCMI | VCMI-001 |
 | How much memory did that port consume? | VCMI | VCMI-002 |
 | Why is 64 MiB not yet a qualified VCMI capacity? | VCMI | VCMI-002 |
@@ -201,6 +202,7 @@ VIDEO-002: "MiSTer-VCMI supports 800x600 and states that VCMI needs at least 800
 INPUT-001: "The Logitech K950 supplies an 8-byte boot-keyboard report and the M750 a 4-byte boot-mouse report"
 INPUT-002: "TinyTang sends live mouse frames as command 0x16 and BLE keyboard state as command 0x17"
 PROT-001: "TinyNES/TinyGBC load AE350 ELF-derived images through a checked UART protocol and then enter TinyTang link mode"
+PROT-002: "The card's desktop core is /root/cores/console138k/tinytang-lora.bin (4,447,414 bytes); tinytang.bin (4,479,158 bytes) is a different desktop build, and both answer core ID 0x54, so the ID cannot tell them apart and only -lora leaves the operator's LoRa working"
 VCMI-001: "MiSTer-VCMI pins VCMI 1.7.5 at commit 6901839ae9760dfcd1d5ff2c4aa4ef6968fee752"
 VCMI-002: "The MiSTer port measured roughly 100-115 MB resident at 800x600, so 64 MiB is not a qualified full-engine target"
 TOOL-001: "The current open flow supports the AE350 and SDR SDRAM design but not the complete Gowin DDR3 PHY/controller netlist"
@@ -407,6 +409,19 @@ PROV-001: "Reuse source and interface ideas with their original license boundari
     - "Tang-PSX commit 61974ca, .ai/core-reference.md AE350-009 and AE350-010"
     - "Tang-PSX commit 61974ca, software/programs/memlat and gateware/l2_cache.py"
   verification: "The values are hardware measurements from the sibling design and have not been reproduced by TinyVCMI."
+
+- record_id: PROT-002
+  topic_id: PROT
+  title: "The card's desktop core is tinytang-lora.bin"
+  status: VERIFIED
+  verified_date: 2026-10-30
+  statement: "This board's card holds four Tang desktop images under /root/cores/console138k: tinytang.bin at 4,479,158 bytes, tinytang-lora.bin at 4,447,414 bytes, tinytang-abi16-open.bin at 4,479,158 bytes, and tinytang.fs.gz. Both tinytang.bin and tinytang-lora.bin load with tangload and answer core ID 0x54 to command 0x01. The operator reports that the LoRa path works only with tinytang-lora.bin."
+  consequence: "Returning the board to its desktop must load tinytang-lora.bin, not tinytang.bin. The core ID cannot distinguish them, so a load of tinytang.bin looks correct from the link while leaving the operator's LoRa dead; this project's log convention of restoring tinytang.bin after every board cycle is what caused that on 2026-10-30, and an agent looking for the right image should not go by the plainest name on the card."
+  sources:
+    - "Direct observation on the Tang, 2026-10-30: ls of /root/cores/console138k, both images loaded with tangload, core ID read with command 0x01"
+    - "Operator report to the agent, 2026-10-30 (LoRa stopped after the tinytang.bin load)"
+    - "TinyVCMI .ai/core-log.md entries 86 to 89"
+  verification: "Sizes and names read from the card over TinyTang's console; identify read after each load as aa 00 02 01 54. The LoRa behaviour itself is the operator's report and was not measured by the agent."
 
 - record_id: VIDEO-001
   topic_id: VIDEO
