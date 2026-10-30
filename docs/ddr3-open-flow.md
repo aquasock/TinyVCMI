@@ -3482,5 +3482,64 @@ could not separate: the second, masked write is wrong, or writing the same
 address twice is wrong whatever the mask says.  The isolation build never
 answered this because it never trained, so it never measured anything.
 
+> Corrected below, in "The write search's data, and what the fill does":
+> the search compares the training's own patterns with `dm` held low, and the
+> test's data is dead logic until hand-over, so neither the mask nor `gen()` is
+> in that path.
+
 The board was restored to the desktop core afterwards and answered `0x54`,
 and the seed-5 report is in `build/ddr3_boot/sweep5/ctrl.txt`.
+
+## The write search's data, and what the fill does
+
+Entry 82 read the write-alignment search as a full data check through the mask
+path and blamed the test's data for the instrumented image's failure.  Both
+readings are wrong.  `wpass_now` is `(rc_total > 32'd100) && (rc_class ==
+rc_total)`, and `rc_class` counts READs whose capture matched `issue_pat` on
+all four lanes; `issue_pat` is `exp_sel_r ? issue_exp : rom(issue_idx)`, and
+`exp_sel` is `adata_p2`, so the search compares the training's own necklaces,
+or its address data while the search has that on, never the memory test's
+`merge(gen(a), gen(a, seed_b), mgen(a))`.  The mask is not in the path either:
+`ctrl_glue` drives `dm` from the controller only while `ctrl_own` is high, so
+every training write covers every byte.  And `ddr3_bist` is held in reset by
+`ld_rst = !ctrl_own`, so `gen()` is dead logic until hand-over.  Reusing a
+seed, or forcing `mgen` to zero, changes this image's netlist and nothing else.
+
+Frame 0x27 says what the search does see.  It is rd_check's first failure after
+its arm, and `tools/ddr3_write_probe.py ctrl --check` now decodes it: the
+lane's eight pin bytes, whether the even/odd pattern holds, the rotation it
+carries, and whether its necklace is the READ's own or another location's.  On
+the seed-5 instrumented image, warm, in TinyTang mode, 62 of 6261 READs held
+their pattern on all four lanes.  The first failure was bank 7, row bit 1,
+burst 62, expecting `0x17`; all four lanes disagreed, and all four held the
+same byte `0xa4` on every pin, even and odd alike.  That is one valid
+necklace -- rotation 5 of `0x25` -- on all four lanes, not a lane at the edge
+of its window and not a rotation of what was expected.  The capture is whole
+and the word is simply not the one that was read.
+
+The write path is not what is broken.  With address data off, the sixteen
+rd_check rows were prewritten and read back in random mode, and 1,203,340 of
+1,203,340 READs held their own pattern on all four lanes, with no failure
+recorded: paced writes, the addressing and the read path all work in this
+image.  The stage that fails is the training's own fill, which is not paced --
+`R_FILL` writes all 128 bursts of a row with one write per burst, each burst
+carrying its own address data.  Reproducing exactly that, at five write strobe
+alignments with address data on, gave 0 of 128,932 READs at WSTEP 0 and no
+lock at all, 76,848 of 128,931 (59.60%) at WSTEP 8, 116 at WSTEP 16, 0 at
+WSTEP 32 and 4 at WSTEP 48.  Four successive fills at WSTEP 8 gave the same
+59.60% and the same first failure every time, so the shortfall is
+deterministic, and a second fill does not fill it in: these are not writes
+lost to a race but data that lands in the wrong place, every time, in the same
+way.
+
+That also puts the memory test's doubled write in a new light.  The test
+writes each word twice back to back, which is the same rate regime as the
+fill and unlike any paced write measured so far, and the qualified image that
+runs clean writes each word once.  Whether the mask is innocent cannot be
+settled until the fill's misplacement is understood, because both the doubled
+write and the fill fail where the paced path succeeds.
+
+The board was left running the instrumented image in TinyTang mode; the image
+is on the card as `ddr3_ctrl_sweep5_chk.bin`, its host SHA-256
+`a2ce843aee6403c36451734230bb495d4cb62c7609541f5dd654fff5e789de09`, and the
+measurements are in `build/ddr3_boot/pw_chk/`, not committed.

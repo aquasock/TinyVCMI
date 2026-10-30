@@ -2751,3 +2751,34 @@ Bring for approval the two-variant bisect that names the faulty stage without an
 - User Test: N/A
 
 ---
+
+## 83 COMMIT Unreleased 2026-10-30T00:38:00-07:00
+
+#### Coming From:
+
+Unreleased 709eabb
+
+#### Purpose:
+
+Correct entry 82's account of why the instrumented controller image finds no write alignment, and measure on the board what the training's write search actually sees.
+
+#### Outcome:
+
+Entry 82's mechanism is wrong and its two-variant bisect could not have answered the question it was built for. `wpass_now` is `(rc_total > 32'd100) && (rc_class == rc_total)`, and `rc_class` counts READs whose capture matched `issue_pat` on all four lanes, where `issue_pat` is `exp_sel_r ? issue_exp : rom(issue_idx)` and `exp_sel` is `adata_p2`: the search compares the training's own necklaces, or its address data while the search has that on, and never the test's `merge(gen(a), gen(a, seed_b), mgen(a))`. The mask is not in that path, because `ctrl_glue` drives `dm` from the controller only while `ctrl_own` is high and so every training write covers every byte; and the test is not in it either, because `ddr3_bist` is held in reset by `ld_rst = !ctrl_own`, which makes `gen()` dead logic until hand-over. The only RTL difference between the mask image and the instrumented one is the five added lines of the adder in `gen()`, so variants that change the test's data change the netlist alone. The claims that the search is a data check through the mask path, that the failure implicates the mask at a suppressed address, and that the difference is the data rather than the placement are withdrawn. `tools/ddr3_write_probe.py` gained `ctrl --check`, which reads frame 0x27 and names each lane's eight pin bytes: whether the even and odd pins hold one byte, the rotation the lane carries, and whether its necklace is the READ's own, another location's, or neither. The seed-5 instrumented image, SHA-256 `a2ce843aee6403c36451734230bb495d4cb62c7609541f5dd654fff5e789de09`, was put to the card again as `ddr3_ctrl_sweep5_chk.bin`, its host digest printed by `tangput`, and loaded with `tangload` in TinyTang mode on a warm board, the supply as the previous session left it and not changed here, with the desktop core it had been running replaced by the image. Training repeated entry 82's result, `error 3`, lanes locked 1111, 390 trials, no write alignment, passing windows of 53, 58, 46 and 50 taps centred at 28, 31, 25 and 27 with every rotation zero. Frame 0x27 then said what the search had seen: 62 of 6261 READs held their pattern on all four lanes, and the first failure was at bank 7, row bit 1, burst 62, expecting `0x17`, with all four lanes disagreeing and all four holding `0xa4` on every pin, even and odd alike, which is one valid necklace, rotation 5 of `0x25`, on every lane: a whole capture that is simply not the word that was read, not a lane at the edge of its window and not a rotation of the expectation. The write path itself is sound in this image, because with address data off the sixteen rd_check rows were prewritten and read back in random mode and 1,203,340 of 1,203,340 READs held their own pattern on all four lanes with no failure recorded. The failing stage is therefore the training's own fill, `R_FILL`, which writes all 128 bursts of a row with one write per burst and each burst's own address data, unlike every paced write measured so far. Reproducing that step by hand at five write strobe alignments with address data on gave 0 of 128,932 READs classified at WSTEP 0 with no lock at all, 76,848 of 128,931, 59.60 per cent, at WSTEP 8, 116 at WSTEP 16, 0 at WSTEP 32 and 4 at WSTEP 48; four successive fills at WSTEP 8 gave the same 59.60 per cent and the same first failure every time, and a second fill did not fill the shortfall in, so the misplacement is deterministic rather than writes lost to a race. The memory test's doubled write runs in the same rate regime and the qualified image writes each word once, so the mask's guilt is untested rather than established. TOOL-055 was added and `docs/ddr3-open-flow.md` gained the section, with a pointer placed on entry 82's withdrawn sentence. Measurements are in `build/ddr3_boot/pw_chk/`, not committed, and the board was left running the instrumented image in TinyTang mode. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering and active-log capacity.
+
+#### Next Steps:
+
+Attribute the fill's misplacement before anything else: after a fill at WSTEP 8, read its region back and say whether a burst holds its neighbour's data, another row's, or a duplicate, which the READ log's per-READ locations or a read-back of chosen bursts can both settle, and write distinct per-burst data through the paced path as well, since the prewrite gave one pattern to a whole row and so could not see a burst-level slip. Then decide whether the misplacement is a property of the fill's rate or of its data path, because the test's doubled write shares that rate regime while the qualified image's single writes do not, and only then return to the mask, whose instrument currently cannot hand over and so cannot measure it. The read stream's frame, the state-4 hang in `S_RDW`, the write image's untimed boundary, the mid-calibration stall, the `D108` unused-pin contradiction and the `is_mipi` bug outside the DDR context remain open, and the user has deferred a capped legaliser budget and a PHY-only fuse reference. Every board result records the supply beside the cool-down, and this one was taken warm in TinyTang mode, on the supply left by the previous session.
+
+#### Files Modified:
+
+- docs/ddr3-open-flow.md
+- tools/ddr3_write_probe.py
+
+#### Status:
+
+- Build: N/A
+- Deployment: PASS
+- User Test: N/A
+
+---

@@ -223,6 +223,48 @@ def classify_report(c: dict) -> None:
             print(f"  lane {lane} holds exactly: " + (", ".join(hits) if hits else "no word near this address"))
 
 
+def checker_fail_report(c: dict) -> None:
+    """frame 0x27's first failure: which lanes disagreed, and what they held.
+
+    The training's own frame (0x39) says only whether a write alignment was
+    found; this one says why not.  rd_check records the first READ after its
+    arm whose capture was not its location's pattern, with all four lanes'
+    raw words, and the training's searches arm it, so during training this is
+    the first capture that disagreed.  Each lane's eight bytes are its pins
+    in order, and the fill drives even pins with the pattern and odd pins with
+    its inverse, so a lane that holds its own pattern shows here as a rotation.
+    """
+    if not c["fail"]:
+        print(f"checker: no failing READ recorded since its last arm; "
+              f"{c['class_ok']} of {c['total']} READs held their pattern on all four lanes")
+        return
+    print(f"checker: {c['class_ok']} of {c['total']} READs held their pattern on all four "
+          f"lanes; first failure at bank {c['fail_bank']} row bit {c['fail_rowbit']} "
+          f"burst {c['fail_burst']}, pattern {c['fail_pat']:#04x}, lanes "
+          f"{c['fail_lanes']:04b} disagreed, expected rotation "
+          + ", ".join(f"L{l} {c['fail_rot'][l]}" for l in range(4)))
+    for lane in range(4):
+        w = c["fail_words"][lane]
+        w0 = w[0]
+        bad = [p for p in range(1, 8) if w[p] != ((~w0) & 0xFF if p % 2 else w0)]
+        own = rotations(c["fail_pat"])
+        near = []
+        for i, p in enumerate(RC_PATTERNS):
+            if w0 in rotations(p) and w0 not in own:
+                near.append(f"row bit {i >> 3} bank {i & 7}")
+        for i, p in enumerate(AD_PATTERNS):
+            if w0 in rotations(p) and w0 not in own:
+                near.append(f"address data {i}")
+        if w0 in own:
+            held = f"a rotation {own.index(w0)} of this READ's own pattern"
+        elif near:
+            held = "a rotation of " + " or ".join(near)
+        else:
+            held = "neither its own pattern nor another location's"
+        print(f"  lane {lane}: {w.hex(' ')}, pin 0 {w0:#04x}, {held}"
+              + (f"; pins {bad} break the even/odd pattern" if bad else "; pins agree"))
+
+
 def exp_pat(e: dict) -> int:
     """A logged READ's expected pattern: its address data, else its row's."""
     return e["exp"] if "exp" in e else RC_PATTERNS[e["loc"]]
@@ -1507,6 +1549,10 @@ def main() -> int:
     ct.add_argument("--classify", action="store_true",
                     help="then read the first failing word back byte by byte: which lane and "
                          "beat holds the first write's pattern, the second's, zero, or neither")
+    ct.add_argument("--check", action="store_true",
+                    help="then read the checker's first failure (0x27): which lanes disagreed "
+                         "with their pattern and what each lane's pins held, which is what "
+                         "a training that found no write alignment does not otherwise say")
     mg = sub.add_parser("margin", help="the controller image: each lane's read delay stepped away "
                                        "from where training left it, under the memory test")
     mg.add_argument("--lanes", type=int, nargs="+", default=[0, 1, 2, 3])
@@ -1858,6 +1904,8 @@ def main() -> int:
                 d, k, rs = q["lanes"][l]
                 print(f"  lane {l}: delay {d} k {k} rclksel {rs}, {q['cal'][l]} CALIB pulse(s), "
                       f"{q['u'][l]} passing taps above tap 4, centred at tap {(4 + q['u'][l]) // 2}")
+            if args.check:
+                checker_fail_report(core.check())
             if args.rd_off is not None:
                 core.request(0x3C, 0x10 | args.rd_off)
             if args.test is not None:

@@ -172,6 +172,7 @@ Topic IDs are the `record_id` prefix. An entry reserves a namespace; it does not
 | Which direction of the falling-edge I/O boundary breaks the controller? | TOOL | TOOL-052 |
 | How is an image loaded and measured without TinyTang? | TOOL | TOOL-053 |
 | Can a failed word's bytes be attributed to one of the test's two writes, or to another address? | TOOL | TOOL-054 |
+| What does the training's write-alignment search compare, and does it exercise the write mask? | TOOL | TOOL-055 |
 | Why did the Gowin control miss PCLK timing? | TOOL | TOOL-028 |
 | Which sources and licenses constrain reuse? | PROV | PROV-001 |
 
@@ -249,6 +250,7 @@ TOOL-051: "synth_gowin builds a falling-edge register with an absorbed synchrono
 TOOL-052: "Capturing the deserializers' words and RVALID on PCLK's falling edge breaks the controller's reads; registering only the outbound side is the qualified boundary, now the design, eight loads clean across two cold starts against the old image failing three of eight"
 TOOL-053: "One-wire mode reaches this project's images directly: the .fs over JTAG on FT2232 interface 0, and the FPGA UART on /dev/ttyUSB1 at 2 Mbaud answering AA 00 01 01 with core ID 0x56"
 TOOL-054: "The memory test's gen() was linear in the address, 32 of 256 bits apart for adjacent addresses and about 4 bits a byte between its two write patterns, so a returned word could not be attributed to an address; an adder in the fold fixes it and the probe replicates the RTL exactly"
+TOOL-055: "wpass_now compares the training's own patterns on all four lanes over more than 100 READs, with dm held low and the test in reset, so the write-alignment search tests neither the write mask nor the test's data; on the board paced writes and reads are whole (1,203,340 of 1,203,340) while the training's streaming fill lands whole at no WSTEP, best 59.60% at WSTEP 8, repeatably"
 TOOL-031: "LiteDRAM's control layer alone generates, synthesises and places in the open flow at ~1% of the LUTs, with none of TOOL-025's three gaps"
 TOOL-030: "Closed-page scatter READs do not reach the read capture in the open or the vendor build of the same RTL; no cadence, gate position or shared RCLKSEL recovers them, and failing READs return other rows' patterns"
 PROV-001: "Reuse source and interface ideas with their original license boundaries and attribution intact"
@@ -1207,6 +1209,20 @@ PROV-001: "Reuse source and interface ideas with their original license boundari
     - "TinyVCMI tools/ddr3_write_probe.py: BIST_SEED, BIST_SEED_B, bist_gen, bist_mgen, bist_merge, bist_classify, bist_origin"
     - "TinyVCMI docs/ddr3-open-flow.md: The mask measurement, and the instrument that could not read it"
   verification: "Measured host-side and in Icarus: the replica and the RTL agree on addresses 0, 1, 33, 2000, 8189 and 33554431 for both seeds, the mask and the merge; address separation was counted before and after the adder; the origin search was checked by offering the word of address 9 as address 7 and getting B@+2 on all four lanes. tools/sim_ddr3_ctrl.sh passes on the changed generator, including its nodm mutant, since the testbench's array takes data and mask from the DUT's pads and never calls gen()."
+
+- record_id: TOOL-055
+  topic_id: TOOL
+  title: "What the write-alignment search compares, and what it does not"
+  status: VERIFIED
+  verified_date: 2026-10-30
+  statement: "wpass_now accepts a trial only when more than 100 READs were classified and every one of them held its own pattern on all four lanes (rc_class == rc_total). rd_check classifies a READ by comparing each lane's captured necklace with issue_pat, which is issue_exp while exp_sel is high and rom(issue_idx) otherwise; exp_sel is adata_p2, so the write-alignment search compares the training's own patterns, not the memory test's word. During that search ctrl_glue holds dm low, because dm takes the controller's mask only while ctrl_own is high, so every training write covers every byte; and ddr3_bist is held in reset by ld_rst = !ctrl_own, so the test's gen(), mgen() and merge() are dead logic until hand-over. On the board, a paced prewrite of the sixteen rd_check rows read back whole in 1,203,340 of 1,203,340 READs with ctrl_own still low, while the training's own fill, reproduced by hand at five WSTEP values, classified 0 of 128,932 READs at WSTEP 0, 76,848 of 128,931 at WSTEP 8, 116 of 128,928 at WSTEP 16, 0 of 128,934 at WSTEP 32 and 4 of 128,931 at WSTEP 48, and four successive fills at WSTEP 8 gave the same 59.60 per cent and the same first failure."
+  consequence: "A failure of the write-alignment search says nothing about the write mask, and a test-data change in ddr3_bist cannot alter it. The search fails because the streaming fill never lands wholly at any of the 64 write strobe alignments, while paced writes and the read path are sound in the same image, so the fill's path from data to pads is the stage to measure next rather than the mask or the test's data."
+  sources:
+    - "TinyVCMI commit 709eabb, fpga/ddr3_write/wr_core.v:2102 (wpass_now), 1149 (rc_arm), 2256-2275 (the write search)"
+    - "TinyVCMI commit 709eabb, fpga/ddr3_write/rd_check.v:267 (issue_pat), 480 (ck_cls), 593 (ev_all)"
+    - "TinyVCMI commit 709eabb, fpga/ddr3_ctrl/ctrl_glue.v:195 (dm), 103 (ld_rst)"
+    - "TinyVCMI .ai/core-log.md entry 83, and build/ddr3_boot/pw_chk/ on the build host"
+  verification: "The code facts were read from the files named above. The board figures come from loading the seed-5 instrumented image (SHA-256 a2ce843a...) in TinyTang mode on a warm board, reading frame 0x27 after training, then prewriting the sixteen rows with address data off and reading them back in random mode, then repeating the training's own fill and read at five WSTEP values with address data on. The fill's shortfall is deterministic to the READ count across four successive fills, and re-filling does not change it."
 
 - record_id: PROV-001
   topic_id: PROV
