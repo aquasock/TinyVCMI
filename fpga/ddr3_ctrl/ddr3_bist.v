@@ -62,14 +62,22 @@ module ddr3_bist #(
     output reg  [511:0]  pin_err = 512'd0,      // DQ q at [16q +: 16]
     output reg  [511:0]  beat_err = 512'd0,     // lane l, beat b at [16(8l + b) +: 16]
     output reg  [511:0]  elog = 512'd0,         // entry e at [64e +: 64]
-    output reg  [3:0]    n_log = 4'd0
+    output reg  [3:0]    n_log = 4'd0,
+    // the test's two independent variables, from command 0x3C 0x5m:
+    // m[0] folds the address with XOR and shifts only, as this test did
+    // before the adder, and m[1] writes each word once instead of twice.
+    // Each isolates one of the two changes that arrived together with the
+    // doubled write, so the board can say which of them the read failures
+    // belong to.  Latched at a pass boundary, so a change cannot land
+    // between a word's write and its check.
+    input  wire [1:0]    tm_mode
 );
     // the log entry on its way to elog, one PCLK behind the check
     reg         log_v = 1'b0;
     reg  [2:0]  log_idx = 3'd0;
     reg  [63:0] log_d = 64'd0;
 
-    function [255:0] gen(input [AW-1:0] a, input [31:0] s);
+    function [255:0] gen(input [AW-1:0] a, input [31:0] s, input [31:0] add);
         integer gk;
         reg [2:0] g3;
         reg [31:0] x;
@@ -81,7 +89,11 @@ module ddr3_bist #(
                 // shifts are linear, so a one-bit address step came out a few
                 // bits apart and the test could not tell one address's word
                 // from its neighbour's; a carry spreads it through the word.
-                x = x + {7'd0, a};
+                // `add` is the address through the adder's carries, or zero
+                // for the old fold that the experiment switches back to.  It is
+                // selected outside, once per word, so the mode costs one 32-bit
+                // mux on the address rather than one per beat on the data.
+                x = x + add;
                 x = x ^ (x << 13);
                 x = x ^ (x >> 17);
                 x = x ^ (x << 5);
@@ -105,6 +117,7 @@ module ddr3_bist #(
     localparam [AW-1:0] LAST = (1 << N_LOG2) - 1;
     localparam [31:0] RLAST = (1 << R_LOG2) - 1;
 
+    reg [1:0]    pmode = 2'd0;        // tm_mode, latched at a pass boundary
     reg [31:0]   seed = 32'h2545f491;
     reg [31:0]   seed_b = 32'h5bf03635;  // the second write of a word
     reg          w2nd = 1'b0;           // the masked write of the current word
@@ -148,7 +161,10 @@ module ddr3_bist #(
         end
     endfunction
 
-    assign cmd_wdata = w2nd ? gen(cmd_addr, seed_b) : gen(cmd_addr, seed);
+    wire [31:0] add_w = pmode[0] ? 32'd0 : {7'd0, cmd_addr};
+    wire [31:0] add_r = pmode[0] ? 32'd0 : {7'd0, rq[rq_r][AW-1:0]};
+    assign cmd_wdata = w2nd ? gen(cmd_addr, seed_b, add_w)
+                            : gen(cmd_addr, seed, add_w);
     assign cmd_wmask = w2nd ? mgen(cmd_addr, seed) : 32'h0;
 
     // the check, a PCLK behind the word
@@ -211,8 +227,9 @@ module ddr3_bist #(
         ck_retry <= rq[rq_r][AW];
         ck_a <= rq[rq_r][AW-1:0];
         ck_got <= rdata_data;
-        ck_exp <= merge(gen(rq[rq_r][AW-1:0], seed), gen(rq[rq_r][AW-1:0], seed_b),
-                        mgen(rq[rq_r][AW-1:0], seed));
+        ck_exp <= merge(gen(rq[rq_r][AW-1:0], seed, add_r),
+                        gen(rq[rq_r][AW-1:0], seed_b, add_r),
+                        pmode[1] ? 32'hffffffff : mgen(rq[rq_r][AW-1:0], seed));
         if (take && cmd_we && n_written != 32'hffffffff)
             n_written <= n_written + 32'd1;
         if (ck_v && ck_retry) begin
@@ -278,13 +295,14 @@ module ddr3_bist #(
         // the passes
         case (state)
             S_IDLE: begin
+                pmode <= tm_mode;
                 cmd_we <= 1'b1;
                 cmd_addr <= {AW{1'b0}};
                 cmd_valid <= 1'b1;
                 state <= S_WR;
             end
             S_WR: if (take) begin
-                if (!w2nd)
+                if (!pmode[1] && !w2nd)
                     w2nd <= 1'b1;               // the word's masked write next
                 else begin
                     w2nd <= 1'b0;
@@ -358,6 +376,7 @@ module ddr3_bist #(
             end else if (!cmd_valid && rroom)
                 cmd_valid <= 1'b1;
             S_RRW: if (rq_n == 7'd0 && !ck_v) begin
+                pmode <= tm_mode;               // a mode change lands between passes
                 if (passes != 16'hffff)
                     passes <= passes + 16'd1;
                 seed <= seed + 32'h9e3779b9;

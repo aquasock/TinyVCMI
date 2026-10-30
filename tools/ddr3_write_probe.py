@@ -117,7 +117,7 @@ BIST_SEED = 0x2545F491        # ddr3_bist.v: seed
 BIST_SEED_B = 0x5BF03635      # ddr3_bist.v: seed_b, the second write of a word
 
 
-def bist_gen(addr: int, seed: int) -> int:
+def bist_gen(addr: int, seed: int, lin: bool = False) -> int:
     """ddr3_bist's gen(): the 256-bit word at `addr`, beat-major, DQ bit
     32*beat + 8*lane + pin."""
     out = 0
@@ -125,7 +125,8 @@ def bist_gen(addr: int, seed: int) -> int:
         x = (((addr << 3) | beat) & 0xFFFFFFFF) ^ seed
         x ^= (0x9E3779B9 * (beat + 1)) & 0xFFFFFFFF
         x &= 0xFFFFFFFF
-        x = (x + addr) & 0xFFFFFFFF          # the address again, through carries
+        if not lin:
+            x = (x + addr) & 0xFFFFFFFF      # the address again, through carries
         x ^= (x << 13) & 0xFFFFFFFF
         x ^= x >> 17
         x ^= (x << 5) & 0xFFFFFFFF
@@ -154,15 +155,19 @@ def bist_merge(a: int, b: int, m: int) -> int:
     return out
 
 
-def bist_classify(addr: int, diff: int) -> dict:
+def bist_classify(addr: int, diff: int, tm_mode: int = 0) -> dict:
     """Which of a failed word's two writes each byte holds.
 
     `diff` is the test's err_diff, the read XOR the expectation it built from
     these same generators, so diff ^ merge(a, b, mask) is the word the array
     returned at `addr`.
     """
-    a, b, m = bist_gen(addr, BIST_SEED), bist_gen(addr, BIST_SEED_B), bist_mgen(addr)
-    got = bist_merge(a, b, m) ^ diff
+    lin, single = bool(tm_mode & 1), bool(tm_mode & 2)
+    a = bist_gen(addr, BIST_SEED, lin)
+    b = bist_gen(addr, BIST_SEED_B, lin)
+    m = bist_mgen(addr)
+    # with one write per word the masked second write never happens
+    got = (a if single else bist_merge(a, b, m)) ^ diff
     grid = [[None] * 4 for _ in range(8)]
     count = {"A": 0, "B": 0, "=": 0, "0": 0, "x": 0}
     for beat in range(8):
@@ -1546,6 +1551,9 @@ def main() -> int:
                     help="seconds to report the test's progress for, once a second")
     ct.add_argument("--diag", action="store_true",
                     help="then the test's per-pin and per-lane-and-beat counts and its log")
+    ct.add_argument("--tmode", type=int, choices=range(4), default=None,
+                    help="the test's variables, command 0x3C 0x50 + m: m[0] the linear "
+                         "address fold, m[1] one write per word; latched at a pass boundary")
     ct.add_argument("--classify", action="store_true",
                     help="then read the first failing word back byte by byte: which lane and "
                          "beat holds the first write's pattern, the second's, zero, or neither")
@@ -1934,10 +1942,13 @@ def main() -> int:
                 if time.time() - t0 >= args.watch:
                     break
                 time.sleep(1.0)
+            if args.tmode is not None:
+                core.request(0x3C, 0x50 | args.tmode)
             if args.classify or args.diag:
                 c = core.ctrl()
                 if c["err"]:
-                    classify_report(bist_classify(c["err_addr"], c["err_diff"]))
+                    classify_report(bist_classify(c["err_addr"], c["err_diff"],
+                                                  args.tmode or 0))
                 else:
                     print("no failing word to classify")
             if args.diag:

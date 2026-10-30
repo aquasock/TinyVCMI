@@ -2968,3 +2968,37 @@ None.
 - User Test: N/A
 
 ---
+
+## 90 COMMIT Unreleased 2026-10-30T16:24:44-07:00
+
+#### Coming From:
+
+Unreleased 3301427
+
+#### Purpose:
+
+Separate the doubled write from the test's new data patterns, so the read failures of entry 88 can be attributed to one of the two changes that arrived together.
+
+#### Outcome:
+
+The failures belong to the doubled write and the data patterns are exonerated. `ddr3_bist` gained `tm_mode`, set by command `0x3C 0x50 + m`: `m[0]` folds the address with XOR and shifts only, as the test did before the adder, and `m[1]` writes each word once instead of twice, both latched into `pmode` at a pass boundary so a change cannot land between a word's write and its check, with one write expressed as a merge whose mask keeps every byte of the first write. `ctrl_glue` decodes the command, `tools/ddr3_write_probe.py` gained `ctrl --tmode`, and `tb_ctrl.v` runs a pass in each mode and requires no lane error; `tools/sim_ddr3_ctrl.sh` passes with its six mutants. The first version of that logic cost about five megahertz and produced no clean placement in nineteen seeds, the best 94.74 MHz, because `gen()` selected the fold inside its eight-beat data path and the single-write expectation muxed a whole 256-bit word; taking the adder input as an argument and expressing one write as a 32-bit mask select instead brought three of six seeds through at 107.78, 106.50 and 106.19 MHz, each with 469 `DFFN` and 18 `DFFNS` on the CLKDIV, no LUT on a clock and all 306 DDR3 tables equal, as `d31a2639...`, `f5dbcd51...` and `a8f043bb...`, the last of the three completed by hand from its packed `.fs` after the sweep was stopped at the user's direction. On the seed-1 image, with the counters cleared for every reading and 33,554,430 words checked each, modes 0 and 1, the doubled write with the adder fold and with the linear fold, give about 31 and 37 per cent lane errors on lanes 0 and 2 and about 2 per cent on lanes 1 and 3, mode 0 repeating to within one per cent, while modes 2 and 3, one write with either fold, give about 1.1 to 1.4 per cent on every lane. The second write therefore costs roughly a factor of thirty and the fold costs nothing separable from the noise, which confirms TOOL-058's exoneration of the mask and answers entry 88's question. Two things stay open: a residual of about 1.1 per cent survives with one write on this placement against the qualified image's clean twenty-one passes, and the seed-4 image fails essentially every word on every lane at read offsets 6, 7, 8 and 9 while the entry-88 image on the same board in the same session still fails only 0.5 per cent of words on lanes 1 and 2, so a placement can close timing well and read nothing, and read offsets were swept on that image with the counters cleared and each offset set before the test restarted. The board was restored to `tinytang-lora.bin`, not `tinytang.bin`, per PROT-002, and answered `0x54`; it is powered from the host's 5 V over USB-C OTG and the cooldown was not recalled. TOOL-059 was added and `docs/ddr3-open-flow.md` gained the section. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering and active-log capacity.
+
+#### Next Steps:
+
+Find what the second write breaks, which is now a narrow question: the write itself succeeds and the read of the same word right afterwards returns it wrong on some lanes, so vary the spacing between the two writes of a word the way the fill's pace was varied, and check whether a second write to the same address is the fault or whether the mask byte's path corrupts the following write even when the mask is all zeros, which mode 2 already writes without. Settle the residual 1.1 per cent on the same image by reading a mode-2 pass against the qualified image's clean passes, since a difference there is a placement or traffic effect and not the doubling. Then explain why a 106.19 MHz placement reads nothing at any offset, because until that is understood a clean build is not evidence of a working image and every board result costs a load to discover which it is. The read path's 8 PCLK marginality, the read stream's frame, the state-4 hang in `S_RDW`, the write image's untimed boundary, the mid-calibration stall, the `D108` unused-pin contradiction and the `is_mipi` bug outside the DDR context remain open, the whole-top simulation stays on hold, and the user has deferred a capped legaliser budget and a PHY-only fuse reference.
+
+#### Files Modified:
+
+- docs/ddr3-open-flow.md
+- fpga/ddr3_ctrl/ctrl_glue.v
+- fpga/ddr3_ctrl/ddr3_bist.v
+- fpga/ddr3_ctrl/tb_ctrl.v
+- tools/ddr3_write_probe.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: N/A
+
+---

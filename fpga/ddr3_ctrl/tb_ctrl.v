@@ -361,6 +361,10 @@ module tb_ctrl;
     endtask
 
     // ---- the run ----------------------------------------------------------
+    reg  [15:0]  p0 = 16'd0;
+    reg  [127:0] lane0 = 128'd0;
+    reg  [31:0]  chk0 = 32'd0, w_done = 32'd0, c_done = 32'd0;
+    integer      mk;
     wire [15:0]  st_passes = ext_status[16 +: 16];
     wire [31:0]  st_written = ext_status[32 +: 32];
     wire [31:0]  st_checked = ext_status[64 +: 32];
@@ -398,10 +402,42 @@ module tb_ctrl;
         if (n_refs < (4 * cyc) / 3120 - 1) fail("fewer REFRESHes than the run's length needs");
         if (max_refi > 3120) fail("a refresh interval over 7.8 us");
         if (!ctrl_accept || !ext_status[15]) fail("the controller did not accept the trained alignment");
+        // The test's two variables, each of which must still agree with its own
+        // data: one pass in each mode, with the mode latched at the pass
+        // boundary, so a wrong expectation or a mode landing mid-pass shows up
+        // as lane errors.  One write per word has no masked second write to
+        // merge, so its expectation is the first write alone.  The run's totals
+        // are read here, since the test keeps counting into the next passes.
+        w_done = dut.bist.n_written;
+        c_done = dut.bist.n_checked;
+        for (mk = 1; mk <= 2; mk = mk + 1) begin
+            ext_cmd = 8'h50 | mk[7:0];          // the variable, latched at the next boundary
+            ext_tog = ~ext_tog;
+            p0 = dut.bist.passes;
+            wait (dut.bist.passes != p0);       // this boundary latches the mode
+            p0 = dut.bist.passes;
+            #1000;
+            if (dut.bist.pmode != mk[1:0])
+                fail("the test's variables did not latch at the pass boundary");
+            lane0 = st_lane;
+            chk0 = st_checked;
+            wait (dut.bist.passes != p0);       // one whole pass in the new mode
+            #1000;
+            if (st_lane != lane0) begin
+                $display("      mode 0x%0h: lane errors rose by %0d %0d %0d %0d",
+                         mk, st_lane[31:0] - lane0[31:0], st_lane[63:32] - lane0[63:32],
+                         st_lane[95:64] - lane0[95:64], st_lane[127:96] - lane0[127:96]);
+                fail("a test variable's pass disagreed with the data it wrote");
+            end
+            if (st_checked == chk0)
+                fail("a test variable's pass checked no word");
+            $display("      test variables: mode 0x%0h ran a pass of %0d words with no lane error",
+                     mk, st_checked - chk0);
+        end
 `ifndef MODEL_FAULTS
         if (errors == 0)
             $display("PASS  ddr3_ctl through dfi_phy: %0d words written and %0d read back whole, a masked write leaving the bytes it suppresses",
-                     dut.bist.n_written, dut.bist.n_checked);
+                     w_done, c_done);
         else
 `endif
         if (errors != 0)

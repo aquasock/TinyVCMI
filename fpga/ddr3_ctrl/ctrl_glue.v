@@ -22,6 +22,8 @@
 //                   sat in the command registers; 1, the board's 7, at reset
 //   0x3C 0x20 / 21  the memory test stopped / running (running at reset)
 //   0x3C 0x30       the test's counts and first error cleared
+//   0x3C 0x50 + m   the test's variables: m[0] the linear address fold, m[1] one
+//                   write per word instead of two; latched at a pass boundary
 //   0x3C 0x40 + p   frame 0x3D shows page p from the next snapshot:
 //                   0 the summary below, 1 each DQ q's failing words at
 //                   [16q +: 16], 2 lane l and beat b's at [16(8l + b) +: 16],
@@ -89,6 +91,7 @@ module ctrl_glue #(
     reg [2:0] tog_p = 3'd0;
     reg [1:0] rd_off = 2'd1;
     reg [1:0] page = 2'd0;
+    reg [1:0] tm_mode = 2'd0;       // the test's variables: 1 linear fold, 2 one write
     reg       bist_en = 1'b1, bist_clr = 1'b0;
     reg [7:0] cmd_p = 8'd0;
     always @(posedge pclk) begin
@@ -101,6 +104,7 @@ module ctrl_glue #(
                 4'h2: bist_en <= cmd_p[0];
                 4'h3: bist_clr <= 1'b1;
                 4'h4: page <= cmd_p[1:0];
+                4'h5: tm_mode <= cmd_p[1:0];
                 default: ;
             endcase
     end
@@ -172,7 +176,7 @@ module ctrl_glue #(
         .state(b_state), .passes(b_passes), .n_written(b_written), .n_checked(b_checked),
         .lane_err(b_lane_err), .err_seen(b_err_seen), .err_addr(b_err_addr),
         .err_diff(b_err_diff), .pin_err(b_pin_err), .beat_err(b_beat_err), .elog(b_elog),
-        .n_log(b_n_log));
+        .n_log(b_n_log), .tm_mode(tm_mode));
 
     // ---- the pads -------------------------------------------------------
     wire [255:0] wc_wdq;

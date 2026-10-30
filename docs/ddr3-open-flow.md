@@ -3726,3 +3726,54 @@ Whether the doubled write alone accounts for them, or the address adder's new
 data patterns change the bus enough to matter, is not yet separated: the two
 changes arrived together, and the next experiment has to test the turnaround
 between the masked write and its read on its own.
+
+## The doubled write is what the failures belong to
+
+The previous section left two changes entangled: the test writes each word
+twice and reads it back, and the address adder changed the data.  Both are now
+runtime variables, so one build answers the question.  Command `0x3C 0x50 + m`
+sets them in `ddr3_bist`: `m[0]` folds the address with XOR and shifts only,
+as the test did before the adder, and `m[1]` writes each word once instead of
+twice.  Each is latched at a pass boundary, so a change cannot land between a
+word's write and its check, and one write per word is expressed as a merge
+whose mask keeps every byte of the first write, which costs a 32-bit select
+rather than a 256-bit one.
+
+The first version of that logic cost about five megahertz and produced no
+clean placement in nineteen seeds, the best 94.74 MHz.  The cost was the shape
+of the selects, not the idea: `gen()` now takes the address through the
+adder's carries as an argument, so the fold is one 32-bit mux on the address
+path instead of eight inside the data path, and the single-write expectation
+is a 32-bit mux on the mask.  With that, three of six seeds closed: 107.78,
+106.50 and 106.19 MHz, all with 469 `DFFN` and 18 `DFFNS` on the CLKDIV, no
+LUT on a clock, and all 306 DDR3 tables equal to the vendor reference.  Images
+are `d31a2639...`, `f5dbcd51...` and `a8f043bb...`.
+
+On the board the answer is unambiguous.  On the seed-1 image, with the counters
+cleared for each reading and 33,554,430 words checked per reading:
+
+- mode 0, the doubled write with the adder fold, gives 10,558,618, 707,722,
+  12,451,072 and 667,394 lane errors on lanes 0 to 3, about 31 and 37 per cent
+  on lanes 0 and 2, and repeats to within one per cent on a second reading;
+- mode 2, one write with the adder fold, gives 363,539, 411,685, 461,495 and
+  357,464, about 1.1 to 1.4 per cent on every lane;
+- mode 1, the doubled write with the linear fold, gives 7,967,545, 700,923,
+  11,866,905 and 388,373, about 24 and 35 per cent, which is mode 0 within the
+  noise;
+- mode 3, one write with the linear fold, gives 370,738, 409,732, 370,738 and
+  78,823, about 1.1 per cent.
+
+So the second write costs roughly a factor of thirty, and the data patterns
+cost nothing that separates from it.  The failures of the previous section
+belong to the doubled write, and the mask's suppression was already exonerated.
+
+Two things stay open and are not small.  A residual of about 1.1 per cent
+remains even with one write per word on this placement, while the qualified
+image runs clean over twenty-one passes, so either the single-write mode's
+halved traffic changes something or this placement is simply worse.  And the
+seed-4 image fails every word on every lane at read offsets 6, 7, 8 and 9
+while the entry-88 image on the same board in the same session still fails only
+0.5 per cent of words on lanes 1 and 2, so a clean timing closure and a working
+read capture are separate lotteries: 106.19 MHz placed the design well by the
+constraint and badly for the capture.  Read that before trusting any image's
+speed as evidence that it reads.
