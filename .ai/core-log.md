@@ -2782,3 +2782,34 @@ Attribute the fill's misplacement before anything else: after a fill at WSTEP 8,
 - User Test: N/A
 
 ---
+
+## 84 COMMIT Unreleased 2026-10-30T00:52:00-07:00
+
+#### Coming From:
+
+Unreleased a3e6acf
+
+#### Purpose:
+
+Attribute the streaming fill's misplacement to the address or to the data, and make that measurement reproducible as a committed tool.
+
+#### Outcome:
+
+The misplacement is in the burst address, not in the data, and it is invisible to every test this project has written with one pattern per row. rd_check's READ log carries each READ's bank, row bit and burst beside every lane's captured necklace, so the fill's failures can be walked back through the row's own address data. One thousand and twenty-four logged READs after a fill at WSTEP 8 with the READ spacing at 12 PCLK gave 609 that held their own address's data, and all 415 failures held one whole, valid necklace on all four lanes. For those failures the nearest burst holding the captured class is eight bursts away for 95 and eight the other way for 78, sixteen bursts for 60, fifteen and seventeen for 31 more; counted as burst-index bits, 259 of the 415 differ from the read's own burst in exactly one bit, and those are burst bit 3 at 171, bit 4 at 60 and bit 5 at 25, with one each at bits 1, 2 and 6. The address-data fold does not alias them, because flipping any one burst bit changes the class and the seven flips reach seven distinct classes over every row tested, so the class does name the bit. A burst is eight columns, so the faulty bits are column address bits 6 to 8. The fault follows the address and not the moment: failing captures per bank run 60 to 90 of 116 to 138 and per row bit 27 to 46 of 48 to 81, with no bank or row spared or singled out; it does not follow the refresh phase; and it does not move with READ spacing, because 12, 16, 24, 32 and 48 PCLK apart gave 59.69, 59.69, 59.74, 59.64 and 59.65 per cent with the same addresses failing each time. It is not the fill leaving bursts unwritten either, because only 15 of the 415 failures still held the paced prewrite's pattern against 53 per cent by chance, so those bursts were written by the fill and carry another burst's data. The reason no earlier result saw this is the method: a row written with one pattern -- the sixteen rd_check rows, the paced prewrite, every read-alignment window -- returns the same necklace from any burst in that row, so entry 83's control of 1,203,340 of 1,203,340 READs is evidence about the read capture and about bank and row addressing and about nothing at the burst level. The READ spacing has a second, separate effect, 4.09 per cent classified at 8 PCLK against 59.69 at 12, so the random-read path is also marginal when the READs are packed. Whether it is the column a WRITE presents or the column a READ presents that goes wrong is not yet separable, because the log records the request and not what the device saw, and both issue through the same command registers and the same outbound boundary. `tools/ddr3_fill_attrib.py` was added so the measurement is a committed, deterministic tool rather than a session-local script, and its `--gap` default of 12 PCLK keeps the attribution out of the marginal regime; it reproduces 609 of 1024, 95 and 78 at plus and minus eight bursts and 171, 60 and 25 at burst bits 3, 4 and 5 on the image as loaded. TOOL-056 was added and `docs/ddr3-open-flow.md` gained the section. The raw log and the attribution are in `build/ddr3_boot/pw_chk/`, not committed, and the board was left running the instrumented image in TinyTang mode. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering and active-log capacity.
+
+#### Next Steps:
+
+Separate the write's column from the read's, which needs a path whose column is not a fast counter: add a paced single-burst WRITE that takes its bank and column from the host, write a per-burst ramp through it, and read it back with the closed-page READs the log already decodes, so that a wrong burst is attributable to the side that wronged it. The cheaper alternative is to read a filled row as a sequential stream and decode its framing against the per-burst expectation, because a stream's columns come from the read counter rather than the random generator. Either answer tells us whether the training image's failure is its own address path or the device's, and only then does the mask's own failure become measurable, since the instrumented image still cannot hand over and the mask image hands over without a test whose data varies per burst. The read path's 8 PCLK marginality is worth its own sweep once the address fault is placed. The read stream's frame, the state-4 hang in `S_RDW`, the write image's untimed boundary, the mid-calibration stall, the `D108` unused-pin contradiction and the `is_mipi` bug outside the DDR context remain open, and the user has deferred a capped legaliser budget and a PHY-only fuse reference. Every board result records the supply beside the cool-down, and this one was taken warm in TinyTang mode, on the supply left by the previous session.
+
+#### Files Modified:
+
+- docs/ddr3-open-flow.md
+- tools/ddr3_fill_attrib.py
+
+#### Status:
+
+- Build: N/A
+- Deployment: PASS
+- User Test: N/A
+
+---

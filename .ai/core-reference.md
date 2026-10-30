@@ -173,6 +173,7 @@ Topic IDs are the `record_id` prefix. An entry reserves a namespace; it does not
 | How is an image loaded and measured without TinyTang? | TOOL | TOOL-053 |
 | Can a failed word's bytes be attributed to one of the test's two writes, or to another address? | TOOL | TOOL-054 |
 | What does the training's write-alignment search compare, and does it exercise the write mask? | TOOL | TOOL-055 |
+| Does a filled row return each burst's own address data, and where does a mismatch sit? | TOOL | TOOL-056 |
 | Why did the Gowin control miss PCLK timing? | TOOL | TOOL-028 |
 | Which sources and licenses constrain reuse? | PROV | PROV-001 |
 
@@ -251,6 +252,7 @@ TOOL-052: "Capturing the deserializers' words and RVALID on PCLK's falling edge 
 TOOL-053: "One-wire mode reaches this project's images directly: the .fs over JTAG on FT2232 interface 0, and the FPGA UART on /dev/ttyUSB1 at 2 Mbaud answering AA 00 01 01 with core ID 0x56"
 TOOL-054: "The memory test's gen() was linear in the address, 32 of 256 bits apart for adjacent addresses and about 4 bits a byte between its two write patterns, so a returned word could not be attributed to an address; an adder in the fold fixes it and the probe replicates the RTL exactly"
 TOOL-055: "wpass_now compares the training's own patterns on all four lanes over more than 100 READs, with dm held low and the test in reset, so the write-alignment search tests neither the write mask nor the test's data; on the board paced writes and reads are whole (1,203,340 of 1,203,340) while the training's streaming fill lands whole at no WSTEP, best 59.60% at WSTEP 8, repeatably"
+TOOL-056: "A row filled with per-burst address data reads back with its burst index displaced: 609 of 1024 READs own, 259 of the 415 failures differing in exactly one burst bit (bits 3, 4 and 5 at 171, 60 and 25), faults in column bits 6 to 8, deterministic per address and independent of READ spacing above 12 PCLK; a row written with one pattern cannot see them, and at 8 PCLK the random reads are marginal as well (4.09% against 59.7%)"
 TOOL-031: "LiteDRAM's control layer alone generates, synthesises and places in the open flow at ~1% of the LUTs, with none of TOOL-025's three gaps"
 TOOL-030: "Closed-page scatter READs do not reach the read capture in the open or the vendor build of the same RTL; no cadence, gate position or shared RCLKSEL recovers them, and failing READs return other rows' patterns"
 PROV-001: "Reuse source and interface ideas with their original license boundaries and attribution intact"
@@ -1223,6 +1225,19 @@ PROV-001: "Reuse source and interface ideas with their original license boundari
     - "TinyVCMI commit 709eabb, fpga/ddr3_ctrl/ctrl_glue.v:195 (dm), 103 (ld_rst)"
     - "TinyVCMI .ai/core-log.md entry 83, and build/ddr3_boot/pw_chk/ on the build host"
   verification: "The code facts were read from the files named above. The board figures come from loading the seed-5 instrumented image (SHA-256 a2ce843a...) in TinyTang mode on a warm board, reading frame 0x27 after training, then prewriting the sixteen rows with address data off and reading them back in random mode, then repeating the training's own fill and read at five WSTEP values with address data on. The fill's shortfall is deterministic to the READ count across four successive fills, and re-filling does not change it."
+
+- record_id: TOOL-056
+  topic_id: TOOL
+  title: "Burst-level address faults after a per-burst fill"
+  status: VERIFIED
+  verified_date: 2026-10-30
+  statement: "After the training's fill writes a region with per-burst address data, rd_check's READ log shows 609 of 1024 closed-page READs holding their own address's data on all four lanes, and every failure holding one whole, valid necklace. Of the 415 failures, 259 differ from the read's own burst in exactly one burst-index bit -- bit 3 (171), bit 4 (60) and bit 5 (25) -- and the nearest burst holding the captured class is plus or minus eight bursts for 173, sixteen for 60, fifteen or seventeen for 31. The address-data fold does not alias these: flipping any one burst bit changes the class, and the seven flips reach seven distinct classes. The failures are spread evenly over banks (60 to 90 good of 116 to 138) and row bits (27 to 46 of 48 to 81), do not follow the refresh phase, repeat identically across fills, and do not change with READ spacing from 12 to 48 PCLK (59.69, 59.69, 59.74, 59.64, 59.65 per cent). Only 15 of the 415 still held the paced prewrite's pattern against 53 per cent by chance, so the bursts were written. At 8 PCLK spacing the same fill classifies 4.09 per cent, a separate marginality of the packed random-read path."
+  consequence: "A burst is eight columns, so the faulty bits are column address bits 6 to 8. Any test whose data is one pattern per row -- the sixteen rd_check rows, every paced prewrite, every read-alignment window -- is blind to this, so a whole class of address fault can pass those tests. Per-burst data is required to see it, and the READ log plus the address-data expectation is the instrument. Whether a WRITE's column or a READ's column is the one that goes wrong is not yet separable, because both issue through the same command registers and the same outbound boundary."
+  sources:
+    - "TinyVCMI commit a3e6acf, fpga/ddr3_write/rd_check.v:520-535 (the READ log entry), 577-581 (adata)"
+    - "TinyVCMI commit a3e6acf, fpga/ddr3_write/wr_core.v:702 (the fill's column), 939 (a random READ's column), 2256-2275 (the write search)"
+    - "TinyVCMI tools/ddr3_fill_attrib.py, and .ai/core-log.md entry 84"
+  verification: "Measured on the seed-5 instrumented image (SHA-256 a2ce843a...) loaded in TinyTang mode on a warm board, by filling at WSTEP 8 with address data on and reading the log back at several READ spacings; tools/ddr3_fill_attrib.py reproduces the figures and refuses to be run at 8 PCLK by default, since the attribution washes out there. Scoped to this image: the mask image finds the same write alignment, so its address path is not this one, and the comparison cannot be run on it because hand-over gives the pads to the controller."
 
 - record_id: PROV-001
   topic_id: PROV

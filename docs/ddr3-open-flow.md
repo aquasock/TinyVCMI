@@ -3543,3 +3543,54 @@ The board was left running the instrumented image in TinyTang mode; the image
 is on the card as `ddr3_ctrl_sweep5_chk.bin`, its host SHA-256
 `a2ce843aee6403c36451734230bb495d4cb62c7609541f5dd654fff5e789de09`, and the
 measurements are in `build/ddr3_boot/pw_chk/`, not committed.
+
+## The burst address, and why a row of one pattern cannot see it
+
+The fill at WSTEP 8 places the right word at about three addresses in five and
+another burst's word at the rest, and rd_check's READ log says which.  One
+thousand and twenty-four logged READs after a fill gave 609 that held their
+own address's data; every one of the 415 failures held the same necklace on
+all four lanes, so the capture is whole and the word is simply not the one
+that was read.  Walking each failure back through the row's own address data,
+the nearest burst that holds the captured necklace is eight bursts away for
+95 of them and eight bursts the other way for 78; sixteen bursts for 60;
+fifteen and seventeen for another 31.  Counted as burst-index bits, 259 of the
+415 differ from the read's burst in exactly one bit, and those bits are burst
+bit 3 (171), bit 4 (60) and bit 5 (25).  The address-data fold does not alias
+them: flipping any one burst bit changes the class, and the seven flips reach
+seven distinct classes, so the class names the bit.  A burst is eight columns,
+so these are faults in column address bits 6 to 8.
+
+The fault is a property of the address, not of the moment.  Failing captures
+per bank run 60 to 90 of 116 to 138, and per row bit 27 to 46 of 48 to 81:
+there is no bank or row it spares or singles out.  It does not follow the
+refresh phase.  It is not the fill leaving bursts alone, because only 15 of
+the 415 failures still held the paced prewrite's pattern, against 53% by
+chance, so those bursts were written by the fill, with another burst's data.
+And it does not move with the READ spacing: 8 PCLK apart the stream classified
+4.09%, but 12, 16, 24, 32 and 48 PCLK apart gave 59.69, 59.69, 59.74, 59.64
+and 59.65%, the same addresses failing every time.
+
+That last number is the important one for every earlier result.  A row written
+with one pattern -- the sixteen rd_check rows, the paced prewrite, every
+read-alignment window -- reads correctly through this fault, because a burst
+displaced within its own row returns the same necklace.  The control in the
+previous section, 1,203,340 of 1,203,340 READs whole, is therefore evidence
+about the read capture and about bank and row addressing, and evidence about
+nothing else: it cannot see a burst-level address fault, and neither can any
+test in this project that has been written that way.  What the address data
+adds is per-burst distinctness, and with it the fault appears at once.
+
+`tools/ddr3_fill_attrib.py` repeats this measurement: it fills at a chosen
+WSTEP, sets the READ spacing, reads the log and prints the table above.  Its
+`--gap` default is 12 PCLK because at 8 the capture itself starts to fail and
+the address structure washes out -- 4.09% classified at 8 against 59.69% at 12
+-- which is a second, separate marginality in the random-read path.
+
+The address path is shared: wr_core's fill issues its column from
+`fill_wr_c`, a random READ issues `acc_col`, and both reach the pads through
+the same command registers and the same outbound boundary.  The measurements
+here do not yet say whether the column presented on a WRITE or the column
+presented on a READ is the one that goes wrong, and the READ log cannot tell
+them apart because it records the request, not what the device saw.  The
+measurements are in `build/ddr3_boot/pw_chk/`, not committed.
