@@ -2878,3 +2878,33 @@ The fill is exact at the trained alignment at every rate, so the questions it wa
 - User Test: N/A
 
 ---
+
+## 87 COMMIT Unreleased 2026-10-30T13:17:30-07:00
+
+#### Coming From:
+
+Unreleased 293f985
+
+#### Purpose:
+
+Record the board's supply and what is known of its cooldown, which entry 86 left as caveats because neither was observable from the agent's side.
+
+#### Outcome:
+
+The operator reports that the Tang was powered for the whole of 2026-10-30 from the host PC's 5 V through the USB-C OTG port, and that the 4.2 V and 4.5 V battery pack is no longer in use, so the supply that entries 80 and 81 had to record per session is now a constant for this board and was the hub-fed OTG rail during every result of entry 86; the enumeration agrees, the board appearing on Bus 001 behind the host's hub with no battery fitted, though no rail voltage was measured. The cooldown could not be recovered: the operator does not recall whether the board was hot or cold when it was reconnected, so entry 86's results stand without it. That leaves entry 86's Outcome wrong on one point and vague on another, since it says the board was warm and that the supply was as the session found it; entry 86 is committed history and is not rewritten, so this entry carries the correction. `BRD-002` was added to the reference library for the supply arrangement, with the cooldown left as a live variable because entries 73 to 79 show a cold start failing where a warm one passes, and TOOL-057's verification and the open-flow document now name the supply and say the cooldown was not recalled rather than describing both as unrecorded. No engineering file changed, no build ran and the board was not accessed in this cycle. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering and active-log capacity.
+
+#### Next Steps:
+
+Nothing here needs repeating. The next engineering cycle is the one entry 86 named: find why the instrumented image's own write search reports `error 3` and no alignment while the fill it drives is exact at the trained alignment, and re-classify the mask path's first failing word against the corrected tool. Every future board result records the supply as the USB-C OTG rail from the host and states the cooldown as recalled or not recalled, rather than inferring either.
+
+#### Files Modified:
+
+- docs/ddr3-open-flow.md
+
+#### Status:
+
+- Build: N/A
+- Deployment: N/A
+- User Test: N/A
+
+---

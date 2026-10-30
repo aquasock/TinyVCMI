@@ -3639,8 +3639,9 @@ is the signature of a bit slip and not of an address bit.
 The pace sweep was therefore run twice: once at `d 1 b 0` to reproduce the old
 figure, and once at the trained `d 1 b 2`.  On the seed-6 controller image,
 SHA-256 `c989019307e79c32c1d51279a15f3aaf379dd6b2fa5f4c7380f44d3743fec5b3`,
-in TinyTang mode on a warm board, with the supply as the session found it and
-the cooldown not reported, the fill was measured with address data on, WRITE
+in TinyTang mode, powered from the host's 5 V over the USB-C OTG port with
+the battery pack retired (BRD-002), the cooldown before the load not recalled,
+the fill was measured with address data on, WRITE
 alignment set over the link, READ spacing 12 PCLK and the READ log's first
 1,024 closed-page READs:
 

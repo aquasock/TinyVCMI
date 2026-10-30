@@ -102,6 +102,7 @@ Topic IDs are the `record_id` prefix. An entry reserves a namespace; it does not
 | Which FPGA and revision does TinyVCMI target? | DEV | DEV-001 |
 | Does the GW5AST fabric have falling-edge registers? | DEV | DEV-002 |
 | How much onboard DDR3 exists and how wide is it? | BRD | BRD-001 |
+| What powers the board, and is the battery still in use? | BRD | BRD-002 |
 | What SDR SDRAM is already usable by the open flow? | SDR | SDR-001 |
 | Is the second 32 MiB SDRAM device already enabled? | SDR | SDR-001 |
 | Which DDR3 controller configuration has passed on this board family? | DDR3 | DDR3-001 |
@@ -186,6 +187,7 @@ Topic IDs are the `record_id` prefix. An entry reserves a namespace; it does not
 DEV-001: "Target is GW5AST-LV138PG484AC1/I0 revision C with the hard AE350/A25 subsystem"
 DEV-002: "Arora V registers have only rising-edge primitives; each CLS's clock can be set to either edge, which Gowin's flow uses for a falling-edge register"
 BRD-001: "Two Hynix H5TQ4G63EFR-RDC x16 devices form a 1 GiB x32 onboard DDR3 array"
+BRD-002: "The board is powered from the host PC's 5 V over the USB-C OTG port; the 4.2 V and 4.5 V battery pack is retired, so supply is no longer a variable between sessions"
 SDR-001: "TinyNES uses one W9825G6KH-6-compatible 32 MiB x16 SDR SDRAM window; the user reports a second 32 MiB device is fitted but not enabled"
 DDR3-001: "Hardware-proven vendor configuration is x32 DDR3-800 with a 256-bit port at 100 MHz"
 DDR3-002: "The native-port address counts 32-bit words; BL8 commands advance by eight and span the 1 GiB array"
@@ -303,6 +305,18 @@ PROV-001: "Reuse source and interface ideas with their original license boundari
     - "Tang-PSX commit 61974ca, gateware/gowin_ddr3.py: ddram32_io"
     - "Hynix H5TQ4G63EFR datasheet: organization and x16 interface"
   verification: "Tang-PSX records 232 full-array passes with zero errors and an AE350 walking-address test across 1 GiB. TinyVCMI has not yet reproduced that result."
+
+- record_id: BRD-002
+  topic_id: BRD
+  title: "The board runs from the host's 5 V over USB-C OTG"
+  status: VERIFIED
+  verified_date: 2026-10-30
+  statement: "On 2026-10-30 the Tang Console 138K was powered for the whole session from the host PC's 5 V through the USB-C OTG port, and the operator reports that the 4.2 V and 4.5 V battery pack is no longer in use."
+  consequence: "The supply is no longer a variable between board sessions: earlier results were qualified against either hub USB or a battery pack, and from this date they are one source. The cooldown before a load remains a variable, since it sets how cold the FPGA and the DDR3 devices are, and entries 73 to 79 show a cold start can fail where a warm one passes."
+  sources:
+    - "Operator report to the agent, 2026-10-30, in this project's session"
+    - "TinyVCMI .ai/core-log.md entries 80, 81 and 87"
+  verification: "Stated by the operator who owns the board and confirmed by this session's enumeration, where the Tang appeared on Bus 001 behind the host's hub as ffff:5454 with no battery attached. Not measured electrically: no rail voltage was recorded."
 
 - record_id: SDR-001
   topic_id: SDR
@@ -909,7 +923,7 @@ PROV-001: "Reuse source and interface ideas with their original license boundari
     - "TinyVCMI commit 772f321, fpga/ddr3_write/wr_core.v (command 0x30, R_FILL steps 2, 5 and 6)"
     - "TinyVCMI tools/ddr3_fill_attrib.py, and .ai/core-log.md entry 86"
     - "TinyVCMI fpga/ddr3_write/tb_wr.v and tools/sim_ddr3_write.sh (the paced fill check)"
-  verification: "Measured over one session on the seed-6 controller image (SHA-256 c989019307e79c32c1d51279a15f3aaf379dd6b2fa5f4c7380f44d3743fec5b3, pclk 100.01 MHz, 306 DDR3 tables equal to its vendor reference) loaded in TinyTang mode on a warm board, the supply as the session found it and the cooldown not reported. The fill ran with address data on, READ spacing 12 PCLK, and the first 1,024 logged READs attributed; the paced logs were compared entry by entry. The same result is required in simulation at paces 0, 4 and 16 with one beat offset across paces, and the refresh interval holds there."
+  verification: "Measured over one session on the seed-6 controller image (SHA-256 c989019307e79c32c1d51279a15f3aaf379dd6b2fa5f4c7380f44d3743fec5b3, pclk 100.01 MHz, 306 DDR3 tables equal to its vendor reference) loaded in TinyTang mode, powered from the host's 5 V over USB-C OTG (BRD-002) with the cooldown not recalled. The fill ran with address data on, READ spacing 12 PCLK, and the first 1,024 logged READs attributed; the paced logs were compared entry by entry. The same result is required in simulation at paces 0, 4 and 16 with one beat offset across paces, and the refresh interval holds there."
 
 - record_id: TOOL-031
   topic_id: TOOL
