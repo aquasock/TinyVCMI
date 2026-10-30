@@ -38,6 +38,9 @@
 //     or with code 15 until a command naming no lane releases them;
 //   * the fill writes each burst's address pattern back to back across a
 //     row, and command 36 moves that data d PCLK and b beats later;
+//   * with command 30's idle PCLK between the fill's WRITEs, each burst
+//     still carries its own word at one beat offset, and a row long enough
+//     to outlive TREFI refreshes mid-row and reopens its row;
 //   * command 38 starts the training sequencer, which the link may then only
 //     read (frame 39), and aborts it back to idle.
 module tb;
@@ -273,7 +276,12 @@ module tb;
     always @(posedge dut.pclk)
         if (fill_rec) begin
             if (fpc < 8192) fbeats[fpc] = dut.core.dq_pat;
-            if (dut.core.istate == 4'd13 && dut.core.step_no == 4'd2 && fw < 512) begin
+            // a burst is issued on the cycle fill_gap is zero, unless a paced
+            // row has reached a refresh and diverts to precharge instead; at
+            // pace 0 that divergence cannot happen and this is every cycle
+            if (dut.core.istate == 4'd13 && dut.core.step_no == 4'd2 &&
+                dut.core.fill_gap == 8'd0 &&
+                !(dut.core.refi_due_fill && dut.core.fill_pace_p2 != 8'd0) && fw < 512) begin
                 fw_pc[fw] = fpc;
                 fw_exp[fw] = tb_adata(dut.core.fb, dut.core.fr, dut.core.fc);
                 fw = fw + 1;
@@ -296,7 +304,43 @@ module tb;
             fill_offset = found;
         end
     endfunction
-    integer fk0, fk1;
+    // The beat offset at which each of the first n fill WRITEs' own patterns
+    // appears, all at one offset, or -1.  fill_offset assumes a row's bursts
+    // are contiguous in the beat stream, which is only true at pace 0; this
+    // checks each WRITE's own eight beats, so it holds at any pace and is the
+    // only form under which command 0x30 is exercised.
+    function integer fill_check(input integer n);
+        integer k, i, t, ok, found, g;
+        begin
+            found = -1;
+            for (k = 0; k < 64 && found < 0; k = k + 1) begin
+                ok = 1;
+                for (i = 0; i < n && ok; i = i + 1)
+                    for (t = 0; t < 8 && ok; t = t + 1) begin
+                        g = 8 * fw_pc[i] + k + t;
+                        if (fbeats[g / 8][g % 8] !== fw_exp[i][t]) ok = 0;
+                    end
+                if (ok) found = k;
+            end
+            fill_check = found;
+        end
+    endfunction
+    integer fk0, fk1, fk2, fk3, fk4, fk5, fk6, fk7;
+    // the fill at a pace: command 0x30 sets the idle PCLK between its WRITEs
+    task fill_run_p(input [7:0] align, input [7:0] pace);
+        begin
+            request(8'h36, align);
+            request(8'h30, pace);
+            #30000;
+            fpc = 0; fw = 0; fill_rec = 1'b1;
+            request(8'h0c, 8'h05);
+            #40000;
+            request(8'h0c, 8'h00);
+            #30000;
+            fill_rec = 1'b0;
+            request(8'h30, 8'd0);
+        end
+    endtask
     task fill_run(input [7:0] align);
         begin
             request(8'h36, align);
@@ -491,6 +535,24 @@ module tb;
         end
         $display("      fill: %0d WRITEs, a row's patterns at beat %0d and, at d 2 b 3, %0d",
                  fw, fk0, fk1);
+        // the same row paced: each burst's own word must still sit where its
+        // WRITE can see it, at a zero pace and with idle PCLK between bursts
+        fill_run_p(8'h00, 8'd0);
+        fk2 = fill_check(128);
+        fill_run_p(8'h00, 8'd4);
+        fk3 = fill_check(128);
+        fill_run_p(8'h12, 8'd0);
+        fk4 = fill_check(128);
+        fill_run_p(8'h12, 8'd4);
+        fk5 = fill_check(128);
+        // a pace of 16 makes a row outlive TREFI, so this one also covers the
+        // fill's mid-row refresh and the row it reopens
+        fill_run_p(8'h12, 8'd16);
+        fk6 = fill_check(128);
+        $display("      paced fill: d 0 b 0 at pace 0 beat %0d and pace 4 beat %0d; d 1 b 2 at pace 0 beat %0d and pace 4 beat %0d; d 1 b 2 at pace 16 beat %0d",
+                 fk2, fk3, fk4, fk5, fk6);
+        if (fk2 < 0 || fk3 != fk2 || fk4 < 0 || fk5 != fk4 || fk6 != fk4)
+            fail("a paced fill did not put each burst's own word where its WRITE can see it");
         // the training sequencer: started, the link refused a setting while it
         // runs but still answered its frame, and aborted back to idle
         request(8'h0e, 8'h1d);

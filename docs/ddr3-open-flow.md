@@ -3619,3 +3619,69 @@ placements at seeds 1, 2 and 3 were started and stopped in synthesis before
 any of them reached placement, so no image exists and the board still runs the
 seed-5 image the last two sections measured.  The pace sweep is the first
 thing to run when the board is next free.
+
+That attribution is withdrawn for the reason the next section gives: it was
+taken with the fill writing at `d 1 b 0`, and the trained alignment is
+`d 1 b 2`.  Read the section below before using any figure above.
+
+## The write alignment the fill was measured at, and the pace sweep
+
+The figures above were taken with `--wstep 8`.  Command `0x36` takes `8d + b`,
+so 8 is `d 1 b 0`, while the write search on this PHY trains `d 1 b 2`, which
+is 10; the tool's default was 8, and every measurement in the two sections
+above was therefore taken two beats away from the alignment the PHY actually
+needs.  The displacement those figures describe is what a two-beat slip does:
+the fill's per-burst words arrive shifted inside the serializer's beat stream,
+so a burst reads back a neighbour's class, and the nearest-class offsets come
+out at 8, 16 and 32 bursts and the differing burst bits at 3, 4 and 5, which
+is the signature of a bit slip and not of an address bit.
+
+The pace sweep was therefore run twice: once at `d 1 b 0` to reproduce the old
+figure, and once at the trained `d 1 b 2`.  On the seed-6 controller image,
+SHA-256 `c989019307e79c32c1d51279a15f3aaf379dd6b2fa5f4c7380f44d3743fec5b3`,
+in TinyTang mode on a warm board, with the supply as the session found it and
+the cooldown not reported, the fill was measured with address data on, WRITE
+alignment set over the link, READ spacing 12 PCLK and the READ log's first
+1,024 closed-page READs:
+
+- at `d 1 b 0`, pace 0 gives 609 of 1,024 READs holding their own address's
+  data, reproducing the figure above and TOOL-056 to the read, and paces 1, 4,
+  16, 63 and 255 all give 0 of 1,024, their READ logs byte-identical to one
+  another;
+- at the trained `d 1 b 2`, paces 0, 1, 4, 16, 63 and 255 each give 1,024 of
+  1,024, and the pace-0 control repeated later in the session gives the same
+  1,024 of 1,024.
+
+So the fill writes each burst's own address data correctly at every WRITE rate
+the knob can set, from one burst per PCLK to one burst every 2.56 us, and the
+burst displacement is a property of the mis-set alignment rather than of the
+column address.  The claim that a burst reads back a neighbour because column
+address bits 6 to 8 were captured wrong is withdrawn, and with it the reading
+that the training's streaming fill "lands whole at no WSTEP": that sweep tried
+0, 8, 16, 32 and 48, which are all `b 0`, and never tried the trained `b 2`.
+Whether a WRITE's column or a READ's column is at fault is not answered here
+because there is no longer a fault to attribute at the trained alignment; what
+remains open is why the instrumented image's own write search still reports no
+alignment, and whether the mask path's failure shares that cause.
+
+The knob needed a fix before it could be used.  `command 0x30` sets
+`fill_pace_req`, which reaches `R_FILL` as `fill_pace_p2`; `tb_wr.v` now runs
+the fill at paces 0, 4 and 16 and checks each WRITE's own eight beats against
+its address pattern, where before no simulation sent `0x30` at all and the
+existing check assumed the row's bursts were contiguous in the beat stream,
+which only holds at pace 0.  That check found the defect: the fill refreshed
+only between rows, and a paced row outlives TREFI, about 13 us against 7.8 us
+at a pace of 4.  `R_FILL` therefore refreshes mid-row when a gap is in effect
+-- every bank precharged, the REFRESH, then the same row reopened at the column
+it had reached, steps 5 and 6 of the fill's state machine -- and the pace-0
+path is untouched, so the qualified back-to-back fill is unchanged.  The bench
+records a burst on the cycle the RTL issues one rather than on every cycle the
+gap is zero, since a paced row can divert that cycle to a precharge.  With the
+fix the simulation passes at paces 0, 4 and 16 with the beat offset identical
+across paces, the refresh interval holds, and the board's paces 63 and 255,
+which refresh mid-row repeatedly, read back whole.
+
+`tools/ddr3_fill_attrib.py` no longer defaults to 8: it asks the image's
+training for its write alignment and uses it, refusing to run without one
+unless `--wstep` is given, so this particular mistake cannot be repeated by
+default.  `--pace` is unchanged and still scales the fill window to the pace.

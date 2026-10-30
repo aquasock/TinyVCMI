@@ -14,7 +14,13 @@ necklace.  It repeats the analysis in the open-flow document: how many READs
 held their own address's data, how far the nearest burst holding the captured
 class is, and how many burst-index bits separate it from the read's own.
 
-    tools/ddr3_fill_attrib.py --wstep 8 --json out.json
+    tools/ddr3_fill_attrib.py --json out.json
+
+The fill writes at the alignment the image's own training found unless --wstep
+overrides it; the trained one is d 1 b 2 on this PHY, which command 0x36 takes
+as 10 = 8d + b.  The default was 8 (d 1 b 0) until the paced sweep of entry 86
+showed the difference: at d 1 b 0 a row reads back 59% own with the burst index
+displaced, and at the trained d 1 b 2 it reads back 1024 of 1024 at every pace.
 
 Run it against an image whose training has finished, not against one that has
 handed the bus over: after hand-over the controller owns the pads and the fill
@@ -90,8 +96,13 @@ def main() -> int:
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--port", default="/dev/ttyACM0")
     ap.add_argument("--baud", type=int, default=115200)
-    ap.add_argument("--wstep", type=int, default=8,
-                    help="the write strobe alignment to fill at, 8d + b as command 0x36 takes it")
+    ap.add_argument("--wstep", type=int, default=None,
+                    help="the write strobe alignment to fill at, 8d + b as command 0x36 takes it.  "
+                         "The default is the alignment the image's own training found, which is "
+                         "d 1 b 2 (10) on this PHY; d 1 b 0 (8) is not the same thing and a "
+                         "measurement taken there attributes a beat-slip write to the column "
+                         "address, which is what TOOL-056 did before the trained alignment was "
+                         "used")
     ap.add_argument("--gap", type=int, default=12,
                     help="random READ spacing in PCLK (0x09).  At 8 PCLK the capture itself "
                          "fails as well and the address attribution washes out; 12 and above "
@@ -108,8 +119,14 @@ def main() -> int:
     args = ap.parse_args()
 
     core = P.Core(args.port, args.baud)
+    wstep = args.wstep
+    if wstep is None:
+        q = core.seq()
+        if not q["wfound"]:
+            raise SystemExit("the image's training found no write alignment; pass --wstep")
+        wstep = 8 * q["walign"] + q["wbeat"]
     core.request(0x37, 1)                      # address data on
-    core.request(0x36, ((args.wstep >> 3) & 7) << 4 | (args.wstep & 7))
+    core.request(0x36, ((wstep >> 3) & 7) << 4 | (wstep & 7))
     core.request(0x30, args.pace)
     # 128 rows of 128 bursts, each burst one PCLK plus the pace, plus a refresh
     # pause a row; a third again for margin
@@ -128,7 +145,7 @@ def main() -> int:
 
     a = analyse(ents)
     pct = 100.0 * a["good"] / max(a["reads"], 1)
-    print(f"WSTEP {args.wstep}, fill pace {args.pace}, READ spacing {args.gap} PCLK: "
+    print(f"WSTEP {wstep}, fill pace {args.pace}, READ spacing {args.gap} PCLK: "
           f"{a['good']} of {a['reads']} "
           f"READs held their own address's data ({pct:.2f}%)")
     print("nearest burst holding the captured class, per failing READ:")
@@ -143,7 +160,7 @@ def main() -> int:
     print("by row bit (good/total): " +
           "  ".join(f"{r}:{g}/{t}" for r, (g, t) in sorted(a["by_row4"].items())))
     if args.json:
-        json.dump({"wstep": args.wstep, "entries": ents, "attribution": a}, open(args.json, "w"))
+        json.dump({"wstep": wstep, "entries": ents, "attribution": a}, open(args.json, "w"), indent=0)
         print(f"saved to {args.json}")
     return 0 if a["failing"] == 0 else 1
 

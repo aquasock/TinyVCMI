@@ -994,7 +994,18 @@ module wr_core #(
                         4'd2: begin
                             if (fill_gap != 8'd0)
                                 fill_gap <= fill_gap - 8'd1;
-                            else begin
+                            // a paced row outlives TREFI: 128 bursts a PCLK plus
+                            // the pace each, where the unpaced row is short enough
+                            // to wait for the row boundary.  So when a gap is in
+                            // effect the fill refreshes mid-row, reopening the same
+                            // row at the column it had reached; the unpaced path is
+                            // untouched.  Without this the interval reaches two
+                            // rows, about 13 us at a pace of 4, against 7.8 us
+                            else if (refi_due_fill && fill_pace_p2 != 8'd0) begin
+                                issue(C_PRE, 3'd0, 16'h0400);   // all banks
+                                step_no <= 4'd5;
+                                pause(17'd4, R_FILL);           // tRP
+                            end else begin
                                 fill_wr <= 1'b1;
                                 fill_wr_b <= fb;
                                 fill_wr_c <= fc;
@@ -1014,6 +1025,20 @@ module wr_core #(
                                 fb <= fb + 3'd1;
                             step_no <= 4'd1;
                             pause(17'd4, R_FILL);               // tRP
+                        end
+                        // the paced fill's mid-row refresh: every bank
+                        // precharged, the REFRESH, then the row reopened at the
+                        // column the fill had reached
+                        4'd5: begin
+                            issue(C_REF, 3'd0, 16'h0000);
+                            refi <= 10'd0;
+                            step_no <= 4'd6;
+                            pause(17'd30, R_FILL);              // tRFC
+                        end
+                        4'd6: begin
+                            issue(C_ACT, fb, {1'b0, row_p2[14:4], fr});
+                            step_no <= 4'd2;
+                            pause(17'd8, R_FILL);               // tRCD
                         end
                         default: begin
                             mode <= M_IDLE;

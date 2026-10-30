@@ -2845,3 +2845,36 @@ Build again and take the measurement. Run the simulations separately and then ea
 - User Test: NOT RUN
 
 ---
+
+## 86 COMMIT Unreleased 2026-10-30T13:13:24-07:00
+
+#### Coming From:
+
+Unreleased 772f321
+
+#### Purpose:
+
+Make the training fill's WRITE rate usable as a measurement and run the pace sweep, so that a burst address captured wrong while it changes is separable from one wrong whatever the speed.
+
+#### Outcome:
+
+The sweep was run and it retired the fault it was built to attribute. `tb_wr.v` gained a paced fill: commands `0x30` and `0x36` before mode 5, a recorder that takes a burst on the cycle the RTL issues one rather than on every cycle the gap is zero, and a per-WRITE beat check at paces 0, 4 and 16 asserting one offset across paces, which is the coverage the old check lacked, since the old one assumed a row's bursts were contiguous in the beat stream and no simulation sent `0x30` at all. That check found a real defect and rejected the diagnosis the cycle started from: at pace 4 the data path already put each burst's own eight beats at the same beat offset as at pace 0, so the write data's shift register is not paced wrongly, and what fails is the refresh, because a paced row outlives TREFI, about 13 us against 7.8 us at a pace of 4. `R_FILL` therefore refreshes mid-row when a gap is in effect, precharging every bank, issuing the REFRESH and reopening the same row at the column it had reached, in new steps 5 and 6, with the pace-0 path untouched so the qualified back-to-back fill is unchanged. The simulation gate passed on the changed core, `sim_ddr3_write` at paces 0, 4 and 16 with the offsets identical and the refresh held, and `sim_rd_align`, `sim_rd_check`, `sim_ddr3_seq` and `sim_ddr3_ctrl` with its six mutants; the vendor fuse reference was rebuilt from the changed sources; and eight seeds were built, of which seed 6 was clean at `pclk` 100.01 MHz with 469 `DFFN` and 18 `DFFNS` on the CLKDIV, all 306 DDR3 tables equal, SHA-256 `c989019307e79c32c1d51279a15f3aaf379dd6b2fa5f4c7380f44d3743fec5b3`. On the board that image trains itself to `error 0` and `d 1 b 2` in 422 trials and hands the bus over, unlike the image of entry 84, so the test was stopped and the fill taken back by entering mode 5. The measurement's own default was the defect that mattered: `--wstep` encodes `8d + b`, the tool defaulted to 8, which is `d 1 b 0`, and the trained alignment is `d 1 b 2`, which is 10. At `d 1 b 0` the fill reproduces entry 84 exactly, 609 of 1024 READs owning their address's data at pace 0 and 0 of 1024 at paces 1, 4, 16, 63 and 255, those five logs byte-identical to one another; at the trained `d 1 b 2` it gives 1024 of 1024 at paces 0, 1, 4, 16, 63 and 255, with the pace-0 control repeated to the same figure, and paces 63 and 255 refresh mid-row repeatedly and still read back whole. The displacement TOOL-056 attributed to column address bits 6 to 8 is therefore a two-beat write data slip, and that reading is withdrawn with the "lands whole at no WSTEP" statement beside it, whose sweep tried only `b 0` alignments. `tools/ddr3_fill_attrib.py` now asks the image's training for its write alignment and refuses to run without one unless `--wstep` is given, so the mistake cannot recur by default. The desktop core was restored afterwards and answered `0x54`; every board result was taken warm in TinyTang mode on the supply the session found and the cooldown was not reported. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, revised TOOL-056 in place with a revision note and added TOOL-057 rather than rewriting history, and validated this entry's six sections, ordering, prose, Status values, numbering and active-log capacity.
+
+#### Next Steps:
+
+The fill is exact at the trained alignment at every rate, so the questions it was meant to separate are gone and two others stand. First, the instrumented image's own write search still reports `error 3` and no alignment while the qualified image's search finds `d 1 b 2` in 422 trials on the same PHY, and the difference between them is the five-line address adder in the test's `gen()`, so compare the two searches' pass rules and their `wq` state directly rather than through the board. Second, the mask path fails on the board without ever being measured: rebuild it against the corrected tool and classify its first failing word at the trained alignment, since entry 81's classification was taken with a data pattern that could not name an address. The read path's 8 PCLK marginality is worth its own sweep now that the fill can be trusted at any pace, the read stream's frame, the state-4 hang in `S_RDW`, the write image's untimed boundary, the mid-calibration stall, the `D108` unused-pin contradiction and the `is_mipi` bug outside the DDR context remain open, the whole-top simulation stays on hold, and the user has deferred a capped legaliser budget and a PHY-only fuse reference. Every board result records the supply beside the cooldown.
+
+#### Files Modified:
+
+- docs/ddr3-open-flow.md
+- fpga/ddr3_write/tb_wr.v
+- fpga/ddr3_write/wr_core.v
+- tools/ddr3_fill_attrib.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: N/A
+
+---
