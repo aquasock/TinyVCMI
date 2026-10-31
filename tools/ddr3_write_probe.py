@@ -1551,6 +1551,9 @@ def main() -> int:
                     help="seconds to report the test's progress for, once a second")
     ct.add_argument("--diag", action="store_true",
                     help="then the test's per-pin and per-lane-and-beat counts and its log")
+    ct.add_argument("--wgap", type=int, choices=range(256), default=None,
+                    help="idle PCLK between a word's two writes, command 0x3C 0x6lo and "
+                         "0x3C 0x7hi: 0 keeps them back to back")
     ct.add_argument("--tmode", type=int, choices=range(4), default=None,
                     help="the test's variables, command 0x3C 0x50 + m: m[0] the linear "
                          "address fold, m[1] one write per word; latched at a pass boundary")
@@ -1944,6 +1947,9 @@ def main() -> int:
                 time.sleep(1.0)
             if args.tmode is not None:
                 core.request(0x3C, 0x50 | args.tmode)
+            if args.wgap is not None:
+                core.request(0x3C, 0x60 | (args.wgap & 0xF))
+                core.request(0x3C, 0x70 | ((args.wgap >> 4) & 0xF))
             if args.classify or args.diag:
                 c = core.ctrl()
                 if c["err"]:

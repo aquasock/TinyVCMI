@@ -3777,3 +3777,26 @@ while the entry-88 image on the same board in the same session still fails only
 read capture are separate lotteries: 106.19 MHz placed the design well by the
 constraint and badly for the capture.  Read that before trusting any image's
 speed as evidence that it reads.
+
+## A gap between a word's two writes, unmeasured
+
+The doubled write is what the previous section's failures belong to, and the
+next question is what about it breaks: the write succeeds, and the read of the
+same word immediately afterwards returns it wrong on some lanes.  Command
+`0x3C 0x60 + lo` and `0x3C 0x70 + hi` now set an idle-PCLK gap between a word's
+two writes, zero keeping them back to back as they always were, and `R_FILL`'s
+state machine gained `S_WG` in `ddr3_bist` to hold the second write off for
+that many PCLK.  `tools/ddr3_write_probe.py` sends it with `ctrl --wgap`.
+
+The gap is gated in simulation and has not been measured on the board.  The
+bench runs four passes -- mode 1 and mode 2 with no gap, then mode 0 and mode 2
+with a gap of 8 -- and each must check its words with no lane error, which is
+what shows the new state neither loses nor duplicates a write;
+`tools/sim_ddr3_ctrl.sh` passes with its six mutants.  Twelve open-flow
+placements were then built and none closed: five reported `pclk` at 92.13,
+93.37, 98.76, 98.97 and 99.50 MHz against the 100 MHz constraint and seven were
+stopped in the router at the operator's direction, so no image exists and
+nothing was loaded.  The previous netlist closed three of six seeds at 106 to
+108 MHz, so this one is markedly harder to place, and that is recorded as a
+placement fact rather than as a reason to doubt the gap's logic: the logic is
+verified where it can be, and the board question is still open.

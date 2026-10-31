@@ -363,6 +363,8 @@ module tb_ctrl;
     // ---- the run ----------------------------------------------------------
     reg  [15:0]  p0 = 16'd0;
     reg  [127:0] lane0 = 128'd0;
+    integer      mt [0:3];
+    integer      gt [0:3];
     reg  [31:0]  chk0 = 32'd0, w_done = 32'd0, c_done = 32'd0;
     integer      mk;
     wire [15:0]  st_passes = ext_status[16 +: 16];
@@ -402,37 +404,50 @@ module tb_ctrl;
         if (n_refs < (4 * cyc) / 3120 - 1) fail("fewer REFRESHes than the run's length needs");
         if (max_refi > 3120) fail("a refresh interval over 7.8 us");
         if (!ctrl_accept || !ext_status[15]) fail("the controller did not accept the trained alignment");
-        // The test's two variables, each of which must still agree with its own
-        // data: one pass in each mode, with the mode latched at the pass
-        // boundary, so a wrong expectation or a mode landing mid-pass shows up
-        // as lane errors.  One write per word has no masked second write to
-        // merge, so its expectation is the first write alone.  The run's totals
-        // are read here, since the test keeps counting into the next passes.
+        // The test's variables, each of which must still agree with its own
+        // data: one pass for each combination below, with the mode latched at
+        // the pass boundary, so a wrong expectation or a mode landing mid-pass
+        // shows up as lane errors.  One write per word has no masked second
+        // write to merge, so its expectation is the first write alone, and a
+        // gap between a word's two writes must not lose or duplicate either.
+        // The run's totals are read here, since the test keeps counting.
         w_done = dut.bist.n_written;
         c_done = dut.bist.n_checked;
-        for (mk = 1; mk <= 2; mk = mk + 1) begin
-            ext_cmd = 8'h50 | mk[7:0];          // the variable, latched at the next boundary
+        mt[0] = 1; gt[0] = 0;
+        mt[1] = 2; gt[1] = 0;
+        mt[2] = 0; gt[2] = 8;
+        mt[3] = 2; gt[3] = 8;
+        for (mk = 0; mk < 4; mk = mk + 1) begin
+            ext_cmd = 8'h50 | mt[mk][7:0];      // the variable, latched at the next boundary
             ext_tog = ~ext_tog;
+            #1000;
+            ext_cmd = 8'h60 | (gt[mk] & 8'hf);  // the gap's low nibble
+            ext_tog = ~ext_tog;
+            #1000;
+            ext_cmd = 8'h70 | ((gt[mk] >> 4) & 8'hf);
+            ext_tog = ~ext_tog;
+            #1000;
             p0 = dut.bist.passes;
             wait (dut.bist.passes != p0);       // this boundary latches the mode
             p0 = dut.bist.passes;
             #1000;
-            if (dut.bist.pmode != mk[1:0])
+            if (dut.bist.pmode != mt[mk][1:0])
                 fail("the test's variables did not latch at the pass boundary");
             lane0 = st_lane;
             chk0 = st_checked;
             wait (dut.bist.passes != p0);       // one whole pass in the new mode
             #1000;
             if (st_lane != lane0) begin
-                $display("      mode 0x%0h: lane errors rose by %0d %0d %0d %0d",
-                         mk, st_lane[31:0] - lane0[31:0], st_lane[63:32] - lane0[63:32],
+                $display("      mode 0x%0h gap %0d: lane errors rose by %0d %0d %0d %0d",
+                         mt[mk], gt[mk], st_lane[31:0] - lane0[31:0],
+                         st_lane[63:32] - lane0[63:32],
                          st_lane[95:64] - lane0[95:64], st_lane[127:96] - lane0[127:96]);
                 fail("a test variable's pass disagreed with the data it wrote");
             end
             if (st_checked == chk0)
                 fail("a test variable's pass checked no word");
-            $display("      test variables: mode 0x%0h ran a pass of %0d words with no lane error",
-                     mk, st_checked - chk0);
+            $display("      test variables: mode 0x%0h gap %0d ran a pass of %0d words with no lane error",
+                     mt[mk], gt[mk], st_checked - chk0);
         end
 `ifndef MODEL_FAULTS
         if (errors == 0)

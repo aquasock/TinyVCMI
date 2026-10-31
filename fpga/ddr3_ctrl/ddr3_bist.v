@@ -70,7 +70,12 @@ module ddr3_bist #(
     // doubled write, so the board can say which of them the read failures
     // belong to.  Latched at a pass boundary, so a change cannot land
     // between a word's write and its check.
-    input  wire [1:0]    tm_mode
+    input  wire [1:0]    tm_mode,
+    // idle PCLK between a word's two writes, command 0x3C 0x60 + lo and
+    // 0x3C 0x70 + hi: zero keeps them back to back as they always were, and a
+    // spacing wide enough for the device's write-to-write turnaround separates
+    // a second write to the same address from the mask byte's own path.
+    input  wire [7:0]    tm_gap
 );
     // the log entry on its way to elog, one PCLK behind the check
     reg         log_v = 1'b0;
@@ -112,12 +117,13 @@ module ddr3_bist #(
     endfunction
 
     localparam [3:0] S_IDLE = 4'd0, S_WR = 4'd1, S_WRW = 4'd2, S_RD = 4'd3, S_RDW = 4'd4,
-                     S_RR = 4'd5, S_RRW = 4'd6;
+                     S_RR = 4'd5, S_RRW = 4'd6, S_WG = 4'd7;
     localparam integer DEPTH = 64;
     localparam [AW-1:0] LAST = (1 << N_LOG2) - 1;
     localparam [31:0] RLAST = (1 << R_LOG2) - 1;
 
     reg [1:0]    pmode = 2'd0;        // tm_mode, latched at a pass boundary
+    reg [7:0]    gap_cnt = 8'd0;      // the idle PCLK before a word's second write
     reg [31:0]   seed = 32'h2545f491;
     reg [31:0]   seed_b = 32'h5bf03635;  // the second write of a word
     reg          w2nd = 1'b0;           // the masked write of the current word
@@ -302,9 +308,14 @@ module ddr3_bist #(
                 state <= S_WR;
             end
             S_WR: if (take) begin
-                if (!pmode[1] && !w2nd)
+                if (!pmode[1] && !w2nd) begin
                     w2nd <= 1'b1;               // the word's masked write next
-                else begin
+                    if (tm_gap != 8'd0) begin
+                        cmd_valid <= 1'b0;      // and idle PCLK before it
+                        gap_cnt <= tm_gap;
+                        state <= S_WG;
+                    end
+                end else begin
                     w2nd <= 1'b0;
                     if (cmd_addr == LAST) begin
                         cmd_valid <= 1'b0;
@@ -312,6 +323,14 @@ module ddr3_bist #(
                     end else
                         cmd_addr <= cmd_addr + 1'b1;
                 end
+            end
+            // the idle PCLK between a word's two writes
+            S_WG: begin
+                if (gap_cnt == 8'd0) begin
+                    cmd_valid <= 1'b1;
+                    state <= S_WR;
+                end else
+                    gap_cnt <= gap_cnt - 8'd1;
             end
             S_WRW: begin
                 cmd_we <= 1'b0;

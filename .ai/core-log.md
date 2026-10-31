@@ -3002,3 +3002,37 @@ Find what the second write breaks, which is now a narrow question: the write its
 - User Test: N/A
 
 ---
+
+## 91 COMMIT Unreleased 2026-10-30T17:39:29-07:00
+
+#### Coming From:
+
+Unreleased a01b18c
+
+#### Purpose:
+
+Give the test a settable gap between a word's two writes, so the doubled write's fault can be separated from the mask byte's path, and gate it in simulation.
+
+#### Outcome:
+
+The gap exists, is gated in simulation, and has not been measured on the board because no placement of the new netlist closed. `ddr3_bist` gained `S_WG`, an eight-bit `gap_cnt` and a `tm_gap` input, holding a word's second write off for a settable number of idle PCLK while zero keeps the two writes back to back as they always were; `ctrl_glue` decodes `0x3C 0x60 + lo` and `0x3C 0x70 + hi` into it, and `tools/ddr3_write_probe.py` sends both with `ctrl --wgap`. `tb_ctrl.v` now runs four passes, mode 1 and mode 2 with no gap and then mode 0 and mode 2 with a gap of 8, each required to check its words with no lane error, which is what shows the new state neither loses nor duplicates a write; `tools/sim_ddr3_ctrl.sh` passes on the changed core with its six mutants and the whole four-pass sequence, and the vendor fuse reference was rebuilt from the changed sources. Twelve open-flow placements were then built at seeds 1 to 12 with `TINYVCMI_SKIP_SIM=1` and the image check against that reference: five reported `pclk` at 92.13, 93.37, 98.76, 98.97 and 99.50 MHz against the 100 MHz constraint and were refused, and seven were stopped in the router at the operator's direction, so no image was written and nothing was loaded. The netlist before this one closed three of six seeds at 107.78, 106.50 and 106.19 MHz, so the gap's state machine and its eight-bit input have made the design markedly harder to place despite being small, and that is recorded as a placement fact, not as evidence about the logic, which simulation covers only where it can. The board was not accessed and remains on `tinytang-lora.bin` with the operator's LoRa working, powered from the host's 5 V over USB-C OTG with the cooldown not recalled. `docs/ddr3-open-flow.md` gained the section, stating plainly that nothing has been measured with the gap. In the same session the build tree was cleared from 131 GB to 4.9 GB, all of it regenerable output from committed scripts or long since recorded, keeping the vendor fuse reference the image check requires, the three clean images of entry 90, the board logs entries cite, and the running seeds. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering and active-log capacity.
+
+#### Next Steps:
+
+Get a placement of this netlist before anything else, since the board question is the whole point: build further seeds, and if the yield stays at none of twelve, take the cost out of `S_WG` the way the mode selects were taken out earlier, by holding the second write off with the existing state machine's pause rather than a new state and a counter, or by making the gap a synthesis-time choice for the experiment. Then measure a mode-0 exponent at gaps of 4, 8, 16, 32 and 64 against the no-gap reading of about 31 and 37 per cent on two lanes, which says whether spacing alone cures it, and a mode-2 reading beside it for the residual. The read path's 8 PCLK marginality, the read stream's frame, the state-4 hang in `S_RDW`, the write image's untimed boundary, the mid-calibration stall, the `D108` unused-pin contradiction and the `is_mipi` bug outside the DDR context remain open, the whole-top simulation stays on hold, and the user has deferred a capped legaliser budget and a PHY-only fuse reference.
+
+#### Files Modified:
+
+- docs/ddr3-open-flow.md
+- fpga/ddr3_ctrl/ctrl_glue.v
+- fpga/ddr3_ctrl/ddr3_bist.v
+- fpga/ddr3_ctrl/tb_ctrl.v
+- tools/ddr3_write_probe.py
+
+#### Status:
+
+- Build: FAIL
+- Deployment: NOT RUN
+- User Test: NOT RUN
+
+---
