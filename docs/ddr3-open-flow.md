@@ -3829,18 +3829,45 @@ doubled-write cycle, loaded on the same board minutes later in the same
 session: it trains `error 0` to `d 1 b 2` in 422 trials with 7 CALIB pulses a
 lane, hands over, and runs the test -- 8 passes and 310,378,494 words checked
 with lane errors of 95,442,981, 1,159,366, 108,295,781 and 636,845, which is
-the doubled write's figure from the previous section.  Two placements failing
-identically and one different netlist passing on the same silicon in the same
-session puts the write search, not the placement, on the gap's change.
+the doubled write's figure from the previous section.  The first reading of
+this, that the search and not the placement had to be the gap's doing, does not
+survive the source: the module that trains is unchanged.
 
-What the change does to the search is not established.  `S_WG` puts an idle
-state into `R_FILL` even when the gap is zero, so a word's second write issues
-on a later cycle than it did, and the recorder added when the fill was paced
-takes a burst on the cycle the RTL issues one; a search that samples the wrong
-cycle would fail exactly this way, and the 390 trials and 3 CALIB pulses that
-differ from the control's 422 and 7 are consistent with it.  The same numbers
-appear in the earlier record of the seed-5 instrumented image, which reported
-`error 3`, 390 trials and 3 CALIB pulses and was never explained, so that
-result and this one are probably one defect rather than two.  Nothing has been
+`wr_core.v`, which holds `R_FILL` and the write-alignment search, is byte for
+byte the same file in `d31a2639` and in both failing images.  What the gap added
+is `S_WG`, `gap_cnt`, `tm_gap` and two command decodes, all inside `ddr3_bist`
+and `ctrl_glue`, and none of it can reach the training: `ddr3_bist` is held in
+reset by `ld_rst = !ctrl_own` until the controller takes the bus, its command
+and data outputs are muxed away unless `ctrl_own`, `dm` is forced to zero while
+it is not, and `S_WG` is entered only when `tm_gap` is non-zero, whose reset and
+idle value is zero.  The gap's logic is therefore inert during training, and an
+image that fails to train cannot be evidence about it.
+
+What varies instead is the placement.  The failing images train with 3 CALIB
+pulses a lane, which is exactly the signature the boundary study recorded for
+the unqualified inbound capture -- 3 or 5 pulses and failures -- against the 7
+the qualified boundary takes, and the control took 7.  Two placements landing
+on the same marginal capture is the reading that fits both the numbers and the
+unchanged RTL, and it is a hypothesis until the pre-gap sources are built at
+these same seeds: if seed 4's and seed 6's images, which trained, are joined by
+pre-gap builds at 13 and 16 that also train, the netlist is exonerated and this
+is placement luck.  The 390 trials and 3 CALIB pulses also appear in the
+earlier record of the seed-5 instrumented image, which was never explained, so
+that result and this one may be one defect rather than two.  Nothing has been
 measured with the gap, and nothing should be read from these images about the
 gap's logic: they never ran the test.
+
+The A/B settled it without a rebuild, because the pre-gap images already
+existed.  `a8f043bb`, seed 4, trains `error 0` to `d 1 b 2` in 422 trials with 7
+CALIB pulses a lane and hands over; `f5dbcd51`, seed 6, fails exactly as the
+post-gap images do -- `error 3`, lanes locked `0111`, 2,304 trials, no write
+alignment -- and takes 3 CALIB pulses on the three lanes that did lock.  Both
+were loaded between the post-gap images on the same board in the same session.
+The netlist before the gap therefore fails to train on some of its own
+placements, so the gap is not needed to explain the post-gap failures and the
+earlier attribution is withdrawn for good.  Training success is a placement
+property in both netlists, and 3 CALIB pulses a lane after training marks a
+failing image while 7 marks a passing one, in both.  Three placements each,
+with two of the three pre-gap ones training, is too small to say whether either
+netlist trains less often, and nothing here says the gap works: no image of
+either failing set ever ran the memory test.
