@@ -179,6 +179,7 @@ Topic IDs are the `record_id` prefix. An entry reserves a namespace; it does not
 | Does a filled row return its own data at every WRITE rate, and what does a displaced burst index mean? | TOOL | TOOL-057 |
 | Does the controller test's failure live in the mask, the write or the read? | TOOL | TOOL-058 |
 | Does the doubled write or the test's data cause the read failures? | TOOL | TOOL-059 |
+| Did the gap netlist place, and does its own write search still pass? | TOOL | TOOL-060 |
 | Why did the Gowin control miss PCLK timing? | TOOL | TOOL-028 |
 | Which sources and licenses constrain reuse? | PROV | PROV-001 |
 
@@ -263,6 +264,7 @@ TOOL-056: "At WRITE alignment d 1 b 0 a per-burst fill reads back with its burst
 TOOL-057: "A per-burst fill at the trained WRITE alignment d 1 b 2 reads back 1024 of 1024 own on all four lanes at paces 0, 1, 4, 16, 63 and 255 -- one burst per PCLK through one per 2.56 us -- while d 1 b 0 gives 609 of 1024 at pace 0 and 0 at every pace above it, with the paced logs byte-identical to one another"
 TOOL-058: "On the seed-6 doubled-write image the write mask suppresses correctly -- the one suppressed byte of 32 holds the first write's pattern -- while the test fails 0.45 and 0.14 per cent of words on lanes 1 and 2, read-side (six of eight logged failures re-read right), at lane 1 beat 2 / DQ 9 and 11 and lane 2 beat 6 / DQ 23; the qualified image eb59ee08, same board and session, runs 21 passes clean, and only read offset 7 of 7 to 9 works at all"
 TOOL-059: "The controller test's read failures belong to the doubled write: with command 0x3C 0x50 + m selecting the test's variables, one write per word cuts the failing share from about 31 and 37 per cent on two lanes to about 1.1 per cent on every lane, while switching the address fold back to linear changes nothing separable; a residual ~1.1 per cent remains with one write on that placement, and a placement that closes 106.19 MHz can fail every word on every lane at read offsets 6 to 9"
+TOOL-060: "The gap netlist places three of six seeds at 102.48, 100.63 and 101.72 MHz but its write-alignment search reports error 3 at 390 trials with no alignment on two different placements, while the netlist before the gap trains d 1 b 2 in 422 trials on the same board in the same session, so placement is excluded and S_WG is where the fault sits"
 TOOL-031: "LiteDRAM's control layer alone generates, synthesises and places in the open flow at ~1% of the LUTs, with none of TOOL-025's three gaps"
 TOOL-030: "Closed-page scatter READs do not reach the read capture in the open or the vendor build of the same RTL; no cadence, gate position or shared RCLKSEL recovers them, and failing READs return other rows' patterns"
 PROV-001: "Reuse source and interface ideas with their original license boundaries and attribution intact"
@@ -969,6 +971,21 @@ PROV-001: "Reuse source and interface ideas with their original license boundari
     - "TinyVCMI fpga/ddr3_ctrl/ctrl_glue.v (the 0x3C 0x5m decode) and tools/ddr3_write_probe.py (ctrl --tmode)"
     - "TinyVCMI .ai/core-log.md entries 88 and 90"
   verification: "Measured on the Tang in one session: both images loaded with tangload over the TinyTang console at ffff:5454, training error 0 and d 1 b 2 in 422 trials in each case, the test stopped, the mode set, the counters cleared and the test restarted so pmode latched at S_IDLE, then a four-second reading. Mode 0 was read twice and agreed. The same sequence covers simulation: tb_ctrl runs a pass in each mode and requires no lane error, and tools/sim_ddr3_ctrl.sh passes with its six mutants."
+
+- record_id: TOOL-060
+  topic_id: TOOL
+  title: "The gap netlist places but its write-alignment search no longer passes"
+  status: VERIFIED
+  verified_date: 2026-10-30
+  statement: "Six placements of the netlist carrying `S_WG` and an eight-bit gap, built from seeds 13 to 18, closed three at `pclk` 102.48, 100.63 and 101.72 MHz, each with 469 `DFFN` and 18 `DFFNS` on the CLKDIV, no LUT on a clock and all 306 DDR3 tables equal to the vendor reference, and refused three at 91.85, 93.74 and 94.33 MHz. On the Tang, seed 13 (`.bin` SHA-256 df117afd7c1adfdf1ae0f51b4b4c9dd28f36b825ffdf73301d9731f8ebc2cd32) and seed 16 (fad495a1f9514c9a840c93cea4518a3488649640d4059b616f746e82adccd20e) each train all four lanes but end `error 3` after 390 trials with no write alignment, 3 CALIB pulses a lane and windows of 52, 58, 46 and 50 taps centred at 28, 31, 25 and 27, and 53, 57, 46 and 50 centred at 28, 30, 25 and 27; with no write alignment neither image hands over, so the memory test never runs. The netlist before the gap, d31a2639..., trains `error 0` to `d 1 b 2` in 422 trials with 7 CALIB pulses a lane on the same board in the same session and runs the test."
+  consequence: "Placement is not what stops the gap netlist: two different placements fail with the same trial count and the same CALIB count, and a different netlist passes on the same silicon minutes later, so the difference introduced by `S_WG`, `gap_cnt`, `tm_gap` and the 0x3C 0x60/0x70 decode is where the fault sits. The gap cannot be measured until the search passes again, because with no write alignment there is no hand-over and `--wgap` reaches nothing. `S_WG` puts an idle state into `R_FILL` even at a gap of zero, so the second write issues a cycle later than before, and a burst recorder that samples the cycle the RTL issues a burst would fail exactly this way; that is a hypothesis, not a measurement. The 390 trials and 3 CALIB pulses also appear on the seed-5 instrumented image of the earlier mask cycle, which was never explained, so the two are probably one defect."
+  sources:
+    - "TinyVCMI commit af0d7a7, fpga/ddr3_ctrl/ddr3_bist.v (S_WG, gap_cnt, tm_gap) and ctrl_glue.v (0x3C 0x60 and 0x3C 0x70)"
+    - "TinyVCMI build/gap/s13 and build/gap/s16 (nextpnr logs, image check), not committed"
+    - "TinyVCMI build/tmode2/s1/ctrl.bin, the d31a2639 image of .ai/core-log.md entry 90"
+    - "TinyVCMI docs/ddr3-open-flow.md: The gap netlist places, and its write search does not"
+  verification: "Six seeds built six abreast with TINYVCMI_SKIP_SIM=1 from tools/build_ddr3_ctrl.sh at seeds 13 to 18, results in build/gap; seeds 19 to 24 were stopped in placement at the operator's direction. Two of the three closed images were loaded with tangload in TinyTang mode on the Tang powered from the host's 5 V over USB-C OTG (BRD-002) with the cooldown not recalled, and their training and test state read with tools/ddr3_write_probe.py ctrl; the control image was loaded between them in the same session. The board was restored to tinytang-lora.bin afterwards and answered core ID 0x54 (PROT-002). Not established: why the search fails, and whether the gap works at all."
+
 
 - record_id: TOOL-031
   topic_id: TOOL

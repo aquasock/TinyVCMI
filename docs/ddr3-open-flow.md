@@ -3800,3 +3800,47 @@ nothing was loaded.  The previous netlist closed three of six seeds at 106 to
 108 MHz, so this one is markedly harder to place, and that is recorded as a
 placement fact rather than as a reason to doubt the gap's logic: the logic is
 verified where it can be, and the board question is still open.
+
+## The gap netlist places, and its write search does not
+
+The previous section's "markedly harder to place" was the sample talking.  Six
+more placements of the same netlist, built six abreast from seeds 13 to 18,
+closed three of them -- `pclk` 102.48, 100.63 and 101.72 MHz, each with 469
+`DFFN` and 18 `DFFNS` on the CLKDIV, no LUT on a clock and all 306 DDR3 tables
+equal to the vendor reference -- and refused three at 91.85, 93.74 and 94.33
+MHz.  That is three of six, the same yield the netlist without the gap gave, so
+`S_WG` costs placement nothing measurable and the earlier none-of-twelve was a
+run of bad seeds.  Seeds 19 to 24 were stopped in placement at the operator's
+direction once three images existed.
+
+None of the three can be measured on the board, because none of them hands
+over.  Seed 13, `.bin` SHA-256 `df117afd7c1adfdf1ae0f51b4b4c9dd28f36b825ffdf73301d9731f8ebc2cd32`,
+and seed 16, `fad495a1f9514c9a840c93cea4518a3488649640d4059b616f746e82adccd20e`,
+were loaded in TinyTang mode in turn.  Both lock the PLL and the DLL, `STEP`
+reads `0x2b`, and all four lanes train, but the training ends `error 3` after
+390 trials with no write alignment at all, 3 CALIB pulses a lane, and passing
+windows of 52, 58, 46 and 50 taps centred at 28, 31, 25 and 27 on one image and
+53, 57, 46 and 50 centred at 28, 30, 25 and 27 on the other.  With no write
+alignment there is no hand-over, the memory test never runs, and `--wgap` has
+nothing to act on.
+
+The control was the image of the netlist before the gap, `d31a2639...` from the
+doubled-write cycle, loaded on the same board minutes later in the same
+session: it trains `error 0` to `d 1 b 2` in 422 trials with 7 CALIB pulses a
+lane, hands over, and runs the test -- 8 passes and 310,378,494 words checked
+with lane errors of 95,442,981, 1,159,366, 108,295,781 and 636,845, which is
+the doubled write's figure from the previous section.  Two placements failing
+identically and one different netlist passing on the same silicon in the same
+session puts the write search, not the placement, on the gap's change.
+
+What the change does to the search is not established.  `S_WG` puts an idle
+state into `R_FILL` even when the gap is zero, so a word's second write issues
+on a later cycle than it did, and the recorder added when the fill was paced
+takes a burst on the cycle the RTL issues one; a search that samples the wrong
+cycle would fail exactly this way, and the 390 trials and 3 CALIB pulses that
+differ from the control's 422 and 7 are consistent with it.  The same numbers
+appear in the earlier record of the seed-5 instrumented image, which reported
+`error 3`, 390 trials and 3 CALIB pulses and was never explained, so that
+result and this one are probably one defect rather than two.  Nothing has been
+measured with the gap, and nothing should be read from these images about the
+gap's logic: they never ran the test.
