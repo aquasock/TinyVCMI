@@ -88,3 +88,33 @@ Give the fill's per-burst data enough distinguishing bits to name a location, as
 - User Test: N/A
 
 ---
+
+## 4 COMMIT Unreleased 2026-10-30T22:01:49-07:00
+
+#### Coming From:
+
+Unreleased 9454209
+
+#### Purpose:
+
+Test the placement reading entry 3 committed by loading the last training candidate the hedge sweep produced, and correct the record if it does not hold.
+
+#### Outcome:
+
+It does not hold for the gap netlist, and the correction is the cycle's result. Seed 28 closed at `pclk` 100.37 MHz with 469 `DFFN` and 18 `DFFNS`, no LUT on a clock and all 306 tables equal (`.bin` SHA-256 `d357be25503e1322a953dde3c51f51cc20f6fbed175a68747b7271883bd12630`), and on the board it failed exactly as seeds 13, 16, 18 and 25 had: `error 3` after 390 trials, lanes locked `1111`, 3 CALIB pulses a lane, windows of 53, 57, 46 and 50 taps centred at 28, 30, 25 and 27. Five independent placements giving the same trial count, the same lock state and the same windows to the tap is not a lottery, and the netlist before the gap fails in a different mode when it fails at all, seed 6 taking 2,304 trials and leaving lane 3 unlocked. The cause had to be synthesis, and counting cells in the two netlists shows it: with `wr_core`'s source byte-identical, Yosys moved about 1,400 descriptions between types inside its cone, LUT3 from 6,597 to 5,906, LUT4 from 11,137 to 11,561, MUX2_LUT5 from 2,915 to 2,349 and DFF from 14,388 to 14,390, while the whole design lost 796 cells and gained 1,424 LUT4s, and the netlist closes lower at 100.4 to 102.5 MHz against 106 to 108. The gap's logic is therefore still not the cause, since it is inert during training, but the gap's change is, through a mapping every placement of this netlist inherits. Entry 3's placement framing is right for the pre-gap netlist and wrong for this one, and it is named as superseded here rather than rewritten. TOOL-064 records the determinism and the divergence, TOOL-060 is revised a third time so its capture reading points at TOOL-062 and TOOL-064 instead, and `docs/ddr3-open-flow.md` gained the paragraph. The board was restored to `tinytang-lora.bin` and answered core ID `0x54`, the seed-28 image was removed from the card, and every load was powered from the host's 5 V over USB-C OTG with the cooldown not recalled. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering and active-log capacity.
+
+#### Next Steps:
+
+Measure the capture path in full rather than its route half only, since `IDES8_MEM`'s outputs and everything after them are untimed and a flatter mapping costs margin with no warning anywhere in the flow: extend `tools/bnd_delay.py` to add cell delay to the route delay it already reports, then run it on the gap netlist and the pre-gap netlist at the same seeds and see whether the lost margin is on that path. That decides whether the answer is to keep the training logic out of synthesis's reach, for example by making the gap a synthesis-time choice so the fill's mapping does not move, or to accept the slower mapping and buy the margin back. The gap has still never been measured, the residual with one write per word, the 106.19 MHz placement that reads nothing at any offset, the read path's 8 PCLK marginality, the read stream's frame, the state-4 hang in `S_RDW`, the write image's untimed boundary, the mid-calibration stall, the `D108` unused-pin contradiction and the `is_mipi` bug outside the DDR context remain open, `tinytang-abi16-open.bin` is still unidentified, the whole-top simulation stays on hold, and the user has deferred a capped legaliser budget and a PHY-only fuse reference.
+
+#### Files Modified:
+
+- docs/ddr3-open-flow.md
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: N/A
+
+---

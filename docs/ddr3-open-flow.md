@@ -3923,3 +3923,28 @@ address matches by accident about one time in thirty, so the search's own pass
 is weak evidence.  The next step is to give the fill's per-burst data enough
 distinguishing bits to name a location, as the memory test's `gen()` was given,
 and only then can a failing search be read.
+
+The placement reading above is right for the netlist before the gap and wrong
+for the one after it.  Seed 28 closed at 100.37 MHz with the full gate and was
+loaded, and it failed exactly as seeds 13, 16, 18 and 25 had: `error 3` at 390
+trials, lanes locked `1111`, 3 CALIB pulses a lane, and windows of 53, 57, 46
+and 50 taps centred at 28, 30, 25 and 27 -- the same numbers, to the tap, on
+five independent placements.  A lottery does not repeat itself five times.
+The gap netlist fails deterministically, and the pre-gap netlist's own failure
+is a different mode entirely: seed 6 took 2,304 trials and left lane 3
+unlocked.
+
+The source being identical does not make the hardware identical, and the
+synthesised netlists show it.  Inside `wr_core`'s cone alone, Yosys moved about
+1,400 look-up tables between types when the gap was added: LUT3 6,597 to 5,906,
+LUT4 11,137 to 11,561, MUX2_LUT5 2,915 to 2,349, DFF 14,388 to 14,390, and the
+whole design lost 796 cells while gaining 1,424 LUT4s.  The gap netlist also
+closes lower, 100.4 to 102.5 MHz against 106 to 108, and every placement of it
+inherits that mapping, which is what a repeatable failure looks like.
+
+So the gap's logic is still not the cause -- it is inert during training -- but
+the gap's change is, through synthesis.  What to measure next is the capture
+path in full, cell delay as well as route delay, since `IDES8_MEM`'s outputs
+and everything after them go untimed and a flatter mapping costs margin with no
+warning anywhere in the flow.  `tools/bnd_delay.py` measures the route half
+only and needs the cell half added before this can be settled.
