@@ -118,3 +118,33 @@ Measure the capture path in full rather than its route half only, since `IDES8_M
 - User Test: N/A
 
 ---
+
+## 5 COMMIT Unreleased 2026-10-30T22:35:57-07:00
+
+#### Coming From:
+
+Unreleased e7b1e7b
+
+#### Purpose:
+
+Settle whether the gap netlist's deterministic training failure comes from the netlist or from the seed, with a matched pair, and hand the live state to the next agent when the session ended.
+
+#### Outcome:
+
+The matched pair was attempted and not obtained, and the cycle was stopped at the operator's direction for the night. The plan was to build the pre-gap netlist at a seed where the gap netlist closes and fails to train, which first had to avoid seed 4, already refused at 99.50 MHz in the earlier sweep, so seed 13 was chosen where the gap netlist closes at 102.48 MHz. That build failed its own gate: `pclk` reached 97.98 MHz against the 100 MHz constraint, nextpnr refused the design and no image was written, so the seed is good only for the gap netlist and the pair has to be made at another. Seeds 18 and 28, where the gap netlist closes at 101.72 and 100.37 MHz, were launched in parallel and were stopped in placement at the operator's direction when the session ended; their directories hold only a `nextpnr.log` each and no routed design. The pre-gap netlist used for this is synthesised from commit `a01b18c` into `/tmp/pre/ctrl.json` by the same Yosys command `tools/build_ddr3_ctrl.sh` runs, and the driver that places, packs with `--ddr3-context`, checks the image and writes the raw file is `build/gap/pre_seed.sh`; both are outside the repository, and `/tmp` will not survive a reboot, so the next session should regenerate the netlist from `a01b18c` rather than rely on them. Nothing in the repository changed in this cycle beyond project control. The board was not left as it is required to be: its FPGA answers core ID `0x02` on `/dev/ttyUSB1` at 2 Mbaud and the TinyTang console is not enumerated, so the desktop is not loaded and `tangload` cannot reach it until the board is power-cycled, after which `tinytang-lora.bin` must be loaded and `0x54` confirmed (PROT-002, BRD-002). The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering and active-log capacity.
+
+#### Next Steps:
+
+Power-cycle the Tang first, confirm the TinyTang console enumerates as `ffff:5454` on `/dev/ttyACM0`, load `tinytang-lora.bin` and check it answers `0x54` before anything else, because the board is currently on a core that answers `0x02` and the operator's LoRa is down. Then finish the matched pair: regenerate the pre-gap netlist from commit `a01b18c` with the Yosys command in `tools/build_ddr3_ctrl.sh`, place it at seeds 18 and 28 where the gap netlist closes, pack it with `--ddr3-context`, write the raw image and load it — if the pre-gap netlist trains at a seed where the gap netlist fails, the netlist is conclusively the cause and the fix is to keep the fill's mapping stable, by making the gap a synthesis-time constant instead of a live input; if it also fails, the record needs a third correction and the placement reading returns. The image it produces is not checked against a vendor reference, because the committed vendor `probe.fs` was built from post-gap sources, so say that plainly when it is loaded. The gap has still never been measured, the residual with one write per word, the 106.19 MHz placement that reads nothing at any offset, the read path's 8 PCLK marginality, the read stream's frame, the state-4 hang in `S_RDW`, the write image's untimed boundary, the mid-calibration stall, the `D108` unused-pin contradiction and the `is_mipi` bug outside the DDR context remain open, `tinytang-abi16-open.bin` is still unidentified, the whole-top simulation stays on hold, and the user has deferred a capped legaliser budget and a PHY-only fuse reference.
+
+#### Files Modified:
+
+None.
+
+#### Status:
+
+- Build: FAIL
+- Deployment: NOT RUN
+- User Test: N/A
+
+---
