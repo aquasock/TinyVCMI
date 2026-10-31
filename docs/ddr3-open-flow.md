@@ -3871,3 +3871,55 @@ failing image while 7 marks a passing one, in both.  Three placements each,
 with two of the three pre-gap ones training, is too small to say whether either
 netlist trains less often, and nothing here says the gap works: no image of
 either failing set ever ran the memory test.
+
+## Why one placement trains and another does not
+
+Four gap placements failed to train and two of three pre-gap placements
+trained, with the same training RTL on both sides, so the next question was
+what a placement changes.  The standing candidate was the I/O boundary, which
+nextpnr does not time at all (TOOL-050).  `tools/bnd_delay.py` now measures it,
+a `--post-route` hook that reports `getNetinfoRouteDelay` from each DDR3 cell to
+its fabric sink and back, since nothing in the timing report covers those
+crossings.  Measured on four placements, inbound capture (`IDES8_MEM.Q` to the
+fabric) over 512 crossings each: passing seed 1 median 1.926, p95 3.656, max
+4.378 ns; passing seed 4 median 1.728, p95 3.530, max 4.816 ns; failing seed 6,
+the same netlist as those two, median 2.454, p95 4.114, max 5.400 ns; and
+failing seed 13, the gap netlist, median 2.163, p95 3.656, max 4.727 ns.
+`RVALID` and `RBURST` back into the fabric: 3.141 and 2.693 ns median on the
+passing pair, 3.652 and 2.719 on the failing pair.  The one failing placement of
+the same netlist is worse than both passing ones on every statistic, by 27 to 42
+per cent at the median, but the other failing placement sits between the two
+passing ones.  Route delay therefore does not separate a placement that trains
+from one that does not, and the simplest form of the boundary theory is dead.
+
+Two things had been read wrongly from the board and are corrected.  `error 3` is
+the write-alignment search failing, not framing: the module reports 1 and 2 for
+framing and every failing image reports 3, so framing passed on all of them.
+And the CALIB count the probe prints is `lane_cal`, the index of the search's
+RCSLKEL sweep at the gate where the lane locked, so 3 against 7 is how quickly
+the search locked a lane and not how hard framing fought.  Reading the framing
+code also found that `wr_core.v`'s header describes a rule it does not
+implement: it says framing pulses each pin until it agrees with "its first pin
+that holds a rotation", but pin 0 is the unconditional reference, never pulsed,
+and the value computed for that first pin, `tgt_w`, is never read.
+
+What the failing placement does instead is return a coherent wrong word.  On
+seed 13 the search's own checker (frame 0x27) held its pattern on 11 READs of
+6,261; its first failure was bank 0, row bit 1, burst 44, expecting `0x13`,
+with all four lanes disagreeing and all four holding `6b 94 6b 94 6b 94 6b 94`
+-- pins agreeing within each lane, odd pins the inverse of even as they should
+be, and the word a rotation of address-data pattern 26, `0x5B`.  The read
+capture is therefore healthy: the pins agree, the word is valid address data,
+and it is simply another location's.  The same shape appears in the earlier
+seed-5 record, one valid necklace on every lane that is not the word read.
+
+That cannot be attributed to an address, and the reason is the instrument.
+`wr_core`'s fill writes an 8-bit pattern per burst chosen from the thirty
+aperiodic necklaces by a fold of the address, so 16,384 locations share 30
+patterns: `0x5B` covers 512 of them and `0x13` covers 1,024, and inside bank 0
+row 1 alone bursts 28, 37, 95 and 102 all produce `0x5B`.  A failing search
+cannot say where its data came from, and -- worse -- a burst from the wrong
+address matches by accident about one time in thirty, so the search's own pass
+is weak evidence.  The next step is to give the fill's per-burst data enough
+distinguishing bits to name a location, as the memory test's `gen()` was given,
+and only then can a failing search be read.

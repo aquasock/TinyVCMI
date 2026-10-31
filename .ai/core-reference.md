@@ -180,6 +180,9 @@ Topic IDs are the `record_id` prefix. An entry reserves a namespace; it does not
 | Does the controller test's failure live in the mask, the write or the read? | TOOL | TOOL-058 |
 | Does the doubled write or the test's data cause the read failures? | TOOL | TOOL-059 |
 | Did the gap netlist place, and does its own write search still pass? | TOOL | TOOL-060 |
+| Does the untimed DDR3 boundary's route delay explain a placement that fails to train? | TOOL | TOOL-061 |
+| What does a placement that fails to train actually return, and can it be attributed? | TOOL | TOOL-062 |
+| What do error 3 and the per-lane CALIB count mean? | TOOL | TOOL-063 |
 | Why did the Gowin control miss PCLK timing? | TOOL | TOOL-028 |
 | Which sources and licenses constrain reuse? | PROV | PROV-001 |
 
@@ -265,6 +268,9 @@ TOOL-057: "A per-burst fill at the trained WRITE alignment d 1 b 2 reads back 10
 TOOL-058: "On the seed-6 doubled-write image the write mask suppresses correctly -- the one suppressed byte of 32 holds the first write's pattern -- while the test fails 0.45 and 0.14 per cent of words on lanes 1 and 2, read-side (six of eight logged failures re-read right), at lane 1 beat 2 / DQ 9 and 11 and lane 2 beat 6 / DQ 23; the qualified image eb59ee08, same board and session, runs 21 passes clean, and only read offset 7 of 7 to 9 works at all"
 TOOL-059: "The controller test's read failures belong to the doubled write: with command 0x3C 0x50 + m selecting the test's variables, one write per word cuts the failing share from about 31 and 37 per cent on two lanes to about 1.1 per cent on every lane, while switching the address fold back to linear changes nothing separable; a residual ~1.1 per cent remains with one write on that placement, and a placement that closes 106.19 MHz can fail every word on every lane at read offsets 6 to 9"
 TOOL-060: "The gap netlist places three of six seeds at 102.48, 100.63 and 101.72 MHz but its write-alignment search reports error 3 at 390 trials with no alignment and 3 CALIB pulses a lane on three placements, while the netlist before the gap trains d 1 b 2 in 422 trials with 7 pulses on two of its three placements and fails in the same way on the third; the training module is byte-identical and the added gap logic is inert during training, so this is placement, not the gap"
+TOOL-061: "Route delay across the untimed DDR3 I/O boundary does not separate placements that train: the one failing placement of the pre-gap netlist is worse than both passing ones by 27 to 42 per cent at the median, but the other failing placement sits between them, measured over 512 inbound crossings a placement"
+TOOL-062: "A gap placement that fails training returns a coherent wrong word -- all four lanes holding one valid address-data rotation, pins agreeing -- while the fill's 30-pattern address data maps 16,384 locations onto 30 patterns, 512 of them producing that word, so the source cannot be named and a wrong burst matches about one time in thirty"
+TOOL-063: "error 3 is the write-alignment search failing and not framing, the per-lane CALIB count is the search's lock latency rather than framing pulses, and wr_core's framing header describes a first-pin reference that the code does not implement, pin 0 being the unconditional reference and tgt_w never read"
 TOOL-031: "LiteDRAM's control layer alone generates, synthesises and places in the open flow at ~1% of the LUTs, with none of TOOL-025's three gaps"
 TOOL-030: "Closed-page scatter READs do not reach the read capture in the open or the vendor build of the same RTL; no cadence, gate position or shared RCLKSEL recovers them, and failing READs return other rows' patterns"
 PROV-001: "Reuse source and interface ideas with their original license boundaries and attribution intact"
@@ -986,6 +992,44 @@ PROV-001: "Reuse source and interface ideas with their original license boundari
     - "TinyVCMI docs/ddr3-open-flow.md: The gap netlist places, and its write search does not"
   verification: "Six seeds built six abreast with TINYVCMI_SKIP_SIM=1 from tools/build_ddr3_ctrl.sh at seeds 13 to 18, results in build/gap; seeds 19 to 24 were stopped in placement at the operator's direction. Two of the three closed images were loaded with tangload in TinyTang mode on the Tang powered from the host's 5 V over USB-C OTG (BRD-002) with the cooldown not recalled, and their training and test state read with tools/ddr3_write_probe.py ctrl; the control image was loaded between them in the same session. The board was restored to tinytang-lora.bin afterwards and answered core ID 0x54 (PROT-002). Not established: why these placements fail to train, and whether the gap works at all. Revised 2026-10-30, before the same cycle closed: the first version of this record read the two failing placements as excluding placement and putting the fault in the gap's change. Reading the sources withdrew that, because the training module is identical in the passing and failing images and the added logic is inert during training, so the record now states the placement reading as a hypothesis and the failing images as no evidence about the gap. The A/B has since run, without a rebuild, on the pre-gap images that already existed: a8f043bb, seed 4, trains error 0 to d 1 b 2 in 422 trials with 7 CALIB pulses a lane and hands over, while f5dbcd51, seed 6, fails -- error 3, lanes locked 0111, 2304 trials, no write alignment, and 3 CALIB pulses on the three lanes that locked -- loaded between the post-gap images on the same board in the same session. The pre-gap netlist therefore fails to train on some placements too, so the gap is not needed to explain the post-gap failures and training success is a property of the placement in both netlists; 3 CALIB pulses a lane after training marks a failing image and 7 marks a passing one, in both netlists. Three post-gap and three pre-gap placements, two of the three pre-gap ones training, is too small a sample to say either netlist trains less often. Every load was powered from the host's 5 V over USB-C OTG (BRD-002) with the cooldown not recalled, and the board was returned to tinytang-lora.bin answering 0x54 (PROT-002)."
 
+
+- record_id: TOOL-061
+  topic_id: TOOL
+  title: "Route delay across the untimed DDR3 boundary does not separate placements that train"
+  status: VERIFIED
+  verified_date: 2026-10-30
+  statement: "`tools/bnd_delay.py`, a nextpnr `--post-route` hook, reports `getNetinfoRouteDelay` from each DDR3 I/O cell to its fabric sink and back, which no timing report covers (TOOL-050). Inbound capture, `IDES8_MEM.Q` to the fabric, 512 crossings a placement: passing seed 1 median 1.926, p95 3.656, max 4.378 ns; passing seed 4 median 1.728, p95 3.530, max 4.816 ns; failing seed 6, of the same netlist as those two, median 2.454, p95 4.114, max 5.400 ns; failing seed 13, gap netlist, median 2.163, p95 3.656, max 4.727 ns. `DQS` `RVALID` and `RBURST` back into the fabric: median 3.141 and 2.693 ns on the passing pair against 3.652 and 2.719 on the failing pair. Each rerun reproduced its image's `pclk` exactly, 107.78, 106.19, 106.50 and 102.48 MHz."
+  consequence: "The failing placement of the pre-gap netlist is worse than both passing ones on every statistic, by 27 to 42 per cent at the median, but the other failing placement sits between the passing two, so no threshold on these delays separates training from not training. The untimed boundary is real and its magnitude is not what decides the outcome, so measuring it further is not the way to make training reliable."
+  sources:
+    - "TinyVCMI tools/bnd_delay.py"
+    - "TinyVCMI build/gap/s13/ctrl.json and a pre-gap netlist synthesised from commit a01b18c, placed at the recorded seeds with the hook"
+    - "TinyVCMI docs/ddr3-open-flow.md: Why one placement trains and another does not"
+  verification: "Four nextpnr runs, seeds 13 of the gap netlist and 1, 4 and 6 of the pre-gap netlist, each reproducing its image's recorded `pclk` so the placement measured is the one on the board. `$PACKER_VCC` and `$PACKER_GND` tie-offs were excluded, being constants rather than crossings. The two failing placements are known to fail from their own board loads (TOOL-060 and the pre-gap seed 6 load). Not measured: clock skew, which nextpnr models as equal at every sink so it cannot report it."
+
+- record_id: TOOL-062
+  topic_id: TOOL
+  title: "A placement that fails to train returns a coherent wrong-address word, and the fill cannot name the address"
+  status: VERIFIED
+  verified_date: 2026-10-30
+  statement: "On seed 13, a gap placement that fails training with `error 3`, the search's own checker (frame 0x27) held its pattern on 11 of 6,261 READs and its first failure was bank 0, row bit 1, burst 44, expecting `0x13`, with all four lanes disagreeing and all four holding `6b 94 6b 94 6b 94 6b 94`. Within each lane the pins agree and the odd pins are the inverse of the even, and the word is a rotation of fill pattern 26, `0x5B`, while `0x13` is pattern 8. The fill's pattern is chosen from the thirty aperiodic 8-bit necklaces by a fold of the address (`AD_PATTERNS`, `adata_pattern`), so 16,384 locations share 30 patterns: `0x5B` covers 512 of them, `0x13` covers 1,024, and in bank 0 row 1 alone bursts 28, 37, 95 and 102 all yield `0x5B`."
+  consequence: "The failure is functional, not a marginal eye: the capture framed, the pins agree, and the data is valid address data from somewhere else, so the read delivered another location's word coherently on all four lanes. It cannot be attributed to an address with this instrument, because 512 locations produce that same pattern and a wrong burst matches by accident about one time in thirty, which also means the search's own pass is weak evidence. Giving the fill's per-burst data enough bits to name a location, as the memory test's `gen()` was given (TOOL-054), is what would make a failing search readable."
+  sources:
+    - "TinyVCMI tools/ddr3_write_probe.py: adata_pattern, AD_PATTERNS, ctrl --check"
+    - "TinyVCMI fpga/ddr3_write/wr_core.v: the fill's address data and the check's class comparison"
+    - "TinyVCMI docs/ddr3-open-flow.md: Why one placement trains and another does not"
+  verification: "Measured on seed 13, `.bin` SHA-256 df117afd7c1adfdf1ae0f51b4b4c9dd28f36b825ffdf73301d9731f8ebc2cd32, loaded with tangload in TinyTang mode, powered from the host's 5 V over USB-C OTG with the cooldown not recalled; frame 0x27 read after training ended `error 3`. The aliasing was computed host-side from the RTL's own generator, and it reproduces the hardware's expectation exactly: bank 0, row bit 1, burst 44 gives `0x13`. Not established: which address the returned word belongs to, which this data cannot show."
+
+- record_id: TOOL-063
+  topic_id: TOOL
+  title: "error 3 is post-framing, lane_cal is search latency, and the framing header describes dead code"
+  status: VERIFIED
+  verified_date: 2026-10-30
+  statement: "In `wr_core.v`, `err` is 1 or 2 for a framing failure and 3 for no write alignment, so an image reporting `error 3` has already framed every lane. `lane_cal`, the CALIB count the probe prints per lane, is written once from `cal`, the index of the step-4 search's RCLKSEL sweep at the gate where the lane locked, so 3 against 7 is how many search rounds a lane needed and not how many framing pulses were sent. Framing's own pulses are counted by `pc` and never reported. The framing header comment describes pulsing each pin until it agrees with its first pin that holds a rotation, but the reference is pin 0 unconditionally (`wref = snap[64*li +: 8]`, pin 0 never pulsed), and the value computed for that first pin, `tgt_w`, is written and never read."
+  consequence: "This project's log has read 3 CALIB pulses as hard framing and treated framing as the differing stage; both readings are wrong, and the difference between a placement that trains and one that does not lives after framing, in the write-alignment search. The reference-pin retry that the header implies does not exist, so a lane whose pin 0 captures badly aborts the whole training with `err 2` rather than trying another reference, which is a real fragility worth fixing even though it is not this failure."
+  sources:
+    - "TinyVCMI fpga/ddr3_write/wr_core.v: err declaration and comments, S_FR0 to S_FR8, wref/wnorm/wsel, tgt_w, cal, lane_cal"
+    - "TinyVCMI tools/ddr3_write_probe.py: the per-lane CALIB reporting"
+  verification: "Read from the source at commit 1829ef5, with the module header's own definition of `err` and grep confirming `tgt_w` has no reader. Cross-checked against the board: every failing image reports `error 3`, which this reading says means framing passed, and their recorded per-lane read windows match the passing images' to within a tap."
 
 - record_id: TOOL-031
   topic_id: TOOL

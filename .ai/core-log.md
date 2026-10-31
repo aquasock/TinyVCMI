@@ -57,3 +57,34 @@ Stop treating training failure as a gap defect and treat it as a placement lotte
 - User Test: N/A
 
 ---
+
+## 3 COMMIT Unreleased 2026-10-30T21:56:21-07:00
+
+#### Coming From:
+
+Unreleased 1829ef5
+
+#### Purpose:
+
+Find what a placement changes when it turns a training image into one that hands over, so the DDR3 controller stops depending on luck.
+
+#### Outcome:
+
+The question moved twice and neither answer was the one the cycle started from. A hedge sweep of seeds 25 to 30 was launched first: seed 25 closed at `pclk` 100.40 MHz with 469 `DFFN` and 18 `DFFNS`, no LUT on a clock and all 306 tables equal (`.bin` SHA-256 `ddeaaf176f13f4bff44ff7e9d595583074db0713630532b2407463699e4fcffa`), seed 30 was refused at its timing gate, and seeds 26 to 29 were still routing when the cycle closed; seed 25 was loaded on the board and failed to train exactly as the others had, `error 3` at 390 trials with no write alignment and 3 CALIB pulses a lane, so the gap netlist stands at none of four placements while the netlist before it trained on two of three with the same training RTL. The first hypothesis was the untimed I/O boundary (TOOL-050), and `tools/bnd_delay.py` was written to measure it, a `--post-route` hook reporting `getNetinfoRouteDelay` from each DDR3 cell to its fabric sink and back; on four placements whose `pclk` reproduced their images exactly, inbound capture over 512 crossings gave medians of 1.926 and 1.728 ns for the two passing placements, 2.454 for the failing one of the same netlist and 2.163 for the failing gap placement, so the failing placement of one netlist is worse than both passing ones by 27 to 42 per cent at the median while the other failing placement sits between them, and route delay does not separate training from not training (TOOL-061). Reading the trainer then corrected two things this project had misread (TOOL-063): `error 3` is the write-alignment search failing and not framing, since 1 and 2 are the framing errors and every failing image reports 3, and the per-lane CALIB count is `lane_cal`, the index of the search's RCLKSEL sweep where the lane locked, so 3 against 7 is lock latency and not framing effort; the framing header also claims a rule the code does not implement, pin 0 being the unconditional reference and `tgt_w` never read. What the failing placement does instead is readable in the search's own checker: on seed 13 frame 0x27 held its pattern on 11 READs of 6,261, with its first failure at bank 0, row bit 1, burst 44, expecting `0x13` and finding all four lanes holding `6b 94 6b 94 6b 94 6b 94`, pins agreeing and odd pins the inverse of the even, the word a rotation of fill pattern 26, `0x5B`. That makes the failure functional rather than a marginal eye, and the attempt to name the source address ended in the instrument: the fill chooses one of thirty aperiodic necklaces by a fold of the address, so 16,384 locations share 30 patterns, `0x5B` covers 512 of them, and inside bank 0 row 1 alone bursts 28, 37, 95 and 102 all produce it, which means a failing search cannot say where its data came from and a wrong burst matches by accident about one time in thirty (TOOL-062). TOOL-061, TOOL-062 and TOOL-063 were added and `docs/ddr3-open-flow.md` gained the section. The board was restored to `tinytang-lora.bin` and answered core ID `0x54`, the diagnostic and sweep images were removed from the card, and every load was powered from the host's 5 V over USB-C OTG with the cooldown not recalled. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering and active-log capacity.
+
+#### Next Steps:
+
+Give the fill's per-burst data enough distinguishing bits to name a location, as the memory test's `gen()` was given in TOOL-054, because until then neither a failing search nor a passing one can be trusted: 512 locations produce the same word and a wrong burst matches about one time in thirty. Then re-read a failing search's frame 0x27 and say which address the data came from, which is the question this cycle could not answer. The gap netlist's none-of-four against the pre-gap netlist's two-of-three is also worth settling, since the RTL that trains is byte-identical and the difference would have to come from synthesis, but three and four placements are too few to claim a rate difference. The gap has still never been measured, the residual with one write per word, the 106.19 MHz placement that reads nothing at any offset, the read path's 8 PCLK marginality, the read stream's frame, the state-4 hang in `S_RDW`, the write image's untimed boundary, the mid-calibration stall, the `D108` unused-pin contradiction and the `is_mipi` bug outside the DDR context remain open, `tinytang-abi16-open.bin` is still unidentified, the whole-top simulation stays on hold, and the user has deferred a capped legaliser budget and a PHY-only fuse reference.
+
+#### Files Modified:
+
+- docs/ddr3-open-flow.md
+- tools/bnd_delay.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: N/A
+
+---
