@@ -148,3 +148,33 @@ None.
 - User Test: N/A
 
 ---
+
+## 6 COMMIT Unreleased 2026-11-22T10:29:23-07:00
+
+#### Coming From:
+
+Unreleased 0a53ff0
+
+#### Purpose:
+
+Bring the README's current state up to the DDR3 milestone recorded in this log, at the operator's request during a documentation pass across the TinyTang ecosystem.
+
+#### Outcome:
+
+The README's current state listed only two offline checks that never touch the Tang, written before the controller ran on the board. It now says, from entry 1's summary of the milestone, that the open-flow DDR3 image matches the vendor build on all 306 DDR3 tables, that the PHY initialises the device and reads its MPR pattern on all 32 DQ, and that the controller image trains at start-up, hands the bus to `ddr3_ctl` and tests the whole 1 GiB, and that the write path blocks the milestone, with the gap netlist failing its own write-alignment search where the netlist before it trains, as entries 2 to 5 record; it points to this log for the live state. The two offline checks are kept below it. Nothing was built or deployed. The core-syntax audit was run: `.ai/core.md` and `.ai/core-syntax.md` were re-read, `.ai/core.md` was confirmed unchanged, the complete `.ai/` diff was inspected and holds only this entry, and this entry was validated as number 6 of 100 with six canonical sections in order, a one-sentence Purpose, prose in Outcome and Next Steps, only eligible paths in Files Modified and allowed Status values.
+
+#### Next Steps:
+
+Entry 5's next steps stand: finish the matched pair that settles whether the gap netlist or the seed causes the training failure.
+
+#### Files Modified:
+
+- README.md
+
+#### Status:
+
+- Build: N/A
+- Deployment: N/A
+- User Test: N/A
+
+---
