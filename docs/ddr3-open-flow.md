@@ -3948,3 +3948,42 @@ path in full, cell delay as well as route delay, since `IDES8_MEM`'s outputs
 and everything after them go untimed and a flatter mapping costs margin with no
 warning anywhere in the flow.  `tools/bnd_delay.py` measures the route half
 only and needs the cell half added before this can be settled.
+
+## The matched pair
+
+The reading above was tested by placing the pre-gap netlist at seeds where the
+gap netlist closes and fails to train, and it does not survive.  The pre-gap
+netlist was resynthesised from commit `a01b18c`: among the synthesised files
+only `fpga/ddr3_ctrl/ctrl_glue.v` and `ddr3_bist.v` differ from HEAD, so taking
+those two from `a01b18c` and every other source from HEAD, through the Yosys
+command `tools/build_ddr3_ctrl.sh` runs, rebuilds it, and its cell counts
+reproduce the ones above exactly (LUT3 6,597, LUT4 11,137, MUX2_LUT5 2,915 and
+DFF 14,388 in the `core.` cone).  It passed the boundary check, and was placed
+with the same `top.cst`, `open.sdc` and `--freq 50` and packed with
+`--ddr3-context` at four seeds where the gap netlist closes and fails.
+
+Seed 25 closed at 102.07 MHz and trains: `error 0`, write alignment `d 1 b 2`,
+422 trials, 7 CALIB pulses a lane, hand-over, on two loads.  Seed 18 closed at
+103.39 MHz and fails exactly as the gap netlist does: `error 3` after 390
+trials, lanes locked `1111`, 3 CALIB pulses a lane, windows of 54, 57, 47 and
+51 taps centred at 29, 30, 25 and 27, and the search's checker holding its
+pattern on 58 of 6,260 READs with every lane returning `a4 5b` repeated, pins
+agreeing -- the coherent wrong word of seed 13 again.  Seed 16 closed at
+100.57 MHz and was not loaded, and seed 28 missed at 90.50 MHz.
+
+So the five identical failures were not a fingerprint of the gap netlist's
+synthesis.  They are what the write-alignment search reports whenever it
+fails, and the pre-gap netlist produces them too.  The deterministic-synthesis
+reading is withdrawn (TOOL-064), and the closing-frequency difference goes with
+it, since the pre-gap netlist closes 100.57 to 103.39 MHz at these seeds.  What
+is left is a rate, none of five placements against two of four, which proves
+nothing at these sample sizes.  Nor could a matched pair have isolated the
+netlist: nextpnr's placement depends on the netlist, the two differ by 796
+cells, and an equal seed is not an equal placement.
+
+The seed-25 image's memory test, once handed over, fails almost every word on
+every lane at read offset 7, as TOOL-059's 106.19 MHz placement did; that is a
+separate fault from training and was not pursued.  The question of why a
+placement makes the search fail still waits on the fill's address data
+(TOOL-062): until a burst can name its location, a failing search's wrong word
+cannot be traced and a passing search can pass by accident.

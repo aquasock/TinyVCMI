@@ -178,3 +178,33 @@ Entry 5's next steps stand: finish the matched pair that settles whether the gap
 - User Test: N/A
 
 ---
+
+## 7 COMMIT Unreleased 2026-11-22T23:33:28-07:00
+
+#### Coming From:
+
+Unreleased 2dab51e
+
+#### Purpose:
+
+Finish the matched pair entry 5 left unmade, to settle whether the gap netlist's identical training failure belongs to its synthesis or to placement, and hand the result to the next agent.
+
+#### Outcome:
+
+The pair split one seed each way, and the deterministic-synthesis reading of entry 4 is withdrawn. The pre-gap netlist was resynthesised from commit `a01b18c`, whose synthesised sources differ from HEAD only in `fpga/ddr3_ctrl/ctrl_glue.v` and `ddr3_bist.v`, with every other source at HEAD and the Yosys command of `tools/build_ddr3_ctrl.sh`; it reproduced TOOL-064's cell counts exactly and passed the 469 `DFFN` and 18 `DFFNS` boundary check, and was placed at seeds 16, 18, 25 and 28, where the gap netlist closes and fails. Seed 28 was refused at `pclk` 90.50 MHz, and seeds 16, 18 and 25 closed at 100.57, 103.39 and 102.07 MHz with all 306 DDR3 tables equal to the vendor reference. The images were loaded to SRAM in one-wire mode with `openFPGALoader -c ft2232` and read with `tools/ddr3_write_probe.py --port /dev/ttyUSB1 --baud 2000000 ctrl`: seed 25 (`.fs` SHA-256 `9a0f836343cffc99f4b72c585760b465a6845c838b3de322e908a0fe3bc66a44`) trained `error 0` to `d 1 b 2` in 422 trials with 7 CALIB pulses a lane and handed over, on two loads, where the gap netlist fails, while seed 18 (`1251b81c9ef08aa7540d049e5138959b29986d60a9f69ff992576ddc44ad72ee`) failed exactly as the gap netlist does, `error 3` after 390 trials, lanes locked `1111`, 3 CALIB pulses a lane, windows within a tap of the gap netlist's, and its checker holding the pattern on 58 of 6,260 READs with every lane returning `a4 5b` repeated. The identical numbers are therefore what any failed write-alignment search reports and not a fingerprint of one netlist, the remaining difference is a rate of none of five placements against two of four that these samples cannot establish, and the pair could never have isolated the netlist, since placement depends on the netlist and the two differ by 796 cells, so an equal seed is not an equal placement. On seed 25 the memory test after hand-over failed almost every word on every lane at read offset 7, like TOOL-059's 106.19 MHz placement, and was not pursued. TOOL-064 was revised in place, TOOL-060 gained a fourth revision note, and `docs/ddr3-open-flow.md` gained the section The matched pair. Separately, the card's desktop set changed: `/root/cores/console138k` now holds one desktop, `tinytang.bin` at 4,558,518 bytes, answering `0x54`, with `tinytang-lora.bin` and `tinytang-abi16-open.bin` gone, and the operator reports the LoRa split resolved, so PROT-002 was revised and the desktop to restore is `tinytang.bin`. Two driver faults were met and fixed outside the repository: entry 5's `build/gap/pre_seed.sh` passed `-d gw5a` to `gowin_pack`, which refuses a netlist built for `GW5AST-138C`, and it now passes `$gowin_family`, with `build/gap/pre_pack.sh` packing an already routed seed; the netlist and seeds are in `build/gap/pre`, which is not tracked. Every load was powered from the host's 5 V over USB-C OTG and the cooldown was not recalled. The board was not restored: it was left in one-wire mode with the seed-25 pre-gap image in SRAM, because returning to the desktop needs a cold power-up into two-wire mode that the operator had not yet made when the cycle was handed off. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering and active-log capacity.
+
+#### Next Steps:
+
+Have the operator cold power-up the Tang into two-wire mode, confirm the TinyTang console enumerates as `ffff:5454` on `/dev/ttyACM0`, and check that the desktop answers `0x54`, loading `tinytang.bin` with `tangload` if it does not. Then give `wr_core`'s fill per-burst data with enough distinguishing bits to name a location, as the memory test's `gen()` was given in TOOL-054, because until a burst can name its address neither a failing search's wrong word nor a passing search can be trusted; re-read a failing search's frame 0x27 on a failing placement of either netlist, seed 18 of the pre-gap netlist being one, and say which address the data came from. Whether the gap netlist trains less often than the pre-gap netlist is a rate question needing many more placements of each, not a matched seed. The gap has still never been measured, seed 25's near-total test failure after hand-over joins the residual with one write per word, the 106.19 MHz placement that reads nothing at any offset, the read path's 8 PCLK marginality, the read stream's frame, the state-4 hang in `S_RDW`, the write image's untimed boundary, the mid-calibration stall, the `D108` unused-pin contradiction and the `is_mipi` bug outside the DDR context as open faults, the whole-top simulation stays on hold, and the user has deferred a capped legaliser budget and a PHY-only fuse reference.
+
+#### Files Modified:
+
+- docs/ddr3-open-flow.md
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: N/A
+
+---
