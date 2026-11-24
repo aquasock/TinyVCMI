@@ -124,12 +124,15 @@ LANE = """\
     assign rpoint[{l3}+:3] = rp_{l};
     assign wpoint[{l3}+:3] = wp_{l};
 
-    reg rb{l}_1, rb{l}_2, rb{l}_3, rb{l}_tog;
+    // the rising edge registered before it enables the toggle, so neither
+    // path has a LUT between two routes: as one, the 400 MHz memory clock
+    // missed by 0.25 ns fully timed (TOOL-065)
+    reg rb{l}_1, rb{l}_2, rb{l}_e, rb{l}_tog;
     always @(posedge mclk) begin
         rb{l}_1 <= rburst[{l}];
         rb{l}_2 <= rb{l}_1;
-        rb{l}_3 <= rb{l}_2;
-        if (rb{l}_2 && !rb{l}_3)
+        rb{l}_e <= rb{l}_1 && !rb{l}_2;
+        if (rb{l}_e)
             rb{l}_tog <= ~rb{l}_tog;
     end
     assign burst_tog[{l}] = rb{l}_tog;
@@ -207,6 +210,7 @@ CTRL_WIRES = """\
     wire [63:0] p_addr;                 // phase p at 16p +: 16
     wire p_odt, p_dq_drive, p_dqs_drive;
     wire ctrl_rd, ctrl_accept, ctrl_own, ctrl_trained, ext_tog;
+    wire [6:0] ctrl_own_x;
     wire [6:0] ctrl_walign;
     wire [11:0] ctrl_rot;
     wire [7:0] ext_cmd;
@@ -407,14 +411,14 @@ def render(ctrl: bool = False) -> str:
     if ctrl:
         out.append("    wr_core #(.AUTOTRAIN(1)) core (\n" + WR_CORE_PORTS + """
         .ctrl_rd(ctrl_rd), .ctrl_accept(ctrl_accept), .ctrl_own(ctrl_own), .ctrl_walign(ctrl_walign),
-        .ctrl_rot(ctrl_rot), .ctrl_trained(ctrl_trained),
+        .ctrl_own_x(ctrl_own_x), .ctrl_rot(ctrl_rot), .ctrl_trained(ctrl_trained),
         .ext_cmd(ext_cmd), .ext_tog(ext_tog), .ext_status(ext_status));
     ctrl_glue glue (
         .sys_clk(sys_clk), .pclk(pclk), .dq_q(dq_q),
         .wc_cs_n(cs_n), .wc_ras_n(ras_n), .wc_cas_n(cas_n), .wc_we_n(we_n),
         .wc_ba(ba), .wc_addr(addr), .wc_odt(odt), .wc_dq_pat(dq_pat),
         .wc_dq_drive(dq_drive), .wc_dqs_drive(dqs_drive),
-        .ctrl_own(ctrl_own), .ctrl_trained(ctrl_trained), .ctrl_walign(ctrl_walign),
+        .ctrl_own(ctrl_own), .ctrl_own_x(ctrl_own_x), .ctrl_trained(ctrl_trained), .ctrl_walign(ctrl_walign),
         .ctrl_rot(ctrl_rot), .ext_cmd(ext_cmd), .ext_tog(ext_tog),
         .p_cs_n(p_cs_n), .p_ras_n(p_ras_n), .p_cas_n(p_cas_n), .p_we_n(p_we_n),
         .p_ba(p_ba), .p_addr(p_addr), .p_odt(p_odt), .p_dq_drive(p_dq_drive),

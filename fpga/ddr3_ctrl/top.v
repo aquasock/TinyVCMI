@@ -90,6 +90,7 @@ module top (
     wire [63:0] p_addr;                 // phase p at 16p +: 16
     wire p_odt, p_dq_drive, p_dqs_drive;
     wire ctrl_rd, ctrl_accept, ctrl_own, ctrl_trained, ext_tog;
+    wire [6:0] ctrl_own_x;
     wire [6:0] ctrl_walign;
     wire [11:0] ctrl_rot;
     wire [7:0] ext_cmd;
@@ -155,12 +156,15 @@ module top (
     assign rpoint[0+:3] = rp_0;
     assign wpoint[0+:3] = wp_0;
 
-    reg rb0_1, rb0_2, rb0_3, rb0_tog;
+    // the rising edge registered before it enables the toggle, so neither
+    // path has a LUT between two routes: as one, the 400 MHz memory clock
+    // missed by 0.25 ns fully timed (TOOL-065)
+    reg rb0_1, rb0_2, rb0_e, rb0_tog;
     always @(posedge mclk) begin
         rb0_1 <= rburst[0];
         rb0_2 <= rb0_1;
-        rb0_3 <= rb0_2;
-        if (rb0_2 && !rb0_3)
+        rb0_e <= rb0_1 && !rb0_2;
+        if (rb0_e)
             rb0_tog <= ~rb0_tog;
     end
     assign burst_tog[0] = rb0_tog;
@@ -340,12 +344,15 @@ module top (
     assign rpoint[3+:3] = rp_1;
     assign wpoint[3+:3] = wp_1;
 
-    reg rb1_1, rb1_2, rb1_3, rb1_tog;
+    // the rising edge registered before it enables the toggle, so neither
+    // path has a LUT between two routes: as one, the 400 MHz memory clock
+    // missed by 0.25 ns fully timed (TOOL-065)
+    reg rb1_1, rb1_2, rb1_e, rb1_tog;
     always @(posedge mclk) begin
         rb1_1 <= rburst[1];
         rb1_2 <= rb1_1;
-        rb1_3 <= rb1_2;
-        if (rb1_2 && !rb1_3)
+        rb1_e <= rb1_1 && !rb1_2;
+        if (rb1_e)
             rb1_tog <= ~rb1_tog;
     end
     assign burst_tog[1] = rb1_tog;
@@ -525,12 +532,15 @@ module top (
     assign rpoint[6+:3] = rp_2;
     assign wpoint[6+:3] = wp_2;
 
-    reg rb2_1, rb2_2, rb2_3, rb2_tog;
+    // the rising edge registered before it enables the toggle, so neither
+    // path has a LUT between two routes: as one, the 400 MHz memory clock
+    // missed by 0.25 ns fully timed (TOOL-065)
+    reg rb2_1, rb2_2, rb2_e, rb2_tog;
     always @(posedge mclk) begin
         rb2_1 <= rburst[2];
         rb2_2 <= rb2_1;
-        rb2_3 <= rb2_2;
-        if (rb2_2 && !rb2_3)
+        rb2_e <= rb2_1 && !rb2_2;
+        if (rb2_e)
             rb2_tog <= ~rb2_tog;
     end
     assign burst_tog[2] = rb2_tog;
@@ -710,12 +720,15 @@ module top (
     assign rpoint[9+:3] = rp_3;
     assign wpoint[9+:3] = wp_3;
 
-    reg rb3_1, rb3_2, rb3_3, rb3_tog;
+    // the rising edge registered before it enables the toggle, so neither
+    // path has a LUT between two routes: as one, the 400 MHz memory clock
+    // missed by 0.25 ns fully timed (TOOL-065)
+    reg rb3_1, rb3_2, rb3_e, rb3_tog;
     always @(posedge mclk) begin
         rb3_1 <= rburst[3];
         rb3_2 <= rb3_1;
-        rb3_3 <= rb3_2;
-        if (rb3_2 && !rb3_3)
+        rb3_e <= rb3_1 && !rb3_2;
+        if (rb3_e)
             rb3_tog <= ~rb3_tog;
     end
     assign burst_tog[3] = rb3_tog;
@@ -1078,14 +1091,14 @@ module top (
         .we_n(we_n), .ba(ba), .addr(addr),
         .burst_tog(burst_tog),
         .ctrl_rd(ctrl_rd), .ctrl_accept(ctrl_accept), .ctrl_own(ctrl_own), .ctrl_walign(ctrl_walign),
-        .ctrl_rot(ctrl_rot), .ctrl_trained(ctrl_trained),
+        .ctrl_own_x(ctrl_own_x), .ctrl_rot(ctrl_rot), .ctrl_trained(ctrl_trained),
         .ext_cmd(ext_cmd), .ext_tog(ext_tog), .ext_status(ext_status));
     ctrl_glue glue (
         .sys_clk(sys_clk), .pclk(pclk), .dq_q(dq_q),
         .wc_cs_n(cs_n), .wc_ras_n(ras_n), .wc_cas_n(cas_n), .wc_we_n(we_n),
         .wc_ba(ba), .wc_addr(addr), .wc_odt(odt), .wc_dq_pat(dq_pat),
         .wc_dq_drive(dq_drive), .wc_dqs_drive(dqs_drive),
-        .ctrl_own(ctrl_own), .ctrl_trained(ctrl_trained), .ctrl_walign(ctrl_walign),
+        .ctrl_own(ctrl_own), .ctrl_own_x(ctrl_own_x), .ctrl_trained(ctrl_trained), .ctrl_walign(ctrl_walign),
         .ctrl_rot(ctrl_rot), .ext_cmd(ext_cmd), .ext_tog(ext_tog),
         .p_cs_n(p_cs_n), .p_ras_n(p_ras_n), .p_cas_n(p_cas_n), .p_we_n(p_we_n),
         .p_ba(p_ba), .p_addr(p_addr), .p_odt(p_odt), .p_dq_drive(p_dq_drive),

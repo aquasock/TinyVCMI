@@ -366,9 +366,26 @@ module rd_check #(
     reg  [7:0] m11_d = 8'd0;
     reg        ev19 = 1'b0;
     wire [1:0] cls_w = {m19, m11_d[7]};
+    // pos_range takes the event a PCLK later, from registers: the phase,
+    // the class and the range compared and written in one PCLK put it 2.6 to
+    // 3.6 ns over 100 MHz fully timed (TOOL-065).  The compare and the write
+    // are in the same PCLK, so no event is compared against a stale range.
+    reg        pr_v = 1'b0;
+    reg  [1:0] pr_cls = 2'd0;
+    reg  [9:0] pr_refi = 10'd0;
+    reg  [3:0] ph_lt, ph_gt;
+    integer pc;
+    always @(*)
+        for (pc = 0; pc < 4; pc = pc + 1) begin
+            ph_lt[pc] = {6'd0, pr_refi} < pos_range[32*pc +: 16];
+            ph_gt[pc] = {6'd0, pr_refi} > pos_range[32*pc + 16 +: 16];
+        end
     always @(posedge pclk) begin
         m11_d <= {m11_d[6:0], m11};
         ev19  <= ex_v[POS_B] && !clr;
+        pr_v <= ev19 && !clr;
+        pr_cls <= cls_w;
+        pr_refi <= refi;
         if (clr) begin
             n_both <= 32'd0;
             n_only11 <= 32'd0;
@@ -385,10 +402,12 @@ module rd_check #(
                 2'd1: n_only11 <= n_only11 + 32'd1;
                 default: n_other <= n_other + 32'd1;
             endcase
-            if ({6'd0, refi} < pos_range[32*cls_w +: 16])
-                pos_range[32*cls_w +: 16] <= {6'd0, refi};
-            if ({6'd0, refi} > pos_range[32*cls_w + 16 +: 16])
-                pos_range[32*cls_w + 16 +: 16] <= {6'd0, refi};
+        end
+        if (!clr && pr_v) begin
+            if (ph_lt[pr_cls])
+                pos_range[32*pr_cls +: 16] <= {6'd0, pr_refi};
+            if (ph_gt[pr_cls])
+                pos_range[32*pr_cls + 16 +: 16] <= {6'd0, pr_refi};
         end
     end
     assign hist = hcnt;
@@ -411,6 +430,11 @@ module rd_check #(
     reg  [7:0]   sel_pat = 8'd0;
     reg  [10:0]  sel_addr = 11'd0;
     reg  [PW-1:0] sel_prev = {PW{1'b0}};
+    // the LAGS earlier READs' patterns, looked up here beside their indices:
+    // looked up in the next stage, in front of the compares, they put
+    // ck_older 1.7 ns over 100 MHz fully timed (TOOL-065)
+    reg  [8*LAGS-1:0] sel_prev_pat = {8*LAGS{1'b0}};
+    integer sp;
     always @(posedge pclk) begin
         lat_m2 <= (lat < 5'd2) ? 5'd0 : lat - 5'd2;
         sel_low <= lat_m2[2:0];
@@ -449,6 +473,8 @@ module rd_check #(
         sel_addr <= sel_addr_block[11*sel_low +: 11];
         sel_rhi <= sel_rhi_block[3*sel_low +: 3];
         sel_prev <= sel_prev_block[PW*sel_low +: PW];
+        for (sp = 0; sp < LAGS; sp = sp + 1)
+            sel_prev_pat[8*sp +: 8] <= rom(sel_prev_block[PW*sel_low + 4*sp +: 4]);
     end
 
     // first: does each lane hold the READ's pattern
@@ -480,7 +506,7 @@ module rd_check #(
             ck_cls[cl] <= pins_b3[cl] && canon_b3[8*cl +: 8] == sel_pat;
             for (ck_k = 0; ck_k < LAGS; ck_k = ck_k + 1)
                 ck_older[LAGS*cl + ck_k] <= pins_b3[cl] &&
-                                            canon_b3[8*cl +: 8] == rom(sel_prev[4*ck_k +: 4]);
+                                            canon_b3[8*cl +: 8] == sel_prev_pat[8*ck_k +: 8];
         end
         ck_distinct <= sel_prev[4*LAGS];
         ck_rot <= crot_b3;

@@ -281,3 +281,45 @@ Close timing fully: pipeline the training's slow paths in `fpga/ddr3_write/wr_co
 - User Test: PASS
 
 ---
+
+## 10 COMMIT Unreleased 2026-11-24T10:50:00-07:00
+
+#### Coming From:
+
+Unreleased 0d3bce3
+
+#### Purpose:
+
+Close the controller image's timing with every path timed, starting from a full list of failing endpoints, and checkpoint the work at the user's direction before the first image that meets timing exists.
+
+#### Outcome:
+
+The cycle began with entry 9's seed 1 (`.fs` SHA-256 `56de00d3294dca6886ebb787ce002bcb65c6c16d9f5683bf9d74fc6052cc4399`) loaded in one-wire mode as the first configuration after the user's cold power-up at 08:40, powered from the host's 5 V over USB-C OTG with the unpowered time before it not recalled: it trained `error 0` to `d 1 b 2` in 422 trials with 7 CALIB pulses a lane, handed over and ran 741 passes of the 1 GiB test in about 10 minutes with no error on any lane. Each JTAG load now takes about 3 min 50 s at 6 MHz or 2 MHz alike, a USB-latency limit that appeared with the host's reboot at 07:10; three loads were aborted as hangs before that was understood, leaving the FPGA erased and unconfigured, and the fourth completed with `DONE`. Because nextpnr reports one path per clock pair, `tools/ddr3_sta.py` was written to list every failing endpoint from a post-route dump (TOOL-065's revision note), and it showed that entry 9 misplaced the worst `pclk` paths: they were in `ddr3_ctl`'s decision, `hit` and timers, `ddr3_bist`'s `cmd_valid`, `rd_check`, `rd_align` and `wr_core`'s command FSM, while `core.rx.clk` failed almost entirely in `wr_core`'s link decoder. The fixes so far register the link's and sequencer's commands before `exec_cmd`, which the write-image bench shows as 15,308 READs where HEAD issues 15,320 and which a run with only `wr_core.v` at HEAD restores; make `ddr3_seq`'s `pass_now` from its registered parts a clock later; give `ddr3_ctl` registered per-bank zero flags for every timer, a parallel row compare for `hit`, per-bank timer updates and lookup arithmetic in place of carry chains; give `ddr3_bist` registered `a_last` and `r_last` flags, a `rroom` without an adder and one-hot log selects; pipeline `rd_check`'s `pos_range` by a PCLK and look up `ck_older`'s earlier patterns a stage early; register the read-burst edge ahead of the `mclk` toggle in `tools/ddr3_write.py`; and drive ctrl_glue's bus mux from seven `ctrl_own` copies instantiated as `DFF` primitives, because Yosys merged seven behavioural copies into one flop (TOOL-069). A one-stage pipeline of `rd_align`'s measurement was tried, failed `tools/sim_rd_align.sh` because `stream` and `dq_d` are timed against `dq_q`, and was reverted. Every simulation gate passes, `ddr3_ctl` and `ddr3_bist` carry simulation-only invariants that fail on any flag that disagrees with its compare, and the new `tools/sim_ddr3_lockstep.sh` runs both against commit `0d3bce3` for 4 and 3 million PCLK of random stimulus with no output differing, having first been shown to catch a planted timer error and a planted flag error. Built through `tools/lut4ify.py` with `--timing-allow-fail`, the first round of these fixes closed `core.rx.clk` at 62 to 66 MHz and `mclk` at 761 to 798 MHz with no failing endpoint and raised `pclk` from 73.6 to 82.4 MHz to 85.9 to 92.5 MHz on seeds 1, 3 and 5; the second round, with the `DFF` copies, the `ddr3_bist` flags, the timer rewrite and the `pos_range` pipeline, was still in placement when the user asked for this checkpoint, the `ck_older` change is in neither build, and no image of these sources was written for loading. The board was left in one-wire mode with entry 9's seed 1 in SRAM and the desktop not restored. TOOL-069 was added and TOOL-065 gained a revision note. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering and active-log capacity.
+
+#### Next Steps:
+
+Read the second round's seeds with `tools/ddr3_sta.py`, then keep fixing the `pclk` endpoints that remain until every clock meets its target fully timed: `wr_core`'s command FSM into the generated top's `addr`, `ba` and command registers, the FIFO advance in `ddr3_ctl` whose 283-bit loads put long routes on `fq_n` and `nxt_v`, `rd_align`'s measurement without added latency, and whatever the second round leaves; check every change with the simulation gates and `tools/sim_ddr3_lockstep.sh`. Then wire `tools/lut4ify.py` into `tools/build_ddr3_ctrl.sh` and drop `--timing-allow-fail`, load only images that close, confirm on several placements with a long soak and a cold start, and only then take the frequency sweep, the LUT1 to LUT3 arcs in the fork's `gowin_arch_gen.py` (whose `ALU` arcs also omit `I2`, not yet checked against this design) and the B-series re-application, and restore the desktop with a cold power-up into two-wire mode.
+
+#### Files Modified:
+
+- fpga/ddr3_ctrl/ctrl_glue.v
+- fpga/ddr3_ctrl/ddr3_bist.v
+- fpga/ddr3_ctrl/ddr3_ctl.v
+- fpga/ddr3_ctrl/tb_ctrl.v
+- fpga/ddr3_ctrl/tb_lock_bist.v
+- fpga/ddr3_ctrl/tb_lock_ctl.v
+- fpga/ddr3_ctrl/top.v
+- fpga/ddr3_write/rd_check.v
+- fpga/ddr3_write/top.v
+- fpga/ddr3_write/wr_core.v
+- tools/ddr3_sta.py
+- tools/ddr3_write.py
+- tools/sim_ddr3_lockstep.sh
+
+#### Status:
+
+- Build: FAIL
+- Deployment: NOT RUN
+- User Test: NOT RUN
+
+---

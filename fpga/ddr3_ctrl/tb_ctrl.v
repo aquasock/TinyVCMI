@@ -87,7 +87,7 @@ module tb_ctrl;
         .wc_cs_n(1'b1), .wc_ras_n(1'b1), .wc_cas_n(1'b1), .wc_we_n(1'b1),
         .wc_ba(3'd0), .wc_addr(16'd0), .wc_odt(1'b0), .wc_dq_pat(8'h00),
         .wc_dq_drive(1'b0), .wc_dqs_drive(1'b0),
-        .ctrl_own(ctrl_own), .ctrl_trained(1'b1), .ctrl_walign({3'd1, 1'b0, 3'd2}),
+        .ctrl_own(ctrl_own), .ctrl_own_x({7{ctrl_own}}), .ctrl_trained(1'b1), .ctrl_walign({3'd1, 1'b0, 3'd2}),
         .ctrl_rot(12'd0), .ext_cmd(ext_cmd), .ext_tog(ext_tog),
         .p_cs_n(p_cs_n), .p_ras_n(p_ras_n), .p_cas_n(p_cas_n), .p_we_n(p_we_n),
         .p_ba(p_ba), .p_addr(p_addr), .p_odt(p_odt), .p_dq_drive(p_dq_drive),

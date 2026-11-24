@@ -251,6 +251,10 @@ module wr_core #(
     input  wire         ctrl_rd,
     input  wire         ctrl_accept,    // sys_clk: the controller can take this training
     output reg          ctrl_own = 1'b0,
+    // copies of ctrl_own for ctrl_glue's bus mux, which has a select in front
+    // of every one of the I/O boundary's registers: from one flop the route
+    // alone put a falling-edge register 1.1 ns over its half PCLK
+    output wire [6:0]   ctrl_own_x,
     output wire [6:0]   ctrl_walign,
     output wire [11:0]  ctrl_rot,
     output wire         ctrl_trained,
@@ -693,6 +697,25 @@ module wr_core #(
             istate <= I_WAIT;
         end
     endtask
+
+    // ctrl_own's copies are Gowin DFF primitives under synthesis: Yosys
+    // merges identical flops of its own whatever their keep attribute, so
+    // seven behavioural copies came out as one, but it does not merge
+    // instantiated primitives
+    wire own_d = (istate == R_CTRL) && !mode_chg;
+`ifdef SYNTHESIS
+    genvar go;
+    generate
+        for (go = 0; go < 7; go = go + 1) begin : g_own
+            (* keep *) DFF own_cp (.D(own_d), .CLK(pclk), .Q(ctrl_own_x[go]));
+        end
+    endgenerate
+`else
+    reg [6:0] ctrl_own_r = 7'd0;
+    always @(posedge pclk)
+        ctrl_own_r <= {7{own_d}};
+    assign ctrl_own_x = ctrl_own_r;
+`endif
 
     always @(posedge pclk) begin
         deselect;
@@ -1766,11 +1789,21 @@ module wr_core #(
                    (c == 8'h3d);
     endfunction
 
+    // A command is taken from the link or the sequencer into x_* and carried
+    // out from there a sys_clk later, so each target register's enable is a
+    // decode of x_c alone and not of the link's framing, the sequencer's
+    // handshake and the command together, which missed 50 MHz by up to 4.9 ns
+    // fully timed (TOOL-065).  The sequencer waits SETTLE clocks after every
+    // ack, so the extra clock is invisible to it.
+    reg       x_v = 1'b0;
+    reg [7:0] x_c = 8'h00, x_a = 8'h00;
+
     always @(posedge sys_clk) begin
         tx_send <= 1'b0;
         restart <= 1'b0;
         seq_start <= 1'b0;
         seq_abort <= 1'b0;
+        x_v <= 1'b0;
         // AUTOTRAIN: train once the PHY is up, again after a failure up to
         // three times in all, and on success request mode 6 if the
         // controller accepts the training; ahead of the link below, so a
@@ -1800,8 +1833,12 @@ module wr_core #(
         end
         // the sequencer's requests, in a cycle the link is not using
         seq_ack <= 1'b0;
+        if (x_v)
+            exec_cmd(x_c, x_a);
         if (seq_req && !seq_ack && !rx_valid) begin
-            exec_cmd(seq_cmd, seq_arg);
+            x_v <= 1'b1;
+            x_c <= seq_cmd;
+            x_a <= seq_arg;
             seq_ack <= 1'b1;
         end
 
@@ -1850,8 +1887,11 @@ module wr_core #(
                         if (cmd_byte == 8'h38) begin
                             seq_start <= rx_data[0];
                             seq_abort <= !rx_data[0];
-                        end else if (!seq_busy || readonly(cmd_byte))
-                            exec_cmd(cmd_byte, rx_data);
+                        end else if (!seq_busy || readonly(cmd_byte)) begin
+                            x_v <= 1'b1;
+                            x_c <= cmd_byte;
+                            x_a <= rx_data;
+                        end
                     end
                 end
             endcase
@@ -2082,7 +2122,10 @@ module ddr3_seq #(
     // per lane, the trial just read: in the vendor's state, one RVALID cycle
     // and one RBURST pulse per READ, and passing when at least 99% of the
     // READs the lag classifier counted were its own, the probe's lane_pass
-    // rule; registered, the counters being still from S_B3 on
+    // rule; registered, the counters being still from S_B3 on.  pass_now is
+    // made from vstate and miss a clock later: in one clock the subtract,
+    // saturation, multiply and compare put it 2 ns over 50 MHz fully timed
+    // (TOOL-065), and every state that reads it follows S_B3's 16 clocks.
     reg [3:0]  vstate = 4'd0, pass_now = 4'd0;
     reg [63:0] miss = 64'd0;            // lane l at [16l +: 16]: READs not its own
     reg [31:0] pm;
@@ -2093,10 +2136,7 @@ module ddr3_seq #(
             vstate[pl] <= (tr_reads > 32'd100) && (lag_eval > 32'd50) &&
                           (adiff(rv_cnt[32*pl +: 32], tr_reads) <= 32'd2) &&
                           (adiff(rb_fall[32*pl +: 32], tr_reads) <= 32'd2);
-            pass_now[pl] <= (tr_reads > 32'd100) && (lag_eval > 32'd50) &&
-                            (adiff(rv_cnt[32*pl +: 32], tr_reads) <= 32'd2) &&
-                            (adiff(rb_fall[32*pl +: 32], tr_reads) <= 32'd2) &&
-                            ({16'd0, sat16(pm)} * 32'd100 <= lag_eval);
+            pass_now[pl] <= vstate[pl] && ({16'd0, miss[16*pl +: 16]} * 32'd100 <= lag_eval);
             miss[16*pl +: 16] <= sat16(pm);
         end
     wire wpass_now = (rc_total > 32'd100) && (rc_class == rc_total);

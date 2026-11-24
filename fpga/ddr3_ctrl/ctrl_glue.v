@@ -58,6 +58,7 @@ module ctrl_glue #(
     input  wire         wc_dq_drive, wc_dqs_drive,
 
     input  wire         ctrl_own,       // PCLK
+    input  wire [6:0]   ctrl_own_x,     // copies of ctrl_own, one per group of the mux
     input  wire         ctrl_trained,   // sys_clk
     input  wire [6:0]   ctrl_walign,    // PCLK, still once trained
     input  wire [11:0]  ctrl_rot,       // sys_clk, still once trained
@@ -174,16 +175,23 @@ module ctrl_glue #(
             assign wc_wdq[8*gi +: 8] = (gi % 2 == 1) ? ~wc_dq_pat : wc_dq_pat;
         end
     endgenerate
-    assign p_cs_n  = ctrl_own ? c_cs_n  : {3'b111, wc_cs_n};
-    assign p_ras_n = ctrl_own ? c_ras_n : {3'b111, wc_ras_n};
-    assign p_cas_n = ctrl_own ? c_cas_n : {3'b111, wc_cas_n};
-    assign p_we_n  = ctrl_own ? c_we_n  : {3'b111, wc_we_n};
-    assign p_ba    = ctrl_own ? c_ba    : {4{wc_ba}};
-    assign p_addr  = ctrl_own ? c_addr  : {4{wc_addr}};
-    assign p_odt   = ctrl_own ? c_odt   : wc_odt;
-    assign p_dq_drive  = ctrl_own ? c_dq_drive  : wc_dq_drive;
-    assign p_dqs_drive = ctrl_own ? c_dqs_drive : wc_dqs_drive;
-    assign wdq     = ctrl_own ? c_wdq   : wc_wdq;
+    // each group of the mux takes its own copy of ctrl_own (wr_core's
+    // ctrl_own_x), so no one flop drives the select of every boundary register
+    assign p_cs_n  = ctrl_own_x[5] ? c_cs_n  : {3'b111, wc_cs_n};
+    assign p_ras_n = ctrl_own_x[5] ? c_ras_n : {3'b111, wc_ras_n};
+    assign p_cas_n = ctrl_own_x[5] ? c_cas_n : {3'b111, wc_cas_n};
+    assign p_we_n  = ctrl_own_x[5] ? c_we_n  : {3'b111, wc_we_n};
+    assign p_ba    = ctrl_own_x[5] ? c_ba    : {4{wc_ba}};
+    assign p_addr  = ctrl_own_x[4] ? c_addr  : {4{wc_addr}};
+    assign p_odt   = ctrl_own_x[6] ? c_odt   : wc_odt;
+    assign p_dq_drive  = ctrl_own_x[6] ? c_dq_drive  : wc_dq_drive;
+    assign p_dqs_drive = ctrl_own_x[6] ? c_dqs_drive : wc_dqs_drive;
+    genvar gq;
+    generate
+        for (gq = 0; gq < 4; gq = gq + 1) begin : g_wdq
+            assign wdq[64*gq +: 64] = ctrl_own_x[gq] ? c_wdq[64*gq +: 64] : wc_wdq[64*gq +: 64];
+        end
+    endgenerate
 
     // ---- status: a snapshot every 2^SNAP_LOG2 PCLK, copied whole --------
     // The snapshot holds still for 2^SNAP_LOG2 PCLK after its toggle moves,

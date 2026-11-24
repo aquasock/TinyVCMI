@@ -90,7 +90,9 @@ module ddr3_ctl #(
     reg [2:0]   fq_n = 3'd0;
     wire [282:0] head = fq[fq_r];
     wire         h_v = (fq_n != 3'd0);
-    assign cmd_ready = (fq_n < 3'd3);   // one slot spare: the ready is registered
+    // fq_n < 3, one slot spare because the ready is registered at the
+    // requester; written out so it is one LUT and not a carry chain
+    assign cmd_ready = !fq_n[2] && !(fq_n[1] && fq_n[0]);
     reg          nxt_v = 1'b0, cur_v = 1'b0;
     reg [282:0]  nxt = 283'd0, cur = 283'd0;
     reg [17:0]   last_br = 18'd0;       // {row, bank} of the request taken last
@@ -117,6 +119,14 @@ module ddr3_ctl #(
     reg [2:0]  c_pre [0:7];             // until a PRECHARGE may
     reg [2:0]  c_rrd = 3'd0, c_wtr = 3'd0, c_rtw = 3'd0;
     reg [2:0]  faw [0:3];               // PCLK since each of the last four ACTIVATEs
+    // Each timer's `is zero`, registered beside it and made from the timer's
+    // value and the plan rather than from its next value, so the decision
+    // reads one registered bit per bank instead of comparing a timer behind
+    // an 8-to-1 mux, and the refresh's all-bank checks AND eight bits.  Fully
+    // timed (TOOL-065) the compares put the decision 3.9 ns over 100 MHz.
+    reg [7:0]  za = 8'hff, zc = 8'hff, zp = 8'hff;   // c_act, c_cas, c_pre zero
+    reg        z_rrd = 1'b1, z_wtr = 1'b1, z_rtw = 1'b1;
+    reg        faw_ok = 1'b1;                       // faw[3] >= T_FAW
     integer i, ib, iw;
     initial begin
         for (ib = 0; ib < 8; ib = ib + 1) begin
@@ -131,15 +141,18 @@ module ddr3_ctl #(
     reg [9:0]  refi = 10'd0;
     reg        ref_due = 1'b0;
     reg [4:0]  f_wait = 5'd0;
-    reg        pre_ok_all, act_ok_all;
-    always @(*) begin
-        pre_ok_all = 1'b1;
-        act_ok_all = 1'b1;
+    wire       pre_ok_all = &(~b_open | zp);
+    wire       act_ok_all = &za;
+
+    // cur's and nxt's row against every bank at once, so the select between
+    // them comes last instead of feeding an 8-to-1 mux of 15-bit rows and a
+    // compare behind it, which put `hit` 4.2 ns over 100 MHz fully timed
+    reg [7:0]  m_n, m_h;
+    always @(*)
         for (i = 0; i < 8; i = i + 1) begin
-            if (b_open[i] && c_pre[i] != 3'd0) pre_ok_all = 1'b0;
-            if (c_act[i] != 3'd0) act_ok_all = 1'b0;
+            m_n[i] = b_open[i] && (b_row[i] == n_row);
+            m_h[i] = b_open[i] && (b_row[i] == c_row);
         end
-    end
 
     // ---- the command decided this PCLK -------------------------------------
     // The decision is registered into the plan (p_*) and goes out a PCLK
@@ -187,16 +200,15 @@ module ddr3_ctl #(
             F_WAIT: ;
             default: if (cur_v) begin
                 if (hit) begin
-                    if (c_cas[h_bank] == 2'd0 && !cas_last &&
-                            (c_we ? c_rtw == 3'd0 : c_wtr == 3'd0)) begin
+                    if (zc[h_bank] && !cas_last && (c_we ? z_rtw : z_wtr)) begin
                         go_c = c_we ? C_WR : C_RD;
                         go_a = {5'd0, c_col, 3'b000};   // BL8, A10 low: no auto-precharge
                         go_pop = 1'b1;
                     end
                 end else if (c_open) begin
-                    if (c_pre[h_bank] == 3'd0)
+                    if (zp[h_bank])
                         go_c = C_PRE;                    // A10 low: this bank
-                end else if (c_act[h_bank] == 3'd0 && c_rrd == 3'd0 && faw[3] >= T_FAW) begin
+                end else if (za[h_bank] && z_rrd && faw_ok) begin
                     go_c = C_ACT;
                     go_a = c_row;
                 end
@@ -224,12 +236,53 @@ module ddr3_ctl #(
     assign dfi_rddata_en = {3'b000, q_c == C_RD};
     reg [255:0] wr_hold = 256'd0;
 
+    // The timers' arithmetic as lookups on their few bits.  Written as
+    // compares, additions and subtractions, Yosys maps each onto a carry
+    // chain, which fully timed (TOOL-065) cost the timer updates and fq_n up
+    // to 2.4 ns at 100 MHz; a case on two or three bits stays in one LUT.
     function [2:0] max3(input [2:0] a, input integer b);
-        max3 = (a > b) ? a : b;
+        reg [7:0] below;
+        integer i;
+        begin
+            for (i = 0; i < 8; i = i + 1)
+                below[i] = (i < b);
+            max3 = below[a] ? b[2:0] : a;
+        end
     endfunction
     function [2:0] age(input [2:0] a);  // a PCLK older, saturating
-        age = (a == 3'd7) ? a : a + 3'd1;
+        case (a)
+            3'd0: age = 3'd1; 3'd1: age = 3'd2; 3'd2: age = 3'd3; 3'd3: age = 3'd4;
+            3'd4: age = 3'd5; 3'd5: age = 3'd6; default: age = 3'd7;
+        endcase
     endfunction
+    function [2:0] dec3(input [2:0] a); // a PCLK nearer zero, stopping there
+        case (a)
+            3'd0: dec3 = 3'd0; 3'd1: dec3 = 3'd0; 3'd2: dec3 = 3'd1; 3'd3: dec3 = 3'd2;
+            3'd4: dec3 = 3'd3; 3'd5: dec3 = 3'd4; 3'd6: dec3 = 3'd5; default: dec3 = 3'd6;
+        endcase
+    endfunction
+    function [1:0] dec2(input [1:0] a);
+        case (a)
+            2'd0: dec2 = 2'd0; 2'd1: dec2 = 2'd0; 2'd2: dec2 = 2'd1; default: dec2 = 2'd2;
+        endcase
+    endfunction
+    function [2:0] inc3w(input [2:0] a);    // wrapping, as + 1 does
+        case (a)
+            3'd0: inc3w = 3'd1; 3'd1: inc3w = 3'd2; 3'd2: inc3w = 3'd3; 3'd3: inc3w = 3'd4;
+            3'd4: inc3w = 3'd5; 3'd5: inc3w = 3'd6; 3'd6: inc3w = 3'd7; default: inc3w = 3'd0;
+        endcase
+    endfunction
+    function [2:0] dec3w(input [2:0] a);
+        case (a)
+            3'd0: dec3w = 3'd7; 3'd1: dec3w = 3'd0; 3'd2: dec3w = 3'd1; 3'd3: dec3w = 3'd2;
+            3'd4: dec3w = 3'd3; 3'd5: dec3w = 3'd4; 3'd6: dec3w = 3'd5; default: dec3w = 3'd6;
+        endcase
+    endfunction
+    function [1:0] inc2w(input [1:0] a);
+        inc2w = {a[1] ^ a[0], ~a[0]};
+    endfunction
+    wire f_in = cmd_valid && cmd_ready;
+    wire f_out = h_v && (!nxt_v || !cur_v || p_pop);
 
     integer k;
     always @(posedge pclk) begin
@@ -253,85 +306,105 @@ module ddr3_ctl #(
         // FIFO refills nxt; cur's flags are made from the banks' registers
         if (cmd_valid && cmd_ready) begin
             fq[fq_w] <= {last_v && (cmd_addr[24:7] == last_br), cmd_we, cmd_addr, cmd_wdata};
-            fq_w <= fq_w + 2'd1;
+            fq_w <= inc2w(fq_w);
             last_br <= cmd_addr[24:7];
             last_v <= 1'b1;
         end
         if (nxt_v && (!cur_v || p_pop)) begin
             cur <= nxt;
             cur_v <= 1'b1;
-            hit <= b_open[n_bank] && (b_row[n_bank] == n_row);
+            hit <= m_n[n_bank];
             c_open <= b_open[n_bank];
         end else begin
             if (p_pop)
                 cur_v <= 1'b0;
-            hit <= b_open[h_bank] && (b_row[h_bank] == c_row);
+            hit <= m_h[h_bank];
             c_open <= b_open[h_bank];
         end
         if (h_v && (!nxt_v || !cur_v || p_pop)) begin
             nxt <= head;
             nxt_v <= 1'b1;
-            fq_r <= fq_r + 2'd1;
+            fq_r <= inc2w(fq_r);
         end else if (nxt_v && (!cur_v || p_pop))
             nxt_v <= 1'b0;
-        fq_n <= fq_n + ((cmd_valid && cmd_ready) ? 3'd1 : 3'd0) -
-                ((h_v && (!nxt_v || !cur_v || p_pop)) ? 3'd1 : 3'd0);
+        fq_n <= (f_in && !f_out) ? inc3w(fq_n) : (f_out && !f_in) ? dec3w(fq_n) : fq_n;
 
-        // the timers count down
+        // the timers count down unless the command going out, from the
+        // plan, sets them; a timer set this PCLK counts from the next, so a
+        // value n allows the next command n PCLK later.  Each bank decides
+        // its own timers from p_b == k, so no timer is read through an
+        // 8-to-1 mux of p_b to be written back through a decoder.
         for (k = 0; k < 8; k = k + 1) begin
-            if (c_act[k] != 3'd0) c_act[k] <= c_act[k] - 3'd1;
-            if (c_cas[k] != 2'd0) c_cas[k] <= c_cas[k] - 2'd1;
-            if (c_pre[k] != 3'd0) c_pre[k] <= c_pre[k] - 3'd1;
+            if (p_c == C_REF)
+                c_act[k] <= 3'd0;
+            else if (p_c == C_ACT && p_b == k)
+                c_act[k] <= T_RC - 1;
+            else if (p_c == C_PRE && (p_a[10] || p_b == k))
+                c_act[k] <= max3(c_act[k], T_RP - 1);
+            else
+                c_act[k] <= dec3(c_act[k]);
+            if (p_c == C_ACT && p_b == k)
+                c_cas[k] <= T_RCD - 1;
+            else
+                c_cas[k] <= dec2(c_cas[k]);
+            if (p_c == C_ACT && p_b == k)
+                c_pre[k] <= max3(c_pre[k], T_RAS - 1);
+            else if (p_c == C_RD && p_b == k)
+                c_pre[k] <= max3(c_pre[k], T_RTP - 1);
+            else if (p_c == C_WR && p_b == k)
+                c_pre[k] <= max3(c_pre[k], T_WR - 1);
+            else if (p_c == C_PRE && !p_a[10] && p_b == k)
+                c_pre[k] <= max3(c_pre[k], 1);         // cur's flags catch up
+            else
+                c_pre[k] <= dec3(c_pre[k]);
         end
-        if (c_rrd != 3'd0) c_rrd <= c_rrd - 3'd1;
-        if (c_wtr != 3'd0) c_wtr <= c_wtr - 3'd1;
-        if (c_rtw != 3'd0) c_rtw <= c_rtw - 3'd1;
-        for (k = 0; k < 4; k = k + 1)
-            faw[k] <= age(faw[k]);
-
-        // and are set by the command going out, from the plan; a timer set
-        // this PCLK counts from the next, so a value n allows the next
-        // command n PCLK later
+        c_rrd <= (p_c == C_ACT) ? T_RRD - 1 : dec3(c_rrd);
+        c_rtw <= (p_c == C_RD) ? T_RTW - 1 : dec3(c_rtw);
+        c_wtr <= (p_c == C_WR) ? T_WTR - 1 : dec3(c_wtr);
+        if (p_c == C_ACT) begin
+            faw[0] <= 3'd1;
+            faw[1] <= age(faw[0]);
+            faw[2] <= age(faw[1]);
+            faw[3] <= age(faw[2]);
+        end else
+            for (k = 0; k < 4; k = k + 1)
+                faw[k] <= age(faw[k]);
         case (p_c)
             C_ACT: begin
                 b_open[p_b] <= 1'b1;
                 b_row[p_b] <= p_a;
-                c_cas[p_b] <= T_RCD - 1;
-                c_pre[p_b] <= max3(c_pre[p_b], T_RAS - 1);
-                c_act[p_b] <= T_RC - 1;
-                c_rrd <= T_RRD - 1;
-                faw[0] <= 3'd1;
-                faw[1] <= age(faw[0]);
-                faw[2] <= age(faw[1]);
-                faw[3] <= age(faw[2]);
                 if (n_act != 32'hffffffff) n_act <= n_act + 32'd1;
             end
-            C_RD: begin
-                c_pre[p_b] <= max3(c_pre[p_b], T_RTP - 1);
-                c_rtw <= T_RTW - 1;
-            end
-            C_WR: begin
-                c_pre[p_b] <= max3(c_pre[p_b], T_WR - 1);
-                c_wtr <= T_WTR - 1;
-            end
             C_PRE: begin
-                if (p_a[10]) begin
+                if (p_a[10])
                     b_open <= 8'd0;
-                    for (k = 0; k < 8; k = k + 1)
-                        c_act[k] <= max3(c_act[k], T_RP - 1);
-                end else begin
+                else
                     b_open[p_b] <= 1'b0;
-                    c_act[p_b] <= max3(c_act[p_b], T_RP - 1);
-                    c_pre[p_b] <= max3(c_pre[p_b], 1);      // cur's flags catch up
-                end
             end
-            C_REF: begin
-                for (k = 0; k < 8; k = k + 1)
-                    c_act[k] <= 3'd0;
+            C_REF:
                 if (n_ref != 32'hffffffff) n_ref <= n_ref + 32'd1;
-            end
             default: ;
         endcase
+
+        // the zero flags, each true when its timer will be zero after this
+        // edge: it counts down to zero from 1 or 0 unless the plan sets it,
+        // and a max3 set leaves it zero only from zero with a zero floor
+        for (k = 0; k < 8; k = k + 1) begin
+            za[k] <= (p_c == C_REF) ? 1'b1 :
+                     (p_c == C_ACT && p_b == k) ? (T_RC <= 1) :
+                     (p_c == C_PRE && (p_a[10] || p_b == k)) ? (c_act[k] == 3'd0 && T_RP <= 1) :
+                     (c_act[k] <= 3'd1);
+            zc[k] <= (p_c == C_ACT && p_b == k) ? (T_RCD <= 1) : (c_cas[k] <= 2'd1);
+            zp[k] <= (p_c == C_ACT && p_b == k) ? (c_pre[k] == 3'd0 && T_RAS <= 1) :
+                     (p_c == C_RD && p_b == k) ? (c_pre[k] == 3'd0 && T_RTP <= 1) :
+                     (p_c == C_WR && p_b == k) ? (c_pre[k] == 3'd0 && T_WR <= 1) :
+                     (p_c == C_PRE && !p_a[10] && p_b == k) ? 1'b0 :
+                     (c_pre[k] <= 3'd1);
+        end
+        z_rrd <= (p_c == C_ACT) ? (T_RRD <= 1) : (c_rrd <= 3'd1);
+        z_wtr <= (p_c == C_WR) ? (T_WTR <= 1) : (c_wtr <= 3'd1);
+        z_rtw <= (p_c == C_RD) ? (T_RTW <= 1) : (c_rtw <= 3'd1);
+        faw_ok <= (p_c == C_ACT) ? (age(faw[2]) >= T_FAW) : (age(faw[3]) >= T_FAW);
 
         // refresh: due every T_REFI, taken between requests
         refi <= (refi == T_REFI - 1) ? 10'd0 : refi + 10'd1;
@@ -372,8 +445,25 @@ module ddr3_ctl #(
             end
             c_rrd <= 3'd0; c_wtr <= 3'd0; c_rtw <= 3'd0;
             for (k = 0; k < 4; k = k + 1) faw[k] <= 3'd7;
+            za <= 8'hff; zc <= 8'hff; zp <= 8'hff;
+            z_rrd <= 1'b1; z_wtr <= 1'b1; z_rtw <= 1'b1;
+            faw_ok <= (7 >= T_FAW);
         end
     end
+
+`ifndef SYNTHESIS
+    // the flags must equal their timers' compares at every edge
+    integer kz;
+    always @(posedge pclk) begin
+        for (kz = 0; kz < 8; kz = kz + 1)
+            if (za[kz] != (c_act[kz] == 3'd0) || zc[kz] != (c_cas[kz] == 2'd0) ||
+                    zp[kz] != (c_pre[kz] == 3'd0))
+                $fatal(1, "FAIL  ddr3_ctl: bank %0d's zero flags disagree with its timers", kz);
+        if (z_rrd != (c_rrd == 3'd0) || z_wtr != (c_wtr == 3'd0) ||
+                z_rtw != (c_rtw == 3'd0) || faw_ok != (faw[3] >= T_FAW))
+            $fatal(1, "FAIL  ddr3_ctl: a shared timer's zero flag disagrees with it");
+    end
+`endif
 endmodule
 
 `default_nettype wire
