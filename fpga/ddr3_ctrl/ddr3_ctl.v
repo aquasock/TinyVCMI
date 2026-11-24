@@ -37,9 +37,8 @@
 // anyway, and a PRECHARGE holds the bank's PRECHARGE timer for one PCLK so a
 // stale flag cannot repeat it.  Gowin's build of a single-stage decision put
 // 15.6 ns, twelve levels, from the FIFO through the row compare.  The DFI's other
-// signals -- CKE and ODT -- are not driven here: wr_core holds CKE and
-// dfi_phy makes ODT from the WRITEs.  A request's write mask is carried with
-// its data and reaches the DFI a PCLK after the command, as the data does.
+// signals -- CKE, ODT, the masks -- are not driven here: wr_core holds CKE
+// and dfi_phy makes ODT from the WRITEs.
 module ddr3_ctl #(
     parameter integer T_RCD = 2,
     parameter integer T_RP = 2,
@@ -63,7 +62,6 @@ module ddr3_ctl #(
     input  wire          cmd_we,
     input  wire [24:0]   cmd_addr,
     input  wire [255:0]  cmd_wdata,     // beat b, DQ q at 32b + q
-    input  wire [31:0]   cmd_wmask,     // 1 suppresses beat b, lane l at 4b + l
     output reg           rdata_valid = 1'b0,
     output reg  [255:0]  rdata = 256'd0,
 
@@ -75,7 +73,6 @@ module ddr3_ctl #(
     output wire [59:0]   dfi_address,
     output wire [11:0]   dfi_bank,
     output reg  [255:0]  dfi_wrdata = 256'd0,
-    output reg  [31:0]   dfi_wrmask = 32'd0,
     output wire [3:0]    dfi_wrdata_en,
     output wire [3:0]    dfi_rddata_en,
     input  wire [255:0]  dfi_rddata,
@@ -85,27 +82,36 @@ module ddr3_ctl #(
     output reg  [31:0]   n_ref = 32'd0
 );
     // ---- the request FIFO, four deep, then nxt and cur ---------------------
-    reg [313:0] fq [0:3];               // {mask, we, addr, data}
+    // An entry carries `same`: it is on the bank and row of the request taken
+    // before it, so following that request's READ or WRITE it is a row hit
+    // with nothing to look up.
+    reg [282:0] fq [0:3];               // {same, we, addr, data}
     reg [1:0]   fq_w = 2'd0, fq_r = 2'd0;
     reg [2:0]   fq_n = 3'd0;
-    wire [313:0] head = fq[fq_r];
+    wire [282:0] head = fq[fq_r];
     wire         h_v = (fq_n != 3'd0);
     assign cmd_ready = (fq_n < 3'd3);   // one slot spare: the ready is registered
     reg          nxt_v = 1'b0, cur_v = 1'b0;
-    reg [313:0]  nxt = 314'd0, cur = 314'd0;
+    reg [282:0]  nxt = 283'd0, cur = 283'd0;
+    reg [17:0]   last_br = 18'd0;       // {row, bank} of the request taken last
+    reg          last_v = 1'b0;
     wire         c_we = cur[281];
     wire [14:0]  c_row = cur[280:266];
     wire [2:0]   h_bank = cur[265:263];
     wire [6:0]   c_col = cur[262:256];
     wire [255:0] h_data = cur[255:0];
-    wire [31:0]  h_mask = cur[313:282];
+    wire         n_same = nxt[282];
+    wire         n_we = nxt[281];
     wire [14:0]  n_row = nxt[280:266];
     wire [2:0]   n_bank = nxt[265:263];
+    wire [6:0]   n_col = nxt[262:256];
     reg          hit = 1'b0, c_open = 1'b0;   // cur's bank on cur's row / open
 
     // ---- the banks and the timers -----------------------------------------
     reg [7:0]  b_open = 8'd0;
-    reg [14:0] b_row [0:7];
+    // in registers, not LUT RAM: the row-hit compare reads it every PCLK and
+    // a LUT RAM read in front of it left 1.6 ns too little for 100 MHz
+    (* ram_style = "logic" *) reg [14:0] b_row [0:7];
     reg [2:0]  c_act [0:7];             // PCLK until an ACTIVATE may go to the bank
     reg [1:0]  c_cas [0:7];             // until a READ or WRITE may
     reg [2:0]  c_pre [0:7];             // until a PRECHARGE may
@@ -135,19 +141,41 @@ module ddr3_ctl #(
         end
     end
 
-    // ---- the command this PCLK --------------------------------------------
+    // ---- the command decided this PCLK -------------------------------------
+    // The decision is registered into the plan (p_*) and goes out a PCLK
+    // later, and everything the command changes -- the banks, the timers, the
+    // FIFO and cur -- is updated from the plan register, never from the
+    // decision itself.  While a plan is pending only one decision is made:
+    // when the plan is cur's READ or WRITE, nxt follows it at once if nxt is
+    // on the same row (`same`) and goes the same way, a READ after a READ or a
+    // WRITE after a WRITE, which no bank state or timer between them can
+    // forbid; so a row streams one burst per PCLK, as the PHY's read capture
+    // needs, and every other command waits for the plan to go out, which
+    // meets its timers with a PCLK to spare.
     localparam [3:0] C_NOP = 4'b1111, C_ACT = 4'b0011, C_RD = 4'b0101, C_WR = 4'b0100,
                      C_PRE = 4'b0010, C_REF = 4'b0001;
     reg  [3:0]  go_c;                   // {cs_n, ras_n, cas_n, we_n}
     reg  [2:0]  go_b;
     reg  [14:0] go_a;
     reg         go_pop;
+    reg  [3:0]  p_c = 4'b1111;          // the plan: the command going out next PCLK
+    reg  [2:0]  p_b = 3'd0;
+    reg  [14:0] p_a = 15'd0;
+    reg         p_pop = 1'b0;
+    wire        p_v = (p_c != C_NOP);
+    // A READ or WRITE that went out at the last edge: the next one may follow
+    // it at once (a chain, decided while it was planned) or three or more PCLK
+    // after it, never two.  On the board a READ two PCLK after a READ comes
+    // back as the bus between two bursts, one beat pair repeated (in-order
+    // reads at one per two PCLK failed every second word; random reads that
+    // hit an open row in another bank, about 1 in 32,768, failed so).
+    reg         cas_last = 1'b0;
     always @(*) begin
         go_c = C_NOP;
         go_b = h_bank;
         go_a = 15'd0;
         go_pop = 1'b0;
-        case (f_state)
+        if (!p_v) case (f_state)
             F_PRE: if (pre_ok_all) begin
                 if (b_open != 8'd0) begin
                     go_c = C_PRE;
@@ -159,7 +187,8 @@ module ddr3_ctl #(
             F_WAIT: ;
             default: if (cur_v) begin
                 if (hit) begin
-                    if (c_cas[h_bank] == 2'd0 && (c_we ? c_rtw == 3'd0 : c_wtr == 3'd0)) begin
+                    if (c_cas[h_bank] == 2'd0 && !cas_last &&
+                            (c_we ? c_rtw == 3'd0 : c_wtr == 3'd0)) begin
                         go_c = c_we ? C_WR : C_RD;
                         go_a = {5'd0, c_col, 3'b000};   // BL8, A10 low: no auto-precharge
                         go_pop = 1'b1;
@@ -173,6 +202,12 @@ module ddr3_ctl #(
                 end
             end
         endcase
+        else if (p_pop && f_state == F_RUN && nxt_v && n_same && n_we == c_we) begin
+            go_c = n_we ? C_WR : C_RD;
+            go_b = n_bank;
+            go_a = {5'd0, n_col, 3'b000};
+            go_pop = 1'b1;
+        end
     end
 
     // ---- the DFI's registers ----------------------------------------------
@@ -188,7 +223,6 @@ module ddr3_ctl #(
     assign dfi_wrdata_en = {3'b000, q_c == C_WR};
     assign dfi_rddata_en = {3'b000, q_c == C_RD};
     reg [255:0] wr_hold = 256'd0;
-    reg [31:0]  wm_hold = 32'd0;
 
     function [2:0] max3(input [2:0] a, input integer b);
         max3 = (a > b) ? a : b;
@@ -199,42 +233,49 @@ module ddr3_ctl #(
 
     integer k;
     always @(posedge pclk) begin
-        // the command, and the write's data on the DFI a PCLK after it
-        q_c <= rst ? C_NOP : go_c;
-        q_b <= go_b;
-        q_a <= go_a;
+        // the decision into the plan, the plan onto the DFI, and the write's
+        // data on the DFI a PCLK after its command; cur still holds the
+        // planned request at the edge its command goes out
+        p_c <= rst ? C_NOP : go_c;
+        p_b <= go_b;
+        p_a <= go_a;
+        p_pop <= !rst && go_pop;
+        cas_last <= !rst && (p_c == C_RD || p_c == C_WR);
+        q_c <= rst ? C_NOP : p_c;
+        q_b <= p_b;
+        q_a <= p_a;
         wr_hold <= h_data;
-        wm_hold <= h_mask;
         dfi_wrdata <= wr_hold;
-        dfi_wrmask <= wm_hold;
         rdata_valid <= !rst && dfi_rddata_valid[0];
         rdata <= dfi_rddata;
 
         // the FIFO, nxt and cur: cur moves on when served, nxt follows, the
         // FIFO refills nxt; cur's flags are made from the banks' registers
         if (cmd_valid && cmd_ready) begin
-            fq[fq_w] <= {cmd_wmask, cmd_we, cmd_addr, cmd_wdata};
+            fq[fq_w] <= {last_v && (cmd_addr[24:7] == last_br), cmd_we, cmd_addr, cmd_wdata};
             fq_w <= fq_w + 2'd1;
+            last_br <= cmd_addr[24:7];
+            last_v <= 1'b1;
         end
-        if (nxt_v && (!cur_v || go_pop)) begin
+        if (nxt_v && (!cur_v || p_pop)) begin
             cur <= nxt;
             cur_v <= 1'b1;
             hit <= b_open[n_bank] && (b_row[n_bank] == n_row);
             c_open <= b_open[n_bank];
         end else begin
-            if (go_pop)
+            if (p_pop)
                 cur_v <= 1'b0;
             hit <= b_open[h_bank] && (b_row[h_bank] == c_row);
             c_open <= b_open[h_bank];
         end
-        if (h_v && (!nxt_v || !cur_v || go_pop)) begin
+        if (h_v && (!nxt_v || !cur_v || p_pop)) begin
             nxt <= head;
             nxt_v <= 1'b1;
             fq_r <= fq_r + 2'd1;
-        end else if (nxt_v && (!cur_v || go_pop))
+        end else if (nxt_v && (!cur_v || p_pop))
             nxt_v <= 1'b0;
         fq_n <= fq_n + ((cmd_valid && cmd_ready) ? 3'd1 : 3'd0) -
-                ((h_v && (!nxt_v || !cur_v || go_pop)) ? 3'd1 : 3'd0);
+                ((h_v && (!nxt_v || !cur_v || p_pop)) ? 3'd1 : 3'd0);
 
         // the timers count down
         for (k = 0; k < 8; k = k + 1) begin
@@ -248,15 +289,16 @@ module ddr3_ctl #(
         for (k = 0; k < 4; k = k + 1)
             faw[k] <= age(faw[k]);
 
-        // and are set by the command going out; a timer set this PCLK counts
-        // from the next, so a value n allows the next command n PCLK later
-        case (go_c)
+        // and are set by the command going out, from the plan; a timer set
+        // this PCLK counts from the next, so a value n allows the next
+        // command n PCLK later
+        case (p_c)
             C_ACT: begin
-                b_open[go_b] <= 1'b1;
-                b_row[go_b] <= go_a;
-                c_cas[go_b] <= T_RCD - 1;
-                c_pre[go_b] <= max3(c_pre[go_b], T_RAS - 1);
-                c_act[go_b] <= T_RC - 1;
+                b_open[p_b] <= 1'b1;
+                b_row[p_b] <= p_a;
+                c_cas[p_b] <= T_RCD - 1;
+                c_pre[p_b] <= max3(c_pre[p_b], T_RAS - 1);
+                c_act[p_b] <= T_RC - 1;
                 c_rrd <= T_RRD - 1;
                 faw[0] <= 3'd1;
                 faw[1] <= age(faw[0]);
@@ -265,22 +307,22 @@ module ddr3_ctl #(
                 if (n_act != 32'hffffffff) n_act <= n_act + 32'd1;
             end
             C_RD: begin
-                c_pre[go_b] <= max3(c_pre[go_b], T_RTP - 1);
+                c_pre[p_b] <= max3(c_pre[p_b], T_RTP - 1);
                 c_rtw <= T_RTW - 1;
             end
             C_WR: begin
-                c_pre[go_b] <= max3(c_pre[go_b], T_WR - 1);
+                c_pre[p_b] <= max3(c_pre[p_b], T_WR - 1);
                 c_wtr <= T_WTR - 1;
             end
             C_PRE: begin
-                if (go_a[10]) begin
+                if (p_a[10]) begin
                     b_open <= 8'd0;
                     for (k = 0; k < 8; k = k + 1)
                         c_act[k] <= max3(c_act[k], T_RP - 1);
                 end else begin
-                    b_open[go_b] <= 1'b0;
-                    c_act[go_b] <= max3(c_act[go_b], T_RP - 1);
-                    c_pre[go_b] <= max3(c_pre[go_b], 1);    // cur's flags catch up
+                    b_open[p_b] <= 1'b0;
+                    c_act[p_b] <= max3(c_act[p_b], T_RP - 1);
+                    c_pre[p_b] <= max3(c_pre[p_b], 1);      // cur's flags catch up
                 end
             end
             C_REF: begin
@@ -300,9 +342,12 @@ module ddr3_ctl #(
             // the banks' timers hold the PRECHARGE for what has gone out
             F_RUN: if (ref_due)
                 f_state <= F_PRE;
-            F_PRE: if (pre_ok_all && (b_open == 8'd0 || go_c == C_PRE))
+            // only on the precharge of every bank, or with every bank shut and
+            // nothing planned: a row command decided before the refresh fell
+            // due may still be going out
+            F_PRE: if (pre_ok_all && ((b_open == 8'd0 && !p_v) || (p_c == C_PRE && p_a[10])))
                 f_state <= F_REF;
-            F_REF: if (go_c == C_REF) begin
+            F_REF: if (p_c == C_REF) begin
                 ref_due <= 1'b0;
                 f_wait <= T_RFC - 1;
                 f_state <= F_WAIT;
@@ -317,6 +362,7 @@ module ddr3_ctl #(
         if (rst) begin
             fq_w <= 2'd0; fq_r <= 2'd0; fq_n <= 3'd0;
             nxt_v <= 1'b0; cur_v <= 1'b0;
+            last_v <= 1'b0;
             b_open <= 8'd0;
             f_state <= F_RUN;
             ref_due <= 1'b0;

@@ -40,16 +40,15 @@ run faults +define+MODEL_FAULTS
 grep -E '^PASS|^FAIL' "$out/faults.log"
 grep -q "^PASS" "$out/faults.log"
 
-# The controller with tRAS, tRP or WRITE to READ short must fail too.  Three
-# shortenings are not among these, because nothing here can show them: tRCD,
-# since the registered decision already waits two PCLK after an ACTIVATE;
-# tRC, which tRAS and tRP already exceed; and READ to WRITE, since the test
-# turns from reading to writing only between passes, its READs all returned.
-# The last one is the mask path itself: a model that writes every byte when a
-# mask suppresses some is what a DM that never reaches the pads looks like.
+# The controller with tRAS short must fail too.  The other shortenings are not
+# among these, because nothing here can show them.  ddr3_ctl decides a command
+# a PCLK before it goes out and decides nothing while one is pending, so any
+# two commands are at least two PCLK (8 memory clocks) apart: more than tRCD
+# and tRP (6), whatever T_RCD and T_RP say.  tRC is exceeded by tRAS and tRP.
+# READ to WRITE and WRITE to READ: the test turns between them only between
+# passes, its last command long out, even with T_WTR = 1.
 for m in "late_read +define+MODEL_RDO=8" "late_write +define+MODEL_D=2" \
-         "short_ras +define+CTL_T_RAS=2" "short_rp +define+CTL_T_RP=1" \
-         "short_wtr +define+CTL_T_WTR=2" "nodm +define+MODEL_NODM"; do
+         "short_ras +define+CTL_T_RAS=2"; do
     set -- $m
     run "$1" "$2"
     if grep -q "^PASS" "$out/$1.log"; then

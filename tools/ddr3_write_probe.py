@@ -106,170 +106,6 @@ def adata_pattern(bank: int, row4: int, burst: int) -> int:
     return AD_PATTERNS[h]
 
 
-# ---- the memory test's data, to read a failed word back -----------------
-# fpga/ddr3_ctrl/ddr3_bist.v: a word is written twice, its pattern whole and
-# then a second pattern through a byte mask, and the test checks the merge.
-# The status frame carries the first failing address and its XOR against that
-# merge, so the byte the array actually returned is recoverable host-side and
-# a mask can be judged by what each lane and beat holds, not only by pass or
-# fail.  The generators below are the RTL's, bit for bit.
-BIST_SEED = 0x2545F491        # ddr3_bist.v: seed
-BIST_SEED_B = 0x5BF03635      # ddr3_bist.v: seed_b, the second write of a word
-
-
-def bist_gen(addr: int, seed: int, lin: bool = False) -> int:
-    """ddr3_bist's gen(): the 256-bit word at `addr`, beat-major, DQ bit
-    32*beat + 8*lane + pin."""
-    out = 0
-    for beat in range(8):
-        x = (((addr << 3) | beat) & 0xFFFFFFFF) ^ seed
-        x ^= (0x9E3779B9 * (beat + 1)) & 0xFFFFFFFF
-        x &= 0xFFFFFFFF
-        if not lin:
-            x = (x + addr) & 0xFFFFFFFF      # the address again, through carries
-        x ^= (x << 13) & 0xFFFFFFFF
-        x ^= x >> 17
-        x ^= (x << 5) & 0xFFFFFFFF
-        out |= (x & 0xFFFFFFFF) << (32 * beat)
-    return out
-
-
-def bist_mgen(addr: int) -> int:
-    """ddr3_bist's mgen(): 1 suppresses beat b, lane l at bit 4b + l."""
-    cls = addr & 0x1F
-    if cls == 0:
-        return 0                    # write every byte
-    if cls == 1:
-        return 0xFFFFFFFF           # suppress every byte
-    return 1 << (cls - 2)           # one bit: 0 .. 29
-
-
-def bist_merge(a: int, b: int, m: int) -> int:
-    """ddr3_bist's merge(): a suppressed byte keeps `a`, the rest take `b`."""
-    out = 0
-    for beat in range(8):
-        for lane in range(4):
-            sh = 32 * beat + 8 * lane
-            src = a if m >> (4 * beat + lane) & 1 else b
-            out |= ((src >> sh) & 0xFF) << sh
-    return out
-
-
-def bist_classify(addr: int, diff: int, tm_mode: int = 0) -> dict:
-    """Which of a failed word's two writes each byte holds.
-
-    `diff` is the test's err_diff, the read XOR the expectation it built from
-    these same generators, so diff ^ merge(a, b, mask) is the word the array
-    returned at `addr`.
-    """
-    lin, single = bool(tm_mode & 1), bool(tm_mode & 2)
-    a = bist_gen(addr, BIST_SEED, lin)
-    b = bist_gen(addr, BIST_SEED_B, lin)
-    m = bist_mgen(addr)
-    # with one write per word the masked second write never happens
-    got = (a if single else bist_merge(a, b, m)) ^ diff
-    grid = [[None] * 4 for _ in range(8)]
-    count = {"A": 0, "B": 0, "=": 0, "0": 0, "x": 0}
-    for beat in range(8):
-        for lane in range(4):
-            sh = 32 * beat + 8 * lane
-            av, bv = (a >> sh) & 0xFF, (b >> sh) & 0xFF
-            gv = (got >> sh) & 0xFF
-            c = ("=" if av == bv and gv == av else
-                 "A" if gv == av else
-                 "B" if gv == bv else
-                 "0" if gv == 0 else "x")
-            grid[beat][lane] = c
-            count[c] += 1
-    return {"addr": addr, "mask": m, "grid": grid, "count": count,
-            "suppressed": sum(m >> i & 1 for i in range(32)),
-            "origin": bist_origin(addr, got)}
-
-
-def bist_origin(addr: int, got: int, span: int = 4) -> list:
-    """Which address's word each lane holds, by exact 64-bit match.
-
-    With gen() carrying the address through the adder, neighbouring words
-    differ in about 100 of 256 bits, so an exact lane match names the word's
-    origin.  `E` is the merge a masked write should leave.
-    """
-    def lane_word(w: int, lane: int) -> int:
-        return sum(((w >> (32 * beat + 8 * lane)) & 0xFF) << (8 * beat)
-                   for beat in range(8))
-
-    out = []
-    for lane in range(4):
-        g = lane_word(got, lane)
-        hits = []
-        for a2 in range(max(0, addr - span), addr + span + 1):
-            for name, w in (("A", bist_gen(a2, BIST_SEED)),
-                            ("B", bist_gen(a2, BIST_SEED_B)),
-                            ("E", bist_merge(bist_gen(a2, BIST_SEED),
-                                             bist_gen(a2, BIST_SEED_B), bist_mgen(a2)))):
-                if lane_word(w, lane) == g:
-                    hits.append(f"{name}@{a2 - addr:+d}")
-        out.append(hits)
-    return out
-
-
-def classify_report(c: dict) -> None:
-    """One failing word, read back byte by byte."""
-    print(f"first failure at word {c['addr']:#x} (a[4:0] {c['addr'] & 0x1F}, mask "
-          f"{c['mask']:#010x}, {c['suppressed']} of 32 bytes suppressed)")
-    print("  what each lane and beat holds, beats down and lanes across:")
-    print("        " + "  ".join(f"l{l}" for l in range(4)))
-    for beat in range(8):
-        print(f"    b{beat}   " + "   ".join(c["grid"][beat]))
-    print("  A the first write's byte, B the second write's, = the same in both, "
-          "0 zero, x neither")
-    print("  " + ", ".join(f"{k} {v}" for k, v in c["count"].items() if v))
-    if "origin" in c:
-        for lane, hits in enumerate(c["origin"]):
-            print(f"  lane {lane} holds exactly: " + (", ".join(hits) if hits else "no word near this address"))
-
-
-def checker_fail_report(c: dict) -> None:
-    """frame 0x27's first failure: which lanes disagreed, and what they held.
-
-    The training's own frame (0x39) says only whether a write alignment was
-    found; this one says why not.  rd_check records the first READ after its
-    arm whose capture was not its location's pattern, with all four lanes'
-    raw words, and the training's searches arm it, so during training this is
-    the first capture that disagreed.  Each lane's eight bytes are its pins
-    in order, and the fill drives even pins with the pattern and odd pins with
-    its inverse, so a lane that holds its own pattern shows here as a rotation.
-    """
-    if not c["fail"]:
-        print(f"checker: no failing READ recorded since its last arm; "
-              f"{c['class_ok']} of {c['total']} READs held their pattern on all four lanes")
-        return
-    print(f"checker: {c['class_ok']} of {c['total']} READs held their pattern on all four "
-          f"lanes; first failure at bank {c['fail_bank']} row bit {c['fail_rowbit']} "
-          f"burst {c['fail_burst']}, pattern {c['fail_pat']:#04x}, lanes "
-          f"{c['fail_lanes']:04b} disagreed, expected rotation "
-          + ", ".join(f"L{l} {c['fail_rot'][l]}" for l in range(4)))
-    for lane in range(4):
-        w = c["fail_words"][lane]
-        w0 = w[0]
-        bad = [p for p in range(1, 8) if w[p] != ((~w0) & 0xFF if p % 2 else w0)]
-        own = rotations(c["fail_pat"])
-        near = []
-        for i, p in enumerate(RC_PATTERNS):
-            if w0 in rotations(p) and w0 not in own:
-                near.append(f"row bit {i >> 3} bank {i & 7}")
-        for i, p in enumerate(AD_PATTERNS):
-            if w0 in rotations(p) and w0 not in own:
-                near.append(f"address data {i}")
-        if w0 in own:
-            held = f"a rotation {own.index(w0)} of this READ's own pattern"
-        elif near:
-            held = "a rotation of " + " or ".join(near)
-        else:
-            held = "neither its own pattern nor another location's"
-        print(f"  lane {lane}: {w.hex(' ')}, pin 0 {w0:#04x}, {held}"
-              + (f"; pins {bad} break the even/odd pattern" if bad else "; pins agree"))
-
-
 def exp_pat(e: dict) -> int:
     """A logged READ's expected pattern: its address data, else its row's."""
     return e["exp"] if "exp" in e else RC_PATTERNS[e["loc"]]
@@ -286,14 +122,6 @@ TOTAL = 4 + PAYLOAD
 
 class Core:
     def __init__(self, port: str, baud: int = 115200):
-        """Open the core's link.
-
-        Two paths reach it and both speak `AA 00 <cmd> <arg>`: TinyTang's CDC
-        console, which the host hands to the core with `fpgapipe`, and, in the
-        board's one-wire mode, the OTG cable's FT2232 UART at 2 Mbaud straight
-        to the FPGA's transport pins (TinyTang TOOL-012), where there is no
-        shell to type at.  Only the CDC path needs the hand-off.
-        """
         self.ser = serial.Serial(port, baud, timeout=0.2, write_timeout=10)
         self.ser.reset_input_buffer()
         if "ttyACM" in port:
@@ -452,7 +280,7 @@ class Core:
         return {"own": b[0] >> 7, "trained": b[0] >> 6 & 1, "running": b[0] >> 5 & 1,
                 "bad_phase": b[0] >> 4 & 1, "rd_off": b[0] >> 2 & 3, "err": b[0] >> 1 & 1,
                 "state": b[1] & 15, "walign_ok": b[1] >> 7, "passes": int.from_bytes(b[2:4], "little"),
-                "written": u32(4), "checked": u32(8),   # the test writes each word twice
+                "written": u32(4), "checked": u32(8),
                 "lane_err": [u32(12 + 4 * l) for l in range(4)],
                 "err_addr": u32(28) & 0x1FFFFFF, "n_log": u32(28) >> 25 & 15,
                 "err_diff": int.from_bytes(b[32:64], "little")}
@@ -475,14 +303,11 @@ class Core:
         for every page, which decodes as plausible nonsense: entry 78's
         ddr3_ctrl_1d56.bin read as 33,764 failing words on DQ 0 from bytes that
         were its status and state.  Two consequences of the RTL, both exact, tell
-        the images apart.  A word cannot fail without a lane failing, and
-        pin_err and beat_err are incremented in the same cycle as lane_err, so a
-        summary with every lane_err zero has those two pages zero.  And an error
+        the images apart.  A word cannot fail without a lane failing, so a
+        summary with every lane_err zero has every page zero.  And an error
         writes the log before it counts, so a summary with any lane_err non-zero
         has n_log non-zero -- while the older frame spends only 25 bits on the
-        address and can never report one.  The log page is no evidence either
-        way: it survives a test restart, which resets the state machine but not
-        the log, so it can hold entries while the counters read zero.
+        address and can never report one.  Neither holds for a page-less image.
         """
         u16 = lambda b, i: int.from_bytes(b[2 * i:2 * i + 2], "little")
         before = self.ctrl()
@@ -490,7 +315,7 @@ class Core:
         self.ctrl_page(0)
         after = self.ctrl()
         clean = not any(before["lane_err"]) and not any(after["lane_err"])
-        if (clean and (any(p1) or any(p2))) or \
+        if (clean and (any(p1) or any(p2) or any(p3))) or \
                 (not clean and after["n_log"] == 0):
             raise RuntimeError(
                 "this image has no diagnostic pages: it ignores 0x3C 0x40 + p and "
@@ -1390,8 +1215,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--port", default="/dev/ttyACM0")
-    ap.add_argument("--baud", type=int, default=115200,
-                    help="the CDC console ignores this; the one-wire FT2232 UART needs 2000000")
+    ap.add_argument("--baud", type=int, default=115200)
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("status")
     lv = sub.add_parser("level")
@@ -1551,19 +1375,6 @@ def main() -> int:
                     help="seconds to report the test's progress for, once a second")
     ct.add_argument("--diag", action="store_true",
                     help="then the test's per-pin and per-lane-and-beat counts and its log")
-    ct.add_argument("--wgap", type=int, choices=range(256), default=None,
-                    help="idle PCLK between a word's two writes, command 0x3C 0x6lo and "
-                         "0x3C 0x7hi: 0 keeps them back to back")
-    ct.add_argument("--tmode", type=int, choices=range(4), default=None,
-                    help="the test's variables, command 0x3C 0x50 + m: m[0] the linear "
-                         "address fold, m[1] one write per word; latched at a pass boundary")
-    ct.add_argument("--classify", action="store_true",
-                    help="then read the first failing word back byte by byte: which lane and "
-                         "beat holds the first write's pattern, the second's, zero, or neither")
-    ct.add_argument("--check", action="store_true",
-                    help="then read the checker's first failure (0x27): which lanes disagreed "
-                         "with their pattern and what each lane's pins held, which is what "
-                         "a training that found no write alignment does not otherwise say")
     mg = sub.add_parser("margin", help="the controller image: each lane's read delay stepped away "
                                        "from where training left it, under the memory test")
     mg.add_argument("--lanes", type=int, nargs="+", default=[0, 1, 2, 3])
@@ -1915,8 +1726,6 @@ def main() -> int:
                 d, k, rs = q["lanes"][l]
                 print(f"  lane {l}: delay {d} k {k} rclksel {rs}, {q['cal'][l]} CALIB pulse(s), "
                       f"{q['u'][l]} passing taps above tap 4, centred at tap {(4 + q['u'][l]) // 2}")
-            if args.check:
-                checker_fail_report(core.check())
             if args.rd_off is not None:
                 core.request(0x3C, 0x10 | args.rd_off)
             if args.test is not None:
@@ -1930,7 +1739,7 @@ def main() -> int:
                 line = (f"controller {'owns the bus' if c['own'] else 'not yet'}"
                         f"{', trained' if c['trained'] else ''}, read offset {6 + c['rd_off']}, "
                         f"test {'running' if c['running'] else 'stopped'} in state {c['state']}: "
-                        f"{c['passes']} passes, {c['written']} writes, {c['checked']} checked, "
+                        f"{c['passes']} passes, {c['written']} written, {c['checked']} checked, "
                         f"lane errors {c['lane_err']}")
                 if not c["walign_ok"]:
                     line += "; the training's write alignment is not the PHY's, so no hand-over"
@@ -1945,31 +1754,17 @@ def main() -> int:
                 if time.time() - t0 >= args.watch:
                     break
                 time.sleep(1.0)
-            if args.tmode is not None:
-                core.request(0x3C, 0x50 | args.tmode)
-            if args.wgap is not None:
-                core.request(0x3C, 0x60 | (args.wgap & 0xF))
-                core.request(0x3C, 0x70 | ((args.wgap >> 4) & 0xF))
-            if args.classify or args.diag:
-                c = core.ctrl()
-                if c["err"]:
-                    classify_report(bist_classify(c["err_addr"], c["err_diff"],
-                                                  args.tmode or 0))
-                else:
-                    print("no failing word to classify")
             if args.diag:
                 try:
                     g = core.ctrl_diag()
                 except RuntimeError as exc:
                     print(f"diagnostics unavailable: {exc}")
                     return 1
-                sat = lambda n: "65535+" if n == 0xFFFF else str(n)
                 print("failing words per DQ: " + " ".join(
-                    f"{q}:{sat(n)}" for q, n in enumerate(g["pins"]) if n) or "none")
+                    f"{q}:{n}" for q, n in enumerate(g["pins"]) if n) or "none")
                 for l in range(4):
                     if any(g["beats"][l]):
-                        print(f"  lane {l} by beat 0..7: "
-                              f"[{', '.join(sat(n) for n in g['beats'][l])}]")
+                        print(f"  lane {l} by beat 0..7: {g['beats'][l]}")
                 n_log = core.ctrl()["n_log"]
                 for e, en in enumerate(g["log"][:n_log]):
                     how = ("not re-read" if not en["checked"] else

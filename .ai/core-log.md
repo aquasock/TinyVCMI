@@ -240,3 +240,44 @@ The fix is in progress in the `build/baseline` worktree and is not yet committed
 - User Test: N/A
 
 ---
+
+## 9 COMMIT Unreleased 2026-11-24T00:04:35-07:00
+
+#### Coming From:
+
+Unreleased b538390
+
+#### Purpose:
+
+Fix the controller logic that entry 8 found untimed and too slow, so that its memory test runs clean on every placement rather than on some.
+
+#### Outcome:
+
+The controller now passes on every placement tried. Main's controller and training sources, their generator, the build and simulation scripts and the probe were set back to the tested 59443aa baseline, withdrawing the B-series changes from `c65f546` onward, which never ran clean on the board and stay in history to be re-applied one at a time, and three fixes were made on that base. `ddr3_ctl.v` decides each command into a registered plan and updates its banks, timers and request FIFO from the plan, keeps its open-row table in registers, streams a same-row READ or WRITE one PCLK behind the last by a same-row bit set as each request is queued, and never issues a READ or WRITE two PCLK after the last, because the PHY returns such a READ as the bus between two bursts (TOOL-068). `ddr3_bist.v` checks each word over three registered stages, compares a re-read's difference in four registered quarters and writes each log entry a PCLK after judging it. `tb_ctrl.v` now fails any controller that issues the two-PCLK spacing, which the simulation's PHY model reads correctly and so missed twice, and `tools/sim_ddr3_ctrl.sh` drops the tRP and WRITE-to-READ mutants, which the plan's spacing makes invisible; every simulation passes. Two intermediate designs failed on the board identically on every placement: one command per two PCLK failed every odd in-order word, and streaming without the spacing rule failed 1,627 words a lane in 45 s, all random READs hitting an open row in another bank. The images were built with `tools/build_ddr3_ctrl.sh`, then `tools/lut4ify.py` on its `ctrl.json`, then `tools/ddr3_pin_seed.sh` at seeds 1 to 5 with `TINYVCMI_CTRL_JSON` set to the rewritten netlist and `TINYVCMI_PNR_EXTRA=--timing-allow-fail`; fully timed they close `pclk` at 74.17, 82.37, 79.74, 78.96 and 73.56 MHz, short of 100 with their worst paths in the training's `wr_core`, `core.rx.clk` at 42.90 to 46.60 MHz and `mclk` short on four, and all 306 DDR3 tables equal the vendor reference (seed 1 `.fs` SHA-256 `56de00d3294dca6886ebb787ce002bcb65c6c16d9f5683bf9d74fc6052cc4399`). Loaded in one-wire mode with `openFPGALoader -c ft2232`, each load confirmed `DONE`, every seed trained `error 0` to `d 1 b 2` in 422 trials and ran 81 passes of the 1 GiB test in 60 s, about 2.82e9 words checked, with no error on any lane, and the user accepted the result. One earlier load had failed with `JTAG init failed` while the previous image kept running and answered the same core ID, so a load is now accepted only when `openFPGALoader` reports `DONE`; every other load whose loader output was kept, all but the repeated-load fingerprints of TOOL-066, did. TOOL-068 was added to `.ai/core-reference.md` and TOOL-065 gained a revision note. The Tang was power-cycled once by the user's relay script during the cycle, about a second off, powered from the host's 5 V over USB-C OTG, and was left in one-wire mode with seed 5 in SRAM and the desktop not restored. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering and active-log capacity.
+
+#### Next Steps:
+
+Close timing fully: pipeline the training's slow paths in `fpga/ddr3_write/wr_core.v` and the `mclk` read-burst toggles in the generated top until every clock meets its target with every path timed, then wire `tools/lut4ify.py` into `tools/build_ddr3_ctrl.sh` and drop `--timing-allow-fail`, and add LUT1 to LUT3 arcs to the nextpnr fork's `gowin_arch_gen.py` in a separate build so the rewrite is no longer needed. Confirm the margin on the board with a long soak, a cold start and the frequency sweep the user offered with the SDG1032X, after checking a clock-capable header pin and a safe 3.3 V hook-up. Then re-apply the B-series one change at a time on this base, the write mask path first, building each through the full timing check and testing every image on several placements, and restore the desktop with a cold power-up into two-wire mode.
+
+#### Files Modified:
+
+- fpga/ddr3_ctrl/ctrl_glue.v
+- fpga/ddr3_ctrl/ddr3_bist.v
+- fpga/ddr3_ctrl/ddr3_ctl.v
+- fpga/ddr3_ctrl/dfi_phy.v
+- fpga/ddr3_ctrl/tb_ctrl.v
+- fpga/ddr3_ctrl/top.v
+- fpga/ddr3_write/tb_wr.v
+- fpga/ddr3_write/wr_core.v
+- tools/build_ddr3_ctrl.sh
+- tools/ddr3_write.py
+- tools/ddr3_write_probe.py
+- tools/sim_ddr3_ctrl.sh
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: PASS
+
+---

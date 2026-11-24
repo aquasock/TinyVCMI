@@ -188,6 +188,7 @@ Topic IDs are the `record_id` prefix. An entry reserves a namespace; it does not
 | Is a failing placement deterministic, and which address bits does it get wrong? | TOOL | TOOL-066 |
 | What has been ruled out as the cause of placement-dependent controller failures? | TOOL | TOOL-067 |
 | Has anyone run this board's DDR3 in an open flow? | DDR3 | DDR3-004 |
+| Which READ spacings can the PHY read back? | TOOL | TOOL-068 |
 | Why did the Gowin control miss PCLK timing? | TOOL | TOOL-028 |
 | Which sources and licenses constrain reuse? | PROV | PROV-001 |
 
@@ -281,6 +282,7 @@ TOOL-065: "The fork's chipdb has timing for LUT4 and none for LUT1 to LUT3, so n
 TOOL-066: "Failing placements fail bit-identically on every load, and the linear test data names the fault: seed 2 drives A5 high on the first column-2 READ after a bank change, B1 seed 1 corrupts A7, A11 and A14"
 TOOL-067: "Not the cause or the cure: boundary delays, boundary pinning, the bitstream's encoding of nextpnr's intent, LUT RAM, an 8 ns target (bit-identical image); 3 of 8 baseline placements clean, B1 0 of 5"
 DDR3-004: "e-karge/gowin-ddr3 runs this board's DDR3 in an open flow in DLL-off mode at 200 MT/s with ODDR/IDDR, a slower fallback, not evidence about 800 MT/s"
+TOOL-068: "A READ two PCLK after a READ comes back as the bus between two bursts; one PCLK apart or three or more read whole, so ddr3_ctl never issues that spacing and tb_ctrl checks it"
 TOOL-031: "LiteDRAM's control layer alone generates, synthesises and places in the open flow at ~1% of the LUTs, with none of TOOL-025's three gaps"
 TOOL-030: "Closed-page scatter READs do not reach the read capture in the open or the vendor build of the same RTL; no cadence, gate position or shared RCLKSEL recovers them, and failing READs return other rows' patterns"
 PROV-001: "Reuse source and interface ideas with their original license boundaries and attribution intact"
@@ -1065,7 +1067,7 @@ PROV-001: "Reuse source and interface ideas with their original license boundari
     - "nextpnr-mathieufro 16237b0f: himbaechel/uarch/gowin/gowin_arch_gen.py create_timing_info; himbaechel/arch.cc get_port_timing_class_default; common/kernel/timing.cc"
     - "TinyVCMI tools/lut4ify.py"
     - "TinyVCMI build/baseline (worktree at 59443aa): build/rep/default/report.json, build/lut4/s1 to s6 and build/lut4/rep1/report.json, not committed"
-  verification: "The missing variants were read from the generator and confirmed on a design: the report lists LUT4-driven endpoints and omits those behind LUT1 to LUT3. `tools/lut4ify.py` was checked by evaluating all 16 inputs of each of the 12,404 rewritten cells against its original, all equal, with no other cell changed. The fully timed placements are seeds 1 to 6 of the baseline netlist with `--timing-allow-fail`. Not yet established on the board: that a fully timed image which closes at 100 MHz runs the memory test cleanly on every placement."
+  verification: "The missing variants were read from the generator and confirmed on a design: the report lists LUT4-driven endpoints and omits those behind LUT1 to LUT3. `tools/lut4ify.py` was checked by evaluating all 16 inputs of each of the 12,404 rewritten cells against its original, all equal, with no other cell changed. The fully timed placements are seeds 1 to 6 of the baseline netlist with `--timing-allow-fail`. Not yet established on the board: that a fully timed image which closes at 100 MHz runs the memory test cleanly on every placement. Revised 2026-11-24 (entry 9): with `ddr3_ctl`'s decision pipelined and `ddr3_bist`'s check and log pipelined, a full report of one placement showed `ddr3_ctl`'s failing endpoints fall from 687 to 10, by 1.60 ns at worst, and `ddr3_bist`'s to 266, before the row table moved to registers and the check's compare and log write were registered; the final five placements close `pclk` at 73.56 to 82.37 MHz with their worst paths in the training's own logic in `wr_core`, no full report having been taken of them and with `core.rx.clk` at 42.90 to 46.60 MHz and some `mclk` read-burst toggles short; those five images run the memory test with no error on every placement (TOOL-068), so the controller no longer depends on placement while the training's paths remain unclosed."
 
 - record_id: TOOL-066
   topic_id: TOOL
@@ -1103,6 +1105,18 @@ PROV-001: "Reuse source and interface ideas with their original license boundari
   sources:
     - "github.com/e-karge/gowin-ddr3 README, read 2026-11-23"
   verification: "Read from the repository's README and metadata only; not built or run here."
+
+- record_id: TOOL-068
+  topic_id: TOOL
+  title: "The PHY cannot read a READ issued two PCLK after a READ"
+  status: VERIFIED
+  verified_date: 2026-11-24
+  statement: "With `dfi_phy.v` of 59443aa trained to `d 1 b 2`, read offset 7 and rotations 0 on every lane, a READ that reaches the DFI exactly two PCLK after the previous READ returns not its burst but one beat pair repeated four times, the bus between two bursts, while READs one PCLK apart and three or more apart read whole. A controller issuing one command per two PCLK failed every odd in-order word identically on five placements, word 1 returning word 0's beats 0 and 1 three times and then word 2's; with same-row bursts streamed one per PCLK, five placements failed identically 1,627 words a lane in 45 s, every one a random READ that hit a row already open in another bank, about 1 in 32,768 READs, each returning one beat pair repeated and re-reading right; with no READ or WRITE ever two PCLK after the last, the same five placements ran 81 passes of the 1 GiB test in 60 s with no error."
+  consequence: "`ddr3_ctl.v` issues a READ or WRITE either one PCLK after the last (a same-row stream) or three or more after it, never two, and `tb_ctrl.v` fails any controller that does, since the simulation's PHY model reads such a READ correctly and missed both failures. WRITEs two PCLK apart were not separately measured and are kept out by the same rule. TOOL-030's closed-page scatter READs that fail may be this spacing."
+  sources:
+    - "TinyVCMI fpga/ddr3_ctrl/ddr3_ctl.v: cas_last; tb_ctrl.v: the two-PCLK check"
+    - "TinyVCMI build/baseline/build/pipe2, pipe3 and pipe5 seeds, not committed"
+  verification: "Each image loaded in one-wire mode (TOOL-053) and read with tools/ddr3_write_probe.py ctrl and ctrl --diag; the returned words were reconstructed from the logged error XOR and 59443aa's linear gen(), as in TOOL-066. The bench check was confirmed to fail the controller without the rule and pass it with the rule. Not established: why the read capture misses this one spacing."
 
 - record_id: TOOL-031
   topic_id: TOOL
