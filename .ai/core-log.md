@@ -208,3 +208,35 @@ Have the operator cold power-up the Tang into two-wire mode, confirm the TinyTan
 - User Test: N/A
 
 ---
+
+## 8 COMMIT Unreleased 2026-11-23T21:19:44-07:00
+
+#### Coming From:
+
+Unreleased aae4515
+
+#### Purpose:
+
+Return to the last controller image known to work, find why the open flow's controller images pass or fail by placement, and fix the cause rather than screen seeds.
+
+#### Outcome:
+
+Entry 7's plan was set aside for this one. The baseline, commit 59443aa, was checked out as a detached worktree in `build/baseline` and rebuilt byte for byte to eb59ee08 (`.fs` SHA-256 `38e6c2430260e66e8c273b0e7d51a26474510b38068b11051452643e535acaad`), which is nextpnr's default seed and not seed 1 as earlier read. It trained `d 1 b 2` in 422 trials and ran the memory test clean warm, and clean again from a cold start, the Tang unplugged at 09:25 and powered at about 10:01. Every baseline placement trains the same way, but after hand-over only 3 of 8 placements ran the test clean, the post-baseline mask path (B1) 0 of 5 and B1 with DM tied low 0 of 1, while boundary pinning, boundary route delays, a bitstream round-trip through Apicula's `gowin_unpack`, building without LUT RAM, a tighter `pclk` constraint and a slower memory clock neither explained nor cured it, as TOOL-067 records. Loading failing images repeatedly showed the failures are deterministic to the bit, and because 59443aa's test data is linear in the address each first error names the faulty DRAM address pins, A5 on baseline seed 2 and A7, A11 and A14 on B1 seed 1 (TOOL-066). The cause is TOOL-065: the nextpnr fork's chipdb has timing for LUT4 and none for LUT1, LUT2 or LUT3, so every path through one of this netlist's 12,404 such cells was never timed, including the D input of every falling-edge boundary register and half of `ddr3_ctl`'s address bits. `tools/lut4ify.py` rewrites each as a LUT4 of the same function, verified on all 16 inputs of every cell, and fully timed the baseline closes `pclk` at 52.70 to 59.76 MHz and `core.rx.clk` at 43.5 to 47.6 MHz instead of the 100 to 108 MHz reported before, with `ddr3_ctl`'s command decision 7.49 ns over, `ddr3_bist`'s checker and log 6.70 ns over, training's slow paths up to 4.43 ns over, and `dfi_phy` and the boundary clean. `tools/ddr3_pin_boundary.py` and `tools/ddr3_pin_seed.sh`, which produced the pinning and seed results, are committed with it. TOOL-065, TOOL-066, TOOL-067 and DDR3-004, the last for the e-karge/gowin-ddr3 open-flow controller the user was told of, were added to `.ai/core-reference.md`, and TOOL-050 and TOOL-061 gained revision notes. Every load was made in one-wire mode with `openFPGALoader -c ft2232` and read with the probe at 2 Mbaud on `/dev/ttyUSB1`, powered from the host's 5 V over USB-C OTG; the first load after a cold power-up came up silent once and stuck in training once, each cured by reloading. The board was left in one-wire mode with the baseline default image in SRAM and the desktop not restored. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering and active-log capacity.
+
+#### Next Steps:
+
+The fix is in progress in the `build/baseline` worktree and is not yet committed: `ddr3_ctl.v` decides each command into a registered plan and updates its banks, timers and request FIFO from that plan, one command per two PCLK; `ddr3_bist.v` checks each word over three registered stages and compares a re-read's difference instead of its data; and `tools/sim_ddr3_ctrl.sh` drops the tRP and WRITE-to-READ mutants, which the two-PCLK command spacing makes invisible. All simulations pass. Build it through `tools/lut4ify.py` at several seeds, fix training's remaining slow paths if the design still does not close `pclk` at 100 MHz and `core.rx.clk` at 50 MHz fully timed, load only images that close, and expect every placement to run the memory test clean; then add LUT1 to LUT3 arcs to the fork's `gowin_arch_gen.py` in a separate build so `lut4ify` is no longer needed, carry the fixes onto main's post-baseline sources, and restore the desktop with a cold power-up into two-wire mode.
+
+#### Files Modified:
+
+- tools/lut4ify.py
+- tools/ddr3_pin_boundary.py
+- tools/ddr3_pin_seed.sh
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: N/A
+
+---
