@@ -323,3 +323,43 @@ Read the second round's seeds with `tools/ddr3_sta.py`, then keep fixing the `pc
 - User Test: NOT RUN
 
 ---
+
+## 11 COMMIT Unreleased 2026-11-24T21:37:00-07:00
+
+#### Coming From:
+
+Unreleased d7f9f4a
+
+#### Purpose:
+
+Finish closing the controller image's timing at 100 MHz with every path timed, and confirm the closed image on the board.
+
+#### Outcome:
+
+The controller image now closes every clock with every path timed: round fourteen's seed 1 (`.fs` SHA-256 `56981a03543437999b7a63a7f16034038949a052db74d1eed59fe24bed2a3a0c`) meets `pclk` at 100.25 MHz, `core.rx.clk` at 62.84 MHz and `mclk` at 798.08 MHz with all 306 DDR3 tables equal to the vendor reference, and on the board it trained `error 0` to `d 1 b 2` in 422 trials with 7 CALIB pulses a lane, handed over and ran 734 passes of the 1 GiB test in 600 s with no error on any lane, loaded in one-wire mode with `openFPGALoader -c ft2232` reporting `DONE`, powered from the host's 5 V over USB-C OTG and warm, the board having been on since 08:40. Getting there needed the toolchain corrected as well as the design: the fork's chipdb generator, from upstream commit ccdc2f6f1, writes the LUT RAM's data-input setup arc as `DI[n` with no closing bracket, so nextpnr timed no path into a LUT RAM's data inputs and every earlier figure, the 96 to 99 MHz ones included, left them out (TOOL-070); at the user's direction a chipdb with that bracket and the LUT1 to LUT3 arcs of TOOL-065 was built beside a copy of the binary in `/home/vash/tools/nextpnr-tinyvcmi-arcs` by `tools/nextpnr_arcs.sh` from `tools/nextpnr_arcs.patch`, after the unpatched generator was shown to reproduce the installed chipdb byte for byte, and the installed toolchain and the fork were left untouched. The design changes, each with its source comment, make the training's address and bank a function of its one-hot state and step, since a DDR3 device reads them only with a command, with a simulation shadow of what `issue()` was given checked on every command; give the training's pauses one-hot return states, pipeline the fill data's word select, register its own word tests from `dq_q` a PCLK early, and give `rd_align` early compares (`PRE`), pre-rotation byte flags and registered `uniform`, `moved` and lock-count flags; in `ddr3_ctl` keep the FIFO entries' row and bank in registers and make the next PCLK's row compares from registers with the plan and the advances selecting last; and in `ddr3_bist` put the owed-read FIFO in LUT RAM, narrow `rcnt`, compare `d_same` per byte, mark a re-read's issue a PCLK later in log bit 37 and keep `a_last` and `r_last` without adders. Every simulation gate passes with the write image's counts unchanged at 808 ACTIVATE, 44,699 WRITE, 15,308 READ and 535 REFRESH and the sequencer's at 487 trials in 293,745 cycles, `tools/sim_ddr3_lockstep.sh` shows `ddr3_ctl` and `ddr3_bist` equal to commit `0d3bce3` on every output for millions of PCLK but log bit 37, a PCLK later as intended, `tb_align.v` now checks `rd_align` with `PRE` against itself without, and each new invariant was shown to fail on a planted error. Two tries were withdrawn: registering the memory test's write word put `gen()` behind the address adders, 4.7 ns over, and per-entry head compares in `ddr3_ctl` lowered the median seed. Placement refused up to five seeds of seven at 24 per cent utilisation until `--placer-heap-beta 0.7` (TOOL-071), and a delay-driven mapping, `abc9 -W 3000 -D 9000`, gave the closing seed where the default mapping did not (TOOL-072), with one netlist's seeds spreading about 10 MHz; `tools/ddr3_ctrl_sweep.sh` builds that way and `tools/ddr3_sta.py` now times block RAM outputs. A 96.14 MHz image (`77d2bb48101da99e7931d3dc512e7719f1909ac05d6290215d576fb59bf7cdc2`) had already trained the same way and run 744 passes clean. Two things are open: `tools/ddr3_sta.py` still reports 32 `pclk` endpoints failing on the closed image, the worst `ddr3_ctl`'s `m_n_r` by 1.50 ns, where nextpnr times the same registers inside the period, and the committed sweep script was regenerating the closed image from these sources to confirm it byte for byte when this entry was written. The board was left in one-wire mode with the closed image in SRAM and the desktop not restored. TOOL-070, TOOL-071 and TOOL-072 were added and TOOL-065 gained a revision note. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering and active-log capacity.
+
+#### Next Steps:
+
+Confirm that `tools/ddr3_ctrl_sweep.sh` regenerated the closed image byte for byte, and find whether `tools/ddr3_sta.py` or nextpnr is right about `m_n_r`'s 32 endpoints, fixing whichever is wrong. Then qualify the closed image on the board with a cold start, which needs the user to leave the Tang unpowered and bring it up in one-wire mode, and with the frequency sweep the user offered with the SDG1032X after a clock-capable header pin and a safe 3.3 V hook-up are confirmed; build more seeds to learn how often the image closes, and fold the delay-driven mapping, the density setting and the patched nextpnr into `tools/build_ddr3_ctrl.sh` so that it refuses any image that does not close, dropping `--timing-allow-fail`. With the user's approval, commit `tools/nextpnr_arcs.patch` to the aquasock fork and report both generator faults upstream. After that, re-apply the B-series one change at a time on this base, the write mask path first, and restore the desktop with a cold power-up into two-wire mode.
+
+#### Files Modified:
+
+- fpga/ddr3_ctrl/ddr3_bist.v
+- fpga/ddr3_ctrl/ddr3_ctl.v
+- fpga/ddr3_ctrl/tb_lock_bist.v
+- fpga/ddr3_write/rd_align.v
+- fpga/ddr3_write/rd_check.v
+- fpga/ddr3_write/tb_align.v
+- fpga/ddr3_write/wr_core.v
+- tools/ddr3_ctrl_sweep.sh
+- tools/ddr3_sta.py
+- tools/nextpnr_arcs.patch
+- tools/nextpnr_arcs.sh
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: NOT RUN
+
+---

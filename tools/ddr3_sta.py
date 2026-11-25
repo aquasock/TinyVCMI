@@ -39,6 +39,7 @@ ALU_COUT = {"I0": 0.686, "I1": 0.712, "I2": 0.578, "I3": 0.464, "CIN": 0.044}
 RAD_DO = {0: 0.686, 1: 0.712, 2: 0.578, 3: 0.464}
 CLK_Q = 0.29
 RAM_CLK_DO = 0.392
+BSRAM_CLK_DO = 2.82    # SDP read data after its clock, as nextpnr times it
 SETUP = 0.044
 RAM_SETUP = 0.043
 PERIODS = {"pclk": 10.0, "mclk": 2.5, "core.rx.clk": 20.0}
@@ -115,8 +116,8 @@ def analyse(path, top, npaths, module, by_reg=False):
         ctype[dc] = dt
         lst = []
         for c, p, t, dl in n["users"]:
-            if p == "CLK":
-                clk_of[c] = n["net"]
+            if p == "CLK" or (t in ("SDP", "SDPB", "DPB", "SP") and p in ("CLKB", "CLK")):
+                clk_of[c] = n["net"]          # a block RAM's read clock
                 continue
             dl = 0.0 if dl is None else dl
             lst.append((c, p, dl))
@@ -150,7 +151,9 @@ def analyse(path, top, npaths, module, by_reg=False):
             res[(clock_name(clk_of[c]), ff_edge(t))] = (CLK_Q, None)
         elif t == "RAM16SDP4" and p.startswith("DO") and c in clk_of:
             res[(clock_name(clk_of[c]), "pos")] = (RAM_CLK_DO, None)
-        if t == "RAM16SDP4" and p.startswith("DO") or not is_ff(t):
+        elif t in ("SDP", "SDPB", "DPB", "SP") and p.startswith("DO") and c in clk_of:
+            res[(clock_name(clk_of[c]), "pos")] = (BSRAM_CLK_DO, None)
+        if (t == "RAM16SDP4" and p.startswith("DO")) or (not is_ff(t) and t not in ("SDP", "SDPB", "DPB", "SP")):
             for ip, cd in comb_arcs(t, p).items():
                 drv = driver_of.get((c, ip))
                 if drv is None:

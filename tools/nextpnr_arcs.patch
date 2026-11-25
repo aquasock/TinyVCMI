@@ -1,0 +1,25 @@
+--- a/himbaechel/uarch/gowin/gowin_arch_gen.py
++++ b/himbaechel/uarch/gowin/gowin_arch_gen.py
+@@ -2456,6 +2456,13 @@
+                 lut.add_comb_arc("I1", "F", group_to_timingvalue(arc["b_f"]))
+                 lut.add_comb_arc("I2", "F", group_to_timingvalue(arc["c_f"]))
+                 lut.add_comb_arc("I3", "F", group_to_timingvalue(arc["d_f"]))
++                # LUT1 to LUT3 occupy a LUT4 site on its first inputs and take
++                # the LUT4's arcs for them; without these variants no path
++                # through one was timed (TinyVCMI TOOL-065)
++                for n_in, lut_arcs in ((1, ("a_f",)), (2, ("a_f", "b_f")), (3, ("a_f", "b_f", "c_f"))):
++                    lutn = tmg.add_cell_variant(speed, f"LUT{n_in}")
++                    for k, a in enumerate(lut_arcs):
++                        lutn.add_comb_arc(f"I{k}", "F", group_to_timingvalue(arc[a]))
+                 mux5 = tmg.add_cell_variant(speed, "MUX2_LUT5")
+                 mux5.add_comb_arc("I0", "O", group_to_timingvalue(arc["m0_ofx0"]))
+                 mux5.add_comb_arc("I1", "O", group_to_timingvalue(arc["m1_ofx1"]))
+@@ -2489,7 +2496,7 @@
+                         sram.add_comb_arc(f"RAD[{rad}]", f"DO[{do}]", group_to_timingvalue(arc[f"rad{rad}_do"]))
+                     sram.add_clock_out("CLK", f"DO[{do}]", ClockEdge.RISING, group_to_timingvalue(arc["clk_do"]))
+                 for di in range(4):
+-                    sram.add_setup_hold("CLK", f"DI[{di}", ClockEdge.RISING, group_to_timingvalue(arc["clk_di_set"]), group_to_timingvalue(arc["clk_di_hold"]))
++                    sram.add_setup_hold("CLK", f"DI[{di}]", ClockEdge.RISING, group_to_timingvalue(arc["clk_di_set"]), group_to_timingvalue(arc["clk_di_hold"]))
+                 sram.add_setup_hold("CLK", "WRE", ClockEdge.RISING, group_to_timingvalue(arc["clk_wre_set"]), group_to_timingvalue(arc["clk_wre_hold"]))
+                 for wad in range(4):
+                     sram.add_setup_hold("CLK", f"WAD[{wad}]", ClockEdge.RISING, group_to_timingvalue(arc[f"clk_wad{wad}_set"]), group_to_timingvalue(arc[f"clk_wad{wad}_hold"]))

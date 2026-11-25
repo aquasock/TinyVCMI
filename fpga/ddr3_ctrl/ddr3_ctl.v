@@ -89,13 +89,24 @@ module ddr3_ctl #(
     reg [1:0]   fq_w = 2'd0, fq_r = 2'd0;
     reg [2:0]   fq_n = 3'd0;
     wire [282:0] head = fq[fq_r];
+    // the entries' {row, bank} again, in registers beside the FIFO's LUT RAM
+    // and written with it: the row compares read the head's from here, not
+    // from the 283-bit RAM spread down the device, whose read put m_n_r 1.4
+    // ns over 100 MHz fully timed (TOOL-065)
+    (* ram_style = "logic" *) reg [17:0] fq_br [0:3];
+    wire [17:0] head_br = fq_br[fq_r];
     wire         h_v = (fq_n != 3'd0);
     // fq_n < 3, one slot spare because the ready is registered at the
     // requester; written out so it is one LUT and not a carry chain
     assign cmd_ready = !fq_n[2] && !(fq_n[1] && fq_n[0]);
     reg          nxt_v = 1'b0, cur_v = 1'b0;
     reg [282:0]  nxt = 283'd0, cur = 283'd0;
-    reg [17:0]   last_br = 18'd0;       // {row, bank} of the request taken last
+    // `same` is made as an entry leaves the FIFO for nxt, against the entry
+    // that left before it: entries leave in the order they came, so it is
+    // the bit a compare at the request port once wrote into the FIFO, where
+    // the compare sat behind the requester's address 1.6 ns over 100 MHz
+    // fully timed (TOOL-065)
+    reg [17:0]   last_br = 18'd0;       // {row, bank} of the request that left last
     reg          last_v = 1'b0;
     wire         c_we = cur[281];
     wire [14:0]  c_row = cur[280:266];
@@ -146,13 +157,20 @@ module ddr3_ctl #(
 
     // cur's and nxt's row against every bank at once, so the select between
     // them comes last instead of feeding an 8-to-1 mux of 15-bit rows and a
-    // compare behind it, which put `hit` 4.2 ns over 100 MHz fully timed
+    // compare behind it, which put `hit` 4.2 ns over 100 MHz fully timed.
+    // m_n and m_h are those compares of the registers now; m_n_r and m_h_r
+    // are the same compares made a PCLK early from the values the registers
+    // are about to take -- the banks from the plan going out, nxt from the
+    // FIFO head when it advances, cur from nxt -- and registered, so they
+    // equal m_n and m_h at every PCLK and `hit` reads only them (in one PCLK
+    // the compares still put it 1.5 ns over, fully timed).
     reg [7:0]  m_n, m_h;
     always @(*)
         for (i = 0; i < 8; i = i + 1) begin
             m_n[i] = b_open[i] && (b_row[i] == n_row);
             m_h[i] = b_open[i] && (b_row[i] == c_row);
         end
+    reg [7:0]  m_n_r = 8'd0, m_h_r = 8'd0;
 
     // ---- the command decided this PCLK -------------------------------------
     // The decision is registered into the plan (p_*) and goes out a PCLK
@@ -175,6 +193,21 @@ module ddr3_ctl #(
     reg  [2:0]  p_b = 3'd0;
     reg  [14:0] p_a = 15'd0;
     reg         p_pop = 1'b0;
+    // the plan's row and every bank's row against the head, nxt and cur rows
+    integer ie;
+    wire       eq_pa_n = (p_a == n_row);
+    wire       eq_pa_c = (p_a == c_row);
+    reg  [7:0] eq_b_h, eq_b_n, eq_b_c;
+    wire       eq_pa_h = (p_a == head_br[17:3]);
+    always @(*)
+        begin
+            for (ie = 0; ie < 8; ie = ie + 1) begin
+                eq_b_n[ie] = (b_row[ie] == n_row);
+                eq_b_c[ie] = (b_row[ie] == c_row);
+            end
+            for (ie = 0; ie < 8; ie = ie + 1)
+                eq_b_h[ie] = (b_row[ie] == head_br[17:3]);
+        end
     wire        p_v = (p_c != C_NOP);
     // A READ or WRITE that went out at the last edge: the next one may follow
     // it at once (a chain, decided while it was planned) or three or more PCLK
@@ -284,6 +317,15 @@ module ddr3_ctl #(
     wire f_in = cmd_valid && cmd_ready;
     wire f_out = h_v && (!nxt_v || !cur_v || p_pop);
 
+    // bank k's open flag and row after this edge, as the plan going out and
+    // a reset set them below
+    function nx_open(input integer kb);
+        nx_open = !rst && ((p_c == C_ACT && p_b == kb) ? 1'b1 :
+                           (p_c == C_PRE && (p_a[10] || p_b == kb)) ? 1'b0 : b_open[kb]);
+    endfunction
+    function [14:0] nx_row(input integer kb);
+        nx_row = (p_c == C_ACT && p_b == kb) ? p_a : b_row[kb];
+    endfunction
     integer k;
     always @(posedge pclk) begin
         // the decision into the plan, the plan onto the DFI, and the write's
@@ -305,30 +347,45 @@ module ddr3_ctl #(
         // the FIFO, nxt and cur: cur moves on when served, nxt follows, the
         // FIFO refills nxt; cur's flags are made from the banks' registers
         if (cmd_valid && cmd_ready) begin
-            fq[fq_w] <= {last_v && (cmd_addr[24:7] == last_br), cmd_we, cmd_addr, cmd_wdata};
+            fq[fq_w] <= {1'b0, cmd_we, cmd_addr, cmd_wdata};
+            fq_br[fq_w] <= cmd_addr[24:7];
             fq_w <= inc2w(fq_w);
-            last_br <= cmd_addr[24:7];
-            last_v <= 1'b1;
         end
         if (nxt_v && (!cur_v || p_pop)) begin
             cur <= nxt;
             cur_v <= 1'b1;
-            hit <= m_n[n_bank];
+            hit <= m_n_r[n_bank];
             c_open <= b_open[n_bank];
         end else begin
             if (p_pop)
                 cur_v <= 1'b0;
-            hit <= m_h[h_bank];
+            hit <= m_h_r[h_bank];
             c_open <= b_open[h_bank];
         end
         if (h_v && (!nxt_v || !cur_v || p_pop)) begin
-            nxt <= head;
+            nxt <= {last_v && (head_br == last_br), head[281:0]};
+            last_br <= head_br;
+            last_v <= 1'b1;
             nxt_v <= 1'b1;
             fq_r <= inc2w(fq_r);
         end else if (nxt_v && (!cur_v || p_pop))
             nxt_v <= 1'b0;
         fq_n <= (f_in && !f_out) ? inc3w(fq_n) : (f_out && !f_in) ? dec3w(fq_n) : fq_n;
 
+        // the row compares of the next PCLK's registers (see m_n_r)
+        // Every compare is made from registers: the plan's row and each
+        // bank's row against the three candidate rows, the FIFO head, nxt
+        // and cur.  The plan's decode (is it bank k's ACTIVATE) and the two
+        // advances then only choose among results; deciding the row first and
+        // comparing after put m_h_r up to 3.1 ns over 100 MHz fully timed.
+        for (k = 0; k < 8; k = k + 1) begin
+            m_n_r[k] <= nx_open(k) &&
+                (f_out ? ((p_c == C_ACT && p_b == k) ? eq_pa_h : eq_b_h[k])
+                       : ((p_c == C_ACT && p_b == k) ? eq_pa_n : eq_b_n[k]));
+            m_h_r[k] <= nx_open(k) &&
+                ((nxt_v && (!cur_v || p_pop)) ? ((p_c == C_ACT && p_b == k) ? eq_pa_n : eq_b_n[k])
+                                              : ((p_c == C_ACT && p_b == k) ? eq_pa_c : eq_b_c[k]));
+        end
         // the timers count down unless the command going out, from the
         // plan, sets them; a timer set this PCLK counts from the next, so a
         // value n allows the next command n PCLK later.  Each bank decides
@@ -455,6 +512,8 @@ module ddr3_ctl #(
     // the flags must equal their timers' compares at every edge
     integer kz;
     always @(posedge pclk) begin
+        if (m_n_r != m_n || m_h_r != m_h)
+            $fatal(1, "FAIL  ddr3_ctl: the early row compares disagree with the registers'");
         for (kz = 0; kz < 8; kz = kz + 1)
             if (za[kz] != (c_act[kz] == 3'd0) || zc[kz] != (c_cas[kz] == 2'd0) ||
                     zp[kz] != (c_pre[kz] == 3'd0))

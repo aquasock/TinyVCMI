@@ -96,15 +96,23 @@ module ddr3_bist #(
     localparam [31:0] RLAST = (1 << R_LOG2) - 1;
 
     reg [31:0]   seed = 32'h2545f491;
-    reg [31:0]   rcnt = 32'd0;
+    // counts the pass's random READs, 0 to RLAST: R_LOG2 bits, not 32, so its
+    // carry chain is short (as 32 bits it was 1.1 ns over 100 MHz fully timed)
+    reg [R_LOG2-1:0] rcnt = {R_LOG2{1'b0}};
     reg [31:0]   lfsr = 32'h1;
 
     // the words owed, as {re-read, address}
-    reg [AW:0]   rq [0:DEPTH-1];
+    // in LUT RAM, read asynchronously into c0_a: inferred as block RAM, the
+    // read register moved into it and its 2.82 ns clock-to-output led the
+    // address into gen() 0.09 ns over 100 MHz, the design's worst path
+    (* ram_style = "distributed" *) reg [AW:0]   rq [0:DEPTH-1];
     reg [5:0]    rq_w = 6'd0, rq_r = 6'd0;
     reg [6:0]    rq_n = 7'd0;
     wire         take = cmd_valid && cmd_ready;
     wire         rpop = rdata_valid && (rq_n != 7'd0);
+    // (registered at set_addr instead, gen sat behind the address and seed
+    // adders and put the word 4.7 ns over 100 MHz fully timed, against 1.6 ns
+    // into the controller's FIFO as it is here)
     assign cmd_wdata = gen(cmd_addr, seed);
 
     // the check, three PCLK behind the word, each step registered for 100 MHz:
@@ -139,6 +147,8 @@ module ddr3_bist #(
     reg          retry_pend = 1'b0, retry_fly = 1'b0;
     reg [2:0]    retry_idx = 3'd0;
     reg [7:0]    retry_oh = 8'd1;       // retry_idx, one-hot
+    reg          mark_v = 1'b0;         // a re-read was issued last PCLK
+    reg [7:0]    mark_oh = 8'd1;        // its entry
     reg [AW-1:0] retry_addr = {AW{1'b0}}, resume = {AW{1'b0}};
     // the logged word's difference: a re-read of the same address in the
     // same pass is owed the same word, so it came back as the first read did
@@ -149,7 +159,11 @@ module ddr3_bist #(
     reg  [7:0]   beat_bad;
     // the d stage
     reg          d_v = 1'b0, d_retry = 1'b0;
-    reg  [3:0]   d_same = 4'd0;         // per 64-bit quarter: the difference is retry_diff's
+    // per byte: the difference is retry_diff's.  Only their AND is used, and
+    // 64-bit compares put it 1.7 ns over 100 MHz fully timed (TOOL-065); a
+    // copy of the word for the compare alone, 256 more flops beside the
+    // other 256-bit stages, left the placer unable to legalise 3 seeds of 5
+    reg  [31:0]  d_same = 32'd0;
     // the log's entry is written a PCLK after the word is judged
     reg          l_v = 1'b0;
     reg  [2:0]   l_idx = 3'd0;
@@ -191,10 +205,24 @@ module ddr3_bist #(
             a_last <= (v == LAST);
         end
     endtask
-    task set_rcnt(input [31:0] v);
+    // the next address: compared as cmd_addr == LAST - 1, not as the sum,
+    // so no adder sits in front of the compare (as for rcnt below)
+    task inc_addr;
+        begin
+            cmd_addr <= cmd_addr + 1'b1;
+            a_last <= (cmd_addr == LAST - 1);
+        end
+    endtask
+    task set_rcnt(input [R_LOG2-1:0] v);
         begin
             rcnt <= v;
-            r_last <= (v == RLAST);
+            r_last <= (v == RLAST[R_LOG2-1:0]);
+        end
+    endtask
+    task inc_rcnt;
+        begin
+            rcnt <= rcnt + 1'b1;
+            r_last <= (rcnt == RLAST[R_LOG2-1:0] - 1'b1);
         end
     endtask
 
@@ -234,8 +262,8 @@ module ddr3_bist #(
         d_beat <= beat_bad;
         d_pin <= pin_bad;
         d_lb <= lb_bad;
-        for (qs = 0; qs < 4; qs = qs + 1)
-            d_same[qs] <= (diff[64*qs +: 64] == retry_diff[64*qs +: 64]);
+        for (qs = 0; qs < 32; qs = qs + 1)
+            d_same[qs] <= (diff[8*qs +: 8] == retry_diff[8*qs +: 8]);
         if (take && cmd_we && n_written != 32'hffffffff)
             n_written <= n_written + 32'd1;
         if (d_v && d_retry) begin
@@ -279,6 +307,9 @@ module ddr3_bist #(
                 err_diff <= d_diff;
             end
         end
+        if (mark_v)
+            for (le = 0; le < 8; le = le + 1)
+                if (mark_oh[le]) elog[64*le + 37] <= 1'b1;
         if (clr) begin
             passes <= 16'd0;
             n_written <= 32'd0;
@@ -306,7 +337,7 @@ module ddr3_bist #(
                     cmd_valid <= 1'b0;
                     state <= S_WRW;
                 end else
-                    set_addr(cmd_addr + 1'b1);
+                    inc_addr;
             end
             S_WRW: begin
                 cmd_we <= 1'b0;
@@ -329,16 +360,15 @@ module ddr3_bist #(
                     cmd_retry <= 1'b1;
                     retry_pend <= 1'b0;
                     retry_fly <= 1'b1;
-                    for (le = 0; le < 8; le = le + 1) if (retry_oh[le]) elog[64*le + 37] <= 1'b1;
                     cmd_valid <= rroom;
                 end else begin
-                    set_addr(cmd_addr + 1'b1);
+                    inc_addr;
                     cmd_valid <= rroom;
                 end
             end else if (!cmd_valid && rroom)
                 cmd_valid <= 1'b1;
             S_RDW: if (rq_n == 7'd0 && !c0_v && !ck_v && !d_v) begin
-                set_rcnt(32'd0);
+                set_rcnt({R_LOG2{1'b0}});
                 set_addr(lfsr[AW-1:0] & LAST);
                 cmd_valid <= 1'b1;
                 state <= S_RR;
@@ -355,14 +385,13 @@ module ddr3_bist #(
                         retry_pend <= 1'b0;
                         state <= S_RRW;
                     end else begin
-                        set_rcnt(rcnt + 32'd1);
+                        inc_rcnt;
                         if (retry_pend) begin
                             resume <= xs_next(lfsr) & LAST;
                             set_addr(retry_addr);
                             cmd_retry <= 1'b1;
                             retry_pend <= 1'b0;
                             retry_fly <= 1'b1;
-                            for (le = 0; le < 8; le = le + 1) if (retry_oh[le]) elog[64*le + 37] <= 1'b1;
                         end else
                             set_addr(xs_next(lfsr) & LAST);
                         cmd_valid <= rroom;
@@ -381,6 +410,15 @@ module ddr3_bist #(
             end
             default: state <= S_IDLE;
         endcase
+        // the re-read's issue, marked in bit 37 of its entry a PCLK later
+        // (above, before clr): marked at the issue, behind take and the read
+        // states' branches and in front of 512 bits of log, it was 1.1 to
+        // 3.3 ns over 100 MHz fully timed (TOOL-065).  Nothing here reads the
+        // log, and the entry cannot change in between, as the re-read is in
+        // flight.
+        mark_v <= take && !cmd_retry && retry_pend &&
+                  ((state == S_RD && !a_last) || (state == S_RR && !r_last));
+        mark_oh <= retry_oh;
         if (rst) begin
             state <= S_IDLE;
             cmd_valid <= 1'b0;
@@ -393,9 +431,10 @@ module ddr3_bist #(
     end
 `ifndef SYNTHESIS
     // the flags must equal the compares they stand for at every edge
-    always @(posedge pclk)
-        if (a_last != (cmd_addr == LAST) || r_last != (rcnt == RLAST))
+    always @(posedge pclk) begin
+        if (a_last != (cmd_addr == LAST) || r_last != (rcnt == RLAST[R_LOG2-1:0]))
             $fatal(1, "FAIL  ddr3_bist: a_last or r_last disagrees with its compare");
+    end
 `endif
 endmodule
 

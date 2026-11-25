@@ -45,6 +45,34 @@ module tb_align;
         .drift(drift), .pat_ok(pat_ok), .phase(phase), .phase_ok(phase_ok),
         .relocks(relocks));
 
+    // PRE = 1 against the bench's own instance: the same stimulus a PCLK
+    // later, dq_pre the undelayed word; every output must equal dut's a PCLK late
+    reg rst_d = 1'b1, stream_d = 1'b0, arm_d = 1'b0;
+    reg [255:0] dq_d = 256'd0; reg [3:0] rvalid_d = 4'd0; reg [7:0] pat_d = 8'd0;
+    always @(posedge pclk) begin
+        rst_d <= rst; stream_d <= stream; arm_d <= arm; dq_d <= dq_q; rvalid_d <= rvalid; pat_d <= pat;
+    end
+    wire [3:0] trained2, err2, drift2, phase_ok2; wire [11:0] rot2, phase2; wire [255:0] data2;
+    wire valid2, ok2, pat_ok2; wire [15:0] relocks2;
+    rd_align #(.PRE(1)) dut2 (
+        .pclk(pclk), .rst(rst_d), .stream(stream_d), .dq_q(dq_d), .dq_pre(dq_q),
+        .rvalid(rvalid_d), .pat(pat_d), .arm(arm_d), .trained(trained2),
+        .rot(rot2), .data(data2), .valid(valid2), .ok(ok2), .err(err2),
+        .drift(drift2), .pat_ok(pat_ok2), .phase(phase2), .phase_ok(phase_ok2),
+        .relocks(relocks2));
+    reg [314:0] o1_d;
+    integer pre_mm = 0, pre_cmp = 0;
+    always @(posedge pclk)
+        o1_d <= {trained, rot, data, valid, ok, err, drift, pat_ok, phase, phase_ok, relocks};
+    always @(negedge pclk)
+        if (!rst_d && !rst) begin
+            pre_cmp = pre_cmp + 1;
+            if ({trained2, rot2, data2, valid2, ok2, err2, drift2, pat_ok2, phase2, phase_ok2, relocks2} !== o1_d) begin
+                pre_mm = pre_mm + 1;
+                if (pre_mm < 5) $display("FAIL  t=%0t rd_align with PRE = 1 differs from PRE = 0 a PCLK later", $time);
+            end
+        end
+
     integer errors = 0;
     task fail(input [8*96-1:0] msg);
         begin
@@ -295,9 +323,13 @@ module tb_align;
         if (err[3] !== 1'b1) fail("the gated mismatch was not reported for its lane");
         expect_bad = 0;
 
+        repeat (2) @(posedge pclk);
+        if (pre_cmp < 500) fail("the PRE = 1 instance was compared on too few PCLK");
+        errors = errors + pre_mm;
         if (errors == 0) begin
             $display("PASS  %0d bursts presented and every byte matched; rotations 0,3,6,7 ",
                      bursts);
+            $display("      PRE = 1 equal to PRE = 0 a PCLK later on all outputs over %0d PCLK", pre_cmp);
             $display("      locked, drift and err raised only for the lane that moved, an");
             $display("      unidentifiable pattern refused, and a mis-framed pin blocked its lane");
         end else begin

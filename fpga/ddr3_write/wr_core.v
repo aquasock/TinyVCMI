@@ -523,6 +523,14 @@ module wr_core #(
 
     reg [3:0] istate = I_IDLE;
     reg [3:0] wnext = I_IDLE;
+    // istate, wnext and step_no one-hot, written beside them by set_ist,
+    // pause and set_sn: the state machine decodes these rather than the
+    // binary registers, which Yosys does not re-encode (istate is loaded from
+    // wnext), so the decode is not two LUT levels in front of every command,
+    // pause and refresh decision -- those put the command registers up to
+    // 3.1 ns over 100 MHz fully timed (TOOL-065)
+    reg [15:0] ist = 16'd1 << I_IDLE;
+    reg [15:0] wnx = 16'd1 << I_IDLE;
     reg [16:0] itimer = 17'd0;
     reg [16:0] wcount = 17'd0;
     reg [1:0] mr_idx = 2'd0;
@@ -532,6 +540,7 @@ module wr_core #(
     // a one-PCLK pause, so mode_chg has caught up with it before it is read.
     reg mode_chg = 1'b0, mode_go = 1'b0, mode_lvl_off = 1'b0;
     reg [3:0] mode_next = 4'd12;
+    reg [15:0] mode_next_oh = 16'd1 << 12;  // mode_next one-hot, for wnx
     always @(posedge pclk) begin
         mode_chg <= (mode_p != mode);
         mode_go <= (mode_p != M_IDLE);
@@ -541,12 +550,18 @@ module wr_core #(
                      (mode_p == M_READ) ? R_READ :
                      (mode_p == M_FILL) ? R_FILL :
                      (mode_p == M_CTRL) ? R_CTRL : R_RAND;
+        mode_next_oh <= 16'd1 << ((mode_p == M_LEVEL) ? R_LEVEL :
+                                  (mode_p == M_WRITE) ? R_WRITE :
+                                  (mode_p == M_READ) ? R_READ :
+                                  (mode_p == M_FILL) ? R_FILL :
+                                  (mode_p == M_CTRL) ? R_CTRL : R_RAND);
     end
     reg [3:0] rload_cnt = 4'd0;
     reg [3:0] wload_cnt = 4'd0;
     reg [9:0] refi = 10'd0;
     reg [9:0] col = 10'd0;
     reg [3:0] step_no = 4'd0;           // position in an entry/exit/refresh script
+    reg [15:0] sn = 16'd1;              // step_no one-hot
     reg [15:0] rd_hist = 16'd0;         // the read stream, one bit per PCLK
     reg [7:0] read_count = 8'd0;
     reg [8:0] read_pipe = 9'd0;         // READs issued, one bit per PCLK
@@ -604,13 +619,49 @@ module wr_core #(
     wire [2:0] wa_b = walign_p2[2:0];
     wire [79:0] wq_all = {wq, wq_in, 8'd0};       // word k at [8k + 8 +: 8]
     // beats b..7 carry the burst starting in this word, 0..b-1 the one before
-    wire [15:0] wq_pair = {wq_all[8 * wa_d + 8 +: 8], wq_all[8 * wa_d + 16 +: 8]};
-    wire [7:0] wq_out = wq_pair >> (5'd8 - {2'b00, wa_b});
+    // The pair {word d, word d + 1} shifted right by 8 - b, pipelined: word
+    // d at a PCLK is word d - 1 at the PCLK before, so for d >= 1 it is
+    // registered from that tap (wq_ar), word 0 is wq_in itself, and word
+    // d + 1 is word d registered (wq_br).  The alignment is registered too;
+    // it changes only by command through walign_p1 and walign_p2 while the
+    // sequencer waits SETTLE clocks.  Selected from the delay line and
+    // shifted in one PCLK, the word put dq_pat 1.6 to 2.3 ns over 100 MHz
+    // fully timed (TOOL-065).
+    reg        wq_d0 = 1'b1;            // d == 0
+    reg  [6:0] wq_tap = 7'd0;           // one-hot of d - 1, for d >= 1
+    reg  [3:0] wq_sh = 4'd8;            // 8 - b
+    reg  [7:0] wq_ar = 8'd0, wq_br = 8'd0;
+    wire [55:0] wq_taps = {wq[47:0], wq_in};      // word j at [8j +: 8], j = 0..6
+    reg  [7:0] wq_tapv;
+    integer wqj;
+    always @(*) begin
+        wq_tapv = 8'd0;
+        for (wqj = 0; wqj < 7; wqj = wqj + 1)
+            if (wq_tap[wqj]) wq_tapv = wq_tapv | wq_taps[8 * wqj +: 8];
+    end
+    wire [7:0] wq_a = wq_d0 ? wq_in : wq_ar;      // word d
+    always @(posedge pclk) begin
+        wq_d0 <= (wa_d == 3'd0);
+        wq_tap <= (wa_d == 3'd0) ? 7'd0 : (7'd1 << (wa_d - 3'd1));
+        wq_sh <= 4'd8 - {1'b0, wa_b};
+        wq_ar <= wq_tapv;
+        wq_br <= wq_a;                          // word d + 1 at the next PCLK
+    end
+    wire [15:0] wq_pair = {wq_a, wq_br};
+    wire [7:0] wq_out = wq_pair >> wq_sh;
     always @(posedge pclk) begin
         wq <= {wq[55:0], wq_in};
         // the serializers' pattern: the fill's words in fill mode, else P
         dq_pat <= (mode == M_FILL) ? wq_out : dpat_p1;
     end
+    // The random access's address data, kept a PCLK behind xs: xs moves only
+    // at a READ, which a pause of at least 3 PCLK follows, and is seeded at
+    // least 2 PCLK before random mode reads it, so xs_adata is current
+    // whenever an ACTIVATE takes it.  Looked up at the ACTIVATE, behind the
+    // state's conditions, it put acc_exp 0.9 ns over 100 MHz fully timed.
+    reg [7:0] xs_adata = 8'd0;
+    always @(posedge pclk)
+        xs_adata <= adata(xs[2:0], xs[6:3], xs[13:7]);
     // the pause after a random READ: the access period, at least 8, less
     // the ACTIVATE-to-READ cycles and the pause's own two; set from the
     // link, so registered off the counter's path
@@ -679,11 +730,26 @@ module wr_core #(
             cs_n <= 1'b1; ras_n <= 1'b1; cas_n <= 1'b1; we_n <= 1'b1;
         end
     endtask
+    // A command's bank and address are not set where it is issued but every
+    // PCLK, below, from the state alone: a DDR3 device reads them only with
+    // a command, and each state and step issues at most one command whose
+    // address matters (a REFRESH's is don't-care), so the address can be
+    // the one the state would issue whether or not it does.  Set with the
+    // command, behind every condition that decides whether it goes out, the
+    // address was the design's worst path, up to 2.7 ns over 100 MHz fully
+    // timed (TOOL-065).  In simulation issue() keeps the address it was
+    // given in o_ba and o_addr, and every command is checked against them.
+`ifndef SYNTHESIS
+    reg [2:0]  o_ba = 3'd0;
+    reg [15:0] o_addr = 16'd0;
+`endif
     task issue(input [3:0] c, input [2:0] b, input [15:0] a);
         begin
             {cs_n, ras_n, cas_n, we_n} <= c;
-            ba <= b;
-            addr <= a;
+`ifndef SYNTHESIS
+            o_ba <= b;
+            o_addr <= a;
+`endif
         end
     endtask
     localparam [3:0] C_MRS = 4'b0000, C_REF = 4'b0001, C_PRE = 4'b0010, C_ACT = 4'b0011,
@@ -694,7 +760,33 @@ module wr_core #(
         begin
             wcount <= n;
             wnext <= s;
+            wnx <= 16'd1 << s;
             istate <= I_WAIT;
+            ist <= 16'd1 << I_WAIT;
+        end
+    endtask
+    // pause with the return state's one-hot given, where it is a register
+    // (istate, ist; mode_next, mode_next_oh): decoded here, the state's
+    // decode sat in front of wnx, 0.8 ns over 100 MHz fully timed (TOOL-065)
+    task pause_oh(input [16:0] n, input [3:0] s, input [15:0] s_oh);
+        begin
+            wcount <= n;
+            wnext <= s;
+            wnx <= s_oh;
+            istate <= I_WAIT;
+            ist <= 16'd1 << I_WAIT;
+        end
+    endtask
+    task set_ist(input [3:0] v);
+        begin
+            istate <= v;
+            ist <= 16'd1 << v;
+        end
+    endtask
+    task set_sn(input [3:0] v);
+        begin
+            step_no <= v;
+            sn <= 16'd1 << v;
         end
     endtask
 
@@ -702,7 +794,7 @@ module wr_core #(
     // merges identical flops of its own whatever their keep attribute, so
     // seven behavioural copies came out as one, but it does not merge
     // instantiated primitives
-    wire own_d = (istate == R_CTRL) && !mode_chg;
+    wire own_d = ist[R_CTRL] && !mode_chg;
 `ifdef SYNTHESIS
     genvar go;
     generate
@@ -717,8 +809,45 @@ module wr_core #(
     assign ctrl_own_x = ctrl_own_r;
 `endif
 
+    reg [2:0]  spec_ba;
+    reg [15:0] spec_addr;
+    always @(*) begin
+        spec_ba = 3'd0;
+        spec_addr = 16'd0;
+        if (fill_wr) begin                      // the fill's WRITE, a PCLK after its word
+            spec_ba = fill_wr_b;
+            spec_addr = {6'd0, fill_wr_c, 3'b000};
+        end else (* parallel_case *) case (1'b1)
+            ist[I_MR]: {spec_ba, spec_addr} = mr_word(mr_idx);
+            ist[I_ZQ], ist[R_CTRL]: spec_addr = 16'h0400;           // ZQCL, PRECHARGE all
+            ist[R_LEVEL]: begin
+                spec_ba = 3'd1;
+                spec_addr = sn[0] ? 16'h00c4 : 16'h0044;            // MR1 with A7, MR1 back
+            end
+            ist[R_WRITE], ist[R_READ]: begin
+                spec_ba = bank_p2;
+                spec_addr = sn[0] ? {1'b0, row_p2} :                // ACTIVATE
+                            sn[1] ? {6'd0, col} : 16'h0400;         // WRITE/READ, PRECHARGE all
+            end
+            ist[R_RAND]: if (sn[0]) begin                           // ACTIVATE
+                spec_ba = xs[2:0];
+                spec_addr = adata_p2 ? {1'b0, row_p2[14:4], xs[6:3]} : {1'b0, row_p2[14:1], xs[3]};
+            end else begin                                          // READ, auto-precharge
+                spec_ba = acc_bank;
+                spec_addr = {5'd0, 1'b1, acc_col, 3'b000};
+            end
+            ist[R_FILL]: begin
+                spec_ba = fb;
+                spec_addr = sn[1] ? {1'b0, row_p2[14:4], fr} : 16'h0400;   // ACTIVATE, PRECHARGE all
+            end
+            default: ;
+        endcase
+    end
+
     always @(posedge pclk) begin
         deselect;
+        ba <= spec_ba;
+        addr <= spec_addr;
         wq_in <= 8'd0;                  // a fill WRITE sets its word
         fill_wr <= 1'b0;
         if (fill_wr)                    // a PCLK after its word
@@ -733,7 +862,7 @@ module wr_core #(
                    ({4{pat_p2}} & gate_win) : 16'd0;
         // the bus is the controller's from the PCLK after R_CTRL is entered
         // until the edge that leaves it, which precharges every bank
-        ctrl_own <= (istate == R_CTRL) && !mode_chg;
+        ctrl_own <= ist[R_CTRL] && !mode_chg;
         if (read_count == 8'd0) begin
             read_active <= 1'b1;
             read_count <= read_run_p2;
@@ -750,13 +879,13 @@ module wr_core #(
         calib <= (calib_cnt != 2'd0) ? calib_p2 : 32'd0;
         rd_hist <= {rd_hist[14:0], mode == M_READ && g_now};
 
-        if (rload_pulse || (istate == I_IDLE && ready_pc && itimer == 17'd4))
+        if (rload_pulse || (ist[I_IDLE] && ready_pc && itimer == 17'd4))
             rload_cnt <= 4'd8;
         else if (rload_cnt != 4'd0)
             rload_cnt <= rload_cnt - 4'd1;
         rloadn <= (rload_cnt == 4'd0);
 
-        if (wload_pulse || (istate == I_IDLE && ready_pc && itimer == 17'd4))
+        if (wload_pulse || (ist[I_IDLE] && ready_pc && itimer == 17'd4))
             wload_cnt <= 4'd8;
         else if (wload_cnt != 4'd0)
             wload_cnt <= wload_cnt - 4'd1;
@@ -764,11 +893,11 @@ module wr_core #(
 
         // the interval runs through the pauses a running state takes, or a
         // mode that spends most of its time in them would outrun tREFI
-        if ((istate >= R_IDLE || (istate == I_WAIT && wnext >= R_IDLE)) && refi != 10'h3ff)
+        if ((|ist[15:8] || (ist[I_WAIT] && |wnx[15:8])) && refi != 10'h3ff)
             refi <= refi + 10'd1;
 
         if (!ready_pc) begin
-            istate <= I_IDLE;
+            set_ist(I_IDLE);
             itimer <= 17'd0;
             ddr_reset_n <= 1'b0;
             cke <= 1'b0;
@@ -780,43 +909,45 @@ module wr_core #(
             read_count <= 8'd0;
             read_active <= 1'b1;
         end else begin
-            case (istate)
-                I_IDLE: if (itimer == 17'd16) begin
-                    istate <= I_RESET;
+            (* parallel_case *) case (1'b1)
+                ist[I_IDLE]: if (itimer == 17'd16) begin
+                    set_ist(I_RESET);
                     itimer <= 17'd0;
                 end
-                I_RESET: if (itimer == 17'd20000) begin        // 200 us
+                ist[I_RESET]: if (itimer == 17'd20000) begin        // 200 us
                     ddr_reset_n <= 1'b1;
-                    istate <= I_CKE;
+                    set_ist(I_CKE);
                     itimer <= 17'd0;
                 end
-                I_CKE: if (itimer == 17'd50000) begin          // 500 us
+                ist[I_CKE]: if (itimer == 17'd50000) begin          // 500 us
                     cke <= 1'b1;
                     mr_idx <= 2'd0;
                     pause(17'd32, I_MR);                        // 320 ns
                 end
-                I_MR: begin
-                    {ba, addr} <= mr_word(mr_idx);
+                ist[I_MR]: begin
+`ifndef SYNTHESIS
+                    {o_ba, o_addr} <= mr_word(mr_idx);
+`endif
                     {cs_n, ras_n, cas_n, we_n} <= C_MRS;
                     mr_idx <= mr_idx + 2'd1;
                     pause(17'd8, mr_idx == 2'd3 ? I_ZQ : I_MR);
                 end
-                I_ZQ: begin
+                ist[I_ZQ]: begin
                     issue(C_ZQ, 3'd0, 16'h0400);                // ZQCL
                     refi <= 10'd0;
                     mode <= M_IDLE;
                     pause(17'd256, R_IDLE);
                 end
-                I_WAIT: begin
+                ist[I_WAIT]: begin
                     if (wcount == 17'd0)
-                        istate <= wnext;
+                        begin istate <= wnext; ist <= wnx; end
                     else
                         wcount <= wcount - 17'd1;
                 end
 
                 // banks precharged: refresh, or enter the requested mode
-                R_IDLE: begin
-                    step_no <= 4'd0;
+                ist[R_IDLE]: begin
+                    set_sn(4'd0);
                     if (refi_due) begin
                         issue(C_REF, 3'd0, 16'h0000);
                         refi <= 10'd0;
@@ -825,38 +956,38 @@ module wr_core #(
                         mode <= mode_p;
                         xs <= XS_SEED;
                         // through a PCLK so mode_chg compares with the new mode
-                        pause(17'd1, mode_next);
+                        pause_oh(17'd1, mode_next, mode_next_oh);
                     end
                 end
 
                 // write leveling
-                R_LEVEL: begin
-                    case (step_no)
-                        4'd0: begin                             // MR1 with A7
+                ist[R_LEVEL]: begin
+                    (* parallel_case *) case (1'b1)
+                        sn[0]: begin                             // MR1 with A7
                             issue(C_MRS, 3'd1, 16'h00c4);
-                            step_no <= 4'd1;
+                            set_sn(4'd1);
                             pause(17'd16, R_LEVEL);             // tWLMRD 40 tCK
                         end
-                        4'd1: begin
+                        sn[1]: begin
                             odt <= 1'b1;
-                            step_no <= 4'd2;
+                            set_sn(4'd2);
                             pause(17'd16, R_LEVEL);             // tWLDQSEN 25 tCK
                         end
-                        4'd2: begin
+                        sn[2]: begin
                             dqs_drive <= 1'b1;
-                            step_no <= 4'd3;
+                            set_sn(4'd3);
                         end
-                        4'd3: begin
+                        sn[3]: begin
                             read_en <= 16'hffff;
                             if (mode_lvl_off) begin
                                 dqs_drive <= 1'b0;
-                                step_no <= 4'd4;
+                                set_sn(4'd4);
                                 pause(17'd4, R_LEVEL);
                             end
                         end
-                        4'd4: begin
+                        sn[4]: begin
                             odt <= 1'b0;
-                            step_no <= 4'd5;
+                            set_sn(4'd5);
                             pause(17'd4, R_LEVEL);
                         end
                         default: begin                          // MR1 back
@@ -869,37 +1000,37 @@ module wr_core #(
 
                 // writes and reads share one script: open row 0, stream,
                 // refresh (close, refresh, reopen), close on leaving
-                R_WRITE, R_READ: begin
-                    case (step_no)
-                        4'd0: begin
+                ist[R_WRITE], ist[R_READ]: begin
+                    (* parallel_case *) case (1'b1)
+                        sn[0]: begin
                             issue(C_ACT, bank_p2, {1'b0, row_p2});
                             col <= 10'd0;
-                            if (istate == R_WRITE) begin
+                            if (ist[R_WRITE]) begin
                                 odt <= 1'b1;
                                 dq_drive <= 1'b1;
                                 dqs_drive <= 1'b1;
                             end
-                            step_no <= 4'd1;
-                            pause(17'd8, istate);               // tRCD, and the bus settles
+                            set_sn(4'd1);
+                            pause_oh(17'd8, istate, ist);               // tRCD, and the bus settles
                         end
-                        4'd1: begin
+                        sn[1]: begin
                             if (mode_chg || refi_due) begin
-                                step_no <= 4'd2;
-                                pause(17'd8, istate);           // tWR / tRTP and the burst tail
-                            end else if (istate == R_WRITE || read_active) begin
-                                issue(istate == R_WRITE ? C_WR : C_RD, bank_p2, {6'd0, col});
+                                set_sn(4'd2);
+                                pause_oh(17'd8, istate, ist);           // tWR / tRTP and the burst tail
+                            end else if (ist[R_WRITE] || read_active) begin
+                                issue(ist[R_WRITE] ? C_WR : C_RD, bank_p2, {6'd0, col});
                                 col <= col + 10'd8;
-                                if (istate == R_READ) begin
+                                if (ist[R_READ]) begin
                                     read_pipe[0] <= 1'b1;
                                 end
                             end
                         end
-                        4'd2: begin
+                        sn[2]: begin
                             issue(C_PRE, 3'd0, 16'h0400);       // all banks
-                            step_no <= 4'd3;
-                            pause(17'd4, istate);               // tRP
+                            set_sn(4'd3);
+                            pause_oh(17'd4, istate, ist);               // tRP
                         end
-                        4'd3: begin
+                        sn[3]: begin
                             if (mode_chg) begin
                                 // release the bus first: the serializers
                                 // carry their last beats out for a few
@@ -907,21 +1038,21 @@ module wr_core #(
                                 dq_drive <= 1'b0;
                                 dqs_drive <= 1'b0;
                                 odt <= 1'b0;
-                                step_no <= 4'd5;
-                                pause(17'd4, istate);
+                                set_sn(4'd5);
+                                pause_oh(17'd4, istate, ist);
                             end else begin
                                 issue(C_REF, 3'd0, 16'h0000);
                                 refi <= 10'd0;
-                                step_no <= 4'd4;
-                                pause(17'd30, istate);          // tRFC
+                                set_sn(4'd4);
+                                pause_oh(17'd30, istate, ist);          // tRFC
                             end
                         end
-                        4'd5: begin                             // left: idle
+                        sn[5]: begin                             // left: idle
                             mode <= M_IDLE;
-                            istate <= R_IDLE;
+                            set_ist(R_IDLE);
                         end
                         default: begin                          // reopen and stream
-                            step_no <= 4'd0;
+                            set_sn(4'd0);
                         end
                     endcase
                 end
@@ -930,11 +1061,11 @@ module wr_core #(
                 // auto-precharge three PCLK later (tRCD), the next access
                 // `spacing` PCLK after the ACTIVATE -- past tRAS, tRTP, tRP
                 // and tRC, and one ACTIVATE in 8 PCLK keeps tRRD and tFAW
-                R_RAND: begin
-                    if (step_no == 4'd0) begin
+                ist[R_RAND]: begin
+                    if (sn[0]) begin
                         if (mode_chg) begin
                             mode <= M_IDLE;
-                            istate <= R_IDLE;
+                            set_ist(R_IDLE);
                         end else if (refi_due) begin
                             issue(C_REF, 3'd0, 16'h0000);
                             refi <= 10'd0;
@@ -945,16 +1076,16 @@ module wr_core #(
                             acc_rowbit <= xs[3];
                             acc_row4 <= xs[6:3];
                             acc_col <= xs[13:7];
-                            acc_exp <= adata(xs[2:0], xs[6:3], xs[13:7]);
+                            acc_exp <= xs_adata;
                             issue(C_ACT, xs[2:0], {1'b0, row_p2[14:4], xs[6:3]});
-                            step_no <= 4'd1;
+                            set_sn(4'd1);
                             pause(17'd1, R_RAND);
                         end else begin
                             acc_bank <= xs[2:0];
                             acc_rowbit <= xs[3];
                             acc_col <= xs[10:4];
                             issue(C_ACT, xs[2:0], {1'b0, row_p2[14:1], xs[3]});
-                            step_no <= 4'd1;
+                            set_sn(4'd1);
                             pause(17'd1, R_RAND);               // READ 3 PCLK on
                         end
                     end else begin
@@ -963,7 +1094,7 @@ module wr_core #(
                         read_pipe[0] <= 1'b1;
                         rc_issue <= 1'b1;
                         xs <= xorshift(xs);
-                        step_no <= 4'd0;
+                        set_sn(4'd0);
                         pause(rand_wait, R_RAND);
                     end
                 end
@@ -972,23 +1103,23 @@ module wr_core #(
                 // a refresh between rows when one is due, and round again
                 // until the mode changes; the bus is driven throughout, as in
                 // write mode
-                R_FILL: begin
-                    case (step_no)
-                        4'd0: begin
+                ist[R_FILL]: begin
+                    (* parallel_case *) case (1'b1)
+                        sn[0]: begin
                             odt <= 1'b1;
                             dq_drive <= 1'b1;
                             dqs_drive <= 1'b1;
                             fb <= 3'd0;
                             fr <= 4'd0;
-                            step_no <= 4'd1;
+                            set_sn(4'd1);
                             pause(17'd8, R_FILL);               // the bus settles
                         end
-                        4'd1: begin
+                        sn[1]: begin
                             if (mode_chg) begin
                                 dq_drive <= 1'b0;
                                 dqs_drive <= 1'b0;
                                 odt <= 1'b0;
-                                step_no <= 4'd4;
+                                set_sn(4'd4);
                                 pause(17'd4, R_FILL);
                             end else if (refi_due_fill) begin
                                 // a row takes about 150 PCLK and refreshes
@@ -999,44 +1130,44 @@ module wr_core #(
                             end else begin
                                 issue(C_ACT, fb, {1'b0, row_p2[14:4], fr});
                                 fc <= 7'd0;
-                                step_no <= 4'd2;
+                                set_sn(4'd2);
                                 pause(17'd8, R_FILL);           // tRCD
                             end
                         end
-                        4'd2: begin
+                        sn[2]: begin
                             fill_wr <= 1'b1;
                             fill_wr_b <= fb;
                             fill_wr_c <= fc;
                             wq_in <= adata(fb, fr, fc);
                             fc <= fc + 7'd1;
                             if (fc == 7'd127) begin
-                                step_no <= 4'd3;
+                                set_sn(4'd3);
                                 pause(17'd8, R_FILL);           // the last WRITE, tWR, the burst tail
                             end
                         end
-                        4'd3: begin
+                        sn[3]: begin
                             issue(C_PRE, 3'd0, 16'h0400);       // all banks
                             fr <= fr + 4'd1;
                             if (fr == 4'd15)
                                 fb <= fb + 3'd1;
-                            step_no <= 4'd1;
+                            set_sn(4'd1);
                             pause(17'd4, R_FILL);               // tRP
                         end
                         default: begin
                             mode <= M_IDLE;
-                            istate <= R_IDLE;
+                            set_ist(R_IDLE);
                         end
                     endcase
                 end
                 // the controller's: nothing is issued here, not even a
                 // REFRESH, until the mode changes; then every bank is
                 // precharged and the core is idle again
-                R_CTRL: if (mode_chg) begin
+                ist[R_CTRL]: if (mode_chg) begin
                     issue(C_PRE, 3'd0, 16'h0400);       // all banks
                     mode <= M_IDLE;
                     pause(17'd4, R_IDLE);               // tRP
                 end
-                default: istate <= I_IDLE;
+                default: set_ist(I_IDLE);
             endcase
         end
     end
@@ -1064,6 +1195,7 @@ module wr_core #(
     // search and the pin check in one cycle put the Gowin control 0.47 ns
     // short of PCLK
     reg [3:0] h_rot = 4'b0000, h_pins = 4'b0000, h_lvl = 4'b0000;
+    reg [3:0] t_rot = 4'b0000, t_pins = 4'b0000, t_ff = 4'b0000;  // dq_r's word tests, made early
     reg h_read = 1'b0, h_level = 1'b0;
     integer l, k, r;
     reg ok, rot;
@@ -1086,17 +1218,27 @@ module wr_core #(
             snap <= dq_r4;
         h_level <= (mode == M_LEVEL);
         h_read <= (mode == M_READ) && eligible;
+        // The word tests are made a PCLK early, from dq_q and the rotations
+        // of dq_pat now, and registered: dq_r is dq_q and pat_rot dq_pat's
+        // rotations a PCLK later, so the registered tests are those of dq_r
+        // against pat_rot.  Made from dq_r, the rotation test put h_rot 0.1
+        // to 1 ns over 100 MHz fully timed (TOOL-065).
         for (l = 0; l < 4; l = l + 1) begin
-            w0 = dq_r[64 * l +: 8];
+            w0 = dq_q[64 * l +: 8];
             rot = 1'b0;
             for (r = 0; r < 8; r = r + 1)
-                rot = rot || (w0 == pat_rot[8 * r +: 8]);
+                rot = rot || (w0 == ((dq_pat << r) | (dq_pat >> (8 - r))));
             ok = 1'b1;
             for (k = 1; k < 8; k = k + 1)
-                ok = ok && (dq_r[64 * l + 8 * k +: 8] == (k % 2 == 1 ? ~w0 : w0));
-            h_rot[l] <= rvalid[l] && rot;
-            h_pins[l] <= ok;
-            h_lvl[l] <= rvalid[l] && (w0 == 8'hff);
+                ok = ok && (dq_q[64 * l + 8 * k +: 8] == (k % 2 == 1 ? ~w0 : w0));
+            t_rot[l] <= rot;
+            t_pins[l] <= ok;
+            t_ff[l] <= (w0 == 8'hff);
+        end
+        for (l = 0; l < 4; l = l + 1) begin
+            h_rot[l] <= rvalid[l] && t_rot[l];
+            h_pins[l] <= t_pins[l];
+            h_lvl[l] <= rvalid[l] && t_ff[l];
             hit[l] <= h_level ? h_lvl[l] : (h_read && h_rot[l] && h_pins[l]);
             // the window is the 65535 cycles before the wrap
             if (pclk_cnt == 16'hffff) begin
@@ -1134,9 +1276,11 @@ module wr_core #(
                   (arm_p[2] ^ arm_p[1]) || calib_pulse;
     end
 
-    rd_align align (
+    // dq_pre is dq_q, which dq_ra copies at every PCLK: rd_align makes its
+    // measurement's compares from it a PCLK early (PRE)
+    rd_align #(.PRE(1)) align (
         .pclk(pclk), .rst(!ready_pc), .stream(eligible),
-        .dq_q(dq_ra), .rvalid(rvalid_r), .pat(dq_pat), .arm(ra_arm),
+        .dq_q(dq_ra), .dq_pre(dq_q), .rvalid(rvalid_r), .pat(dq_pat), .arm(ra_arm),
         .trained(ra_trained), .rot(ra_rot), .data(ra_data), .valid(ra_valid),
         .ok(ra_ok), .err(ra_err), .drift(ra_drift), .pat_ok(ra_pat_ok),
         .phase(ra_phase), .phase_ok(ra_phase_ok), .relocks(ra_relocks));
@@ -1925,6 +2069,22 @@ module wr_core #(
                 response_index <= response_index + 8'd1;
         end
     end
+`ifndef SYNTHESIS
+    // the one-hot shadows must equal their binary registers at every edge
+    always @(posedge pclk)
+        if (ist != (16'd1 << istate) || wnx != (16'd1 << wnext) || sn != (16'd1 << step_no))
+            $fatal(1, "FAIL  wr_core: a one-hot state shadow disagrees with its register");
+    // every command goes out with the bank and address issue() was given; a
+    // REFRESH's are don't-care, and so is the bank of a PRECHARGE with A10
+    // (every bank) and of a ZQCL
+    always @(posedge pclk)
+        if (!cs_n && {ras_n, cas_n, we_n} != 3'b001 &&
+                (addr != o_addr ||
+                 (ba != o_ba && !({ras_n, cas_n, we_n} == 3'b010 && addr[10]) &&
+                  {ras_n, cas_n, we_n} != 3'b110)))
+            $fatal(1, "FAIL  wr_core: command %b went out with bank %0d address %h, not %0d %h",
+                   {cs_n, ras_n, cas_n, we_n}, ba, addr, o_ba, o_addr);
+`endif
 endmodule
 
 // The 2 Mbaud link of fpga/ddrdll_liveness, unchanged.

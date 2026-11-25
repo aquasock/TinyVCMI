@@ -154,6 +154,19 @@ module rd_check #(
     reg clr = 1'b1;
     always @(posedge pclk)
         clr <= rst || arm;
+    // a copy of clr for the offset matches (hit, m11, m19) alone: from clr,
+    // which also clears every counter, the route put m11 1.2 ns over 100 MHz
+    // fully timed (TOOL-065).  A Gowin DFF under synthesis, which Yosys does
+    // not merge with clr as it would a behavioural copy (TOOL-069).
+    wire clr_h;
+`ifdef SYNTHESIS
+    (* keep *) DFF #(.INIT(1'b1)) clr_h_cp (.D(rst || arm), .CLK(pclk), .Q(clr_h));
+`else
+    reg clr_h_r = 1'b1;
+    always @(posedge pclk)
+        clr_h_r <= rst || arm;
+    assign clr_h = clr_h_r;
+`endif
 
     // ------------------------------------------------------------------
     // Capture reduction: per lane, pins consistent, least rotation, index
@@ -338,11 +351,11 @@ module rd_check #(
                 if (!pins_b3[hl] || canon_b3[8*hl +: 8] != ex_pat[8*j +: 8])
                     all_any = 1'b0;
             all = ex_h[j] && all_any;
-            hit[j] <= all && !clr;
+            hit[j] <= all && !clr_h;
             // The two positions an isolated burst lands in, for every READ,
             // not only the ones the histogram counts.
-            if (j == POS_A) m11 <= all_any && ex_v[POS_A] && !clr;
-            if (j == POS_B) m19 <= all_any && ex_v[POS_B] && !clr;
+            if (j == POS_A) m11 <= all_any && ex_v[POS_A] && !clr_h;
+            if (j == POS_B) m19 <= all_any && ex_v[POS_B] && !clr_h;
         end
         if (clr)
             hcnt <= 512'd0;
@@ -366,13 +379,19 @@ module rd_check #(
     reg  [7:0] m11_d = 8'd0;
     reg        ev19 = 1'b0;
     wire [1:0] cls_w = {m19, m11_d[7]};
-    // pos_range takes the event a PCLK later, from registers: the phase,
-    // the class and the range compared and written in one PCLK put it 2.6 to
-    // 3.6 ns over 100 MHz fully timed (TOOL-065).  The compare and the write
-    // are in the same PCLK, so no event is compared against a stale range.
+    // pos_range takes the event two PCLK later: the event, its class and its
+    // phase are registered, then the selected class's compares, and only then
+    // is the range written.  The phase, the class and the range compared and
+    // written in one PCLK put it 2.6 to 3.6 ns over 100 MHz fully timed
+    // (TOOL-065), and the compare alone still 1.7 ns.  Events come one per
+    // isolated READ, at least 8 PCLK apart, so no event is compared against
+    // a range its predecessor has yet to write.
     reg        pr_v = 1'b0;
     reg  [1:0] pr_cls = 2'd0;
     reg  [9:0] pr_refi = 10'd0;
+    reg        pr2_v = 1'b0, pr2_lt = 1'b0, pr2_gt = 1'b0;
+    reg  [1:0] pr2_cls = 2'd0;
+    reg  [9:0] pr2_refi = 10'd0;
     reg  [3:0] ph_lt, ph_gt;
     integer pc;
     always @(*)
@@ -386,6 +405,11 @@ module rd_check #(
         pr_v <= ev19 && !clr;
         pr_cls <= cls_w;
         pr_refi <= refi;
+        pr2_v <= pr_v && !clr;
+        pr2_lt <= ph_lt[pr_cls];
+        pr2_gt <= ph_gt[pr_cls];
+        pr2_cls <= pr_cls;
+        pr2_refi <= pr_refi;
         if (clr) begin
             n_both <= 32'd0;
             n_only11 <= 32'd0;
@@ -403,11 +427,11 @@ module rd_check #(
                 default: n_other <= n_other + 32'd1;
             endcase
         end
-        if (!clr && pr_v) begin
-            if (ph_lt[pr_cls])
-                pos_range[32*pr_cls +: 16] <= {6'd0, pr_refi};
-            if (ph_gt[pr_cls])
-                pos_range[32*pr_cls + 16 +: 16] <= {6'd0, pr_refi};
+        if (!clr && pr2_v) begin
+            if (pr2_lt)
+                pos_range[32*pr2_cls +: 16] <= {6'd0, pr2_refi};
+            if (pr2_gt)
+                pos_range[32*pr2_cls + 16 +: 16] <= {6'd0, pr2_refi};
         end
     end
     assign hist = hcnt;
