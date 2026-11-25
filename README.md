@@ -10,14 +10,32 @@ may be used as a measurement oracle, but it is not part of the deliverable.
 
 ## Current state
 
-The DDR3 milestone runs on the board. The open-flow DDR3 image matches the
-vendor build on all 306 DDR3 tables, the PHY initialises the device and reads
-its MPR pattern on all 32 DQ, and the controller image trains itself at
-start-up, hands the bus to `ddr3_ctl` and tests the whole 1 GiB. What blocks the
-milestone is the write path: the controller's write alignment is trained rather
-than levelled, and a netlist that adds a gap to separate the doubled write from
-the mask byte fails its own write-alignment search where the netlist before it
-trains. `.ai/core-log.md` carries the live state and the next measurement.
+**v0.1.0: the DDR3 milestone is met.** The Tang Console 138K's 1 GiB of DDR3
+runs at DDR3-800 (400 MHz memory clock, DLL on) from a bitstream built only by
+Yosys, nextpnr-himbaechel and Apicula, with no vendor IP:
+
+- The PHY uses the GW5A's hard DDR3 primitives -- `DDRDLL`, `DQS`,
+  `OSER8_MEM` and `IDES8_MEM` -- and the open-flow image matches the vendor
+  build on all 306 DDR3 configuration tables.
+- The controller (`fpga/ddr3_ctrl/ddr3_ctl.v`) and its training
+  (`fpga/ddr3_write/`) are this project's own. At start-up the image trains
+  every lane's read gate, delay and write alignment, hands the bus to the
+  controller and runs a memory test over the whole array.
+- The image meets 100 MHz on its 1:4 fabric clock with every path timed: the
+  closed image runs `pclk` at 100.25 MHz, the 50 MHz control clock at 62.84 MHz
+  and the 400 MHz memory clock at 798.08 MHz.
+- On the board it trains on the first attempt and runs 734 passes of the full
+  1 GiB test in 10 minutes with no error, warm and from a cold start.
+
+Closing timing needed two fixes to the timing database that nextpnr's Gowin
+generator builds, both inherited from upstream nextpnr: it timed no path
+through a LUT1, LUT2 or LUT3, and none into a LUT RAM's data inputs.
+`tools/nextpnr_arcs.sh` builds a corrected chipdb beside a copy of the nextpnr
+binary from `tools/nextpnr_arcs.patch`, and `tools/ddr3_ctrl_sweep.sh` builds
+the controller image with it; the released image reproduces byte for byte.
+Only about one placement seed in seventeen closes 100 MHz, so images are
+chosen by seed. `.ai/core-log.md` carries the live state and the next
+milestone: the AE350 running from DDR3.
 
 The repository also contains two offline checks:
 

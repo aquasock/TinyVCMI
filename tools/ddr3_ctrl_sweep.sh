@@ -23,10 +23,10 @@ source "$root/tools/openflow_env.sh"
 out=$(mkdir -p "$1" && cd "$1" && pwd); shift
 src="$root/fpga/ddr3_ctrl"; wsrc="$root/fpga/ddr3_write"
 cells="$oss_suite/share/yosys/gowin/cells_xtra_gw5a.v"
-case "$nextpnr_himbaechel" in
-    */nextpnr-tinyvcmi-arcs/*) ;;
-    *) echo "warning: $nextpnr_himbaechel may lack the arcs of tools/nextpnr_arcs.sh" >&2 ;;
-esac
+# tools/nextpnr_arcs.sh puts its chipdb in a share/ beside its copy of the binary
+[[ -f $(dirname "$nextpnr_himbaechel")/share/himbaechel/gowin/chipdb-GW5AST-138C.bin &&
+   -f $(dirname "$nextpnr_himbaechel")/genfix/chipdb.bba ]] ||
+    echo "warning: $nextpnr_himbaechel is not a tools/nextpnr_arcs.sh build; its timing may miss paths" >&2
 (cd "$root/tools" && python3 ddr3_write.py --check) || exit 1
 yosys -Q -T -q -l "$out/synth.log" -p "
     read_verilog -lib $cells

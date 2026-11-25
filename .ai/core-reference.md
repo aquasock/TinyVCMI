@@ -188,6 +188,7 @@ Topic IDs are the `record_id` prefix. An entry reserves a namespace; it does not
 | Is a failing placement deterministic, and which address bits does it get wrong? | TOOL | TOOL-066 |
 | What has been ruled out as the cause of placement-dependent controller failures? | TOOL | TOOL-067 |
 | Has anyone run this board's DDR3 in an open flow? | DDR3 | DDR3-004 |
+| Has open-flow DDR3 been done before, on any FPGA, and what is new here? | DDR3 | DDR3-005 |
 | Which READ spacings can the PHY read back? | TOOL | TOOL-068 |
 | Does Yosys keep a register copied for fan-out or placement? | TOOL | TOOL-069 |
 | Does nextpnr time the paths into a LUT RAM's data inputs? | TOOL | TOOL-070 |
@@ -285,7 +286,8 @@ TOOL-064: "The gap netlist fails training identically on five placements, but th
 TOOL-065: "The fork's chipdb has timing for LUT4 and none for LUT1 to LUT3, so no path through one is timed; with them rewritten as LUT4 the baseline closes pclk at 52.7 to 59.8 MHz, not 100 to 108, ddr3_ctl 7.49 ns and ddr3_bist 6.70 ns too slow, dfi_phy and the boundary clean"
 TOOL-066: "Failing placements fail bit-identically on every load, and the linear test data names the fault: seed 2 drives A5 high on the first column-2 READ after a bank change, B1 seed 1 corrupts A7, A11 and A14"
 TOOL-067: "Not the cause or the cure: boundary delays, boundary pinning, the bitstream's encoding of nextpnr's intent, LUT RAM, an 8 ns target (bit-identical image); 3 of 8 baseline placements clean, B1 0 of 5"
-DDR3-004: "e-karge/gowin-ddr3 runs this board's DDR3 in an open flow in DLL-off mode at 200 MT/s with ODDR/IDDR, a slower fallback, not evidence about 800 MT/s"
+DDR3-004: "e-karge/gowin-ddr3 runs this board's DDR3 in an open flow in DLL-off mode at up to 200 MT/s with ODDR/IDDR and DQS ignored on reads, tested over 4 to 16 MB, a slower fallback, not evidence about 800 MT/s"
+DDR3-005: "Open-flow DDR3 with an open controller has run on Lattice ECP5 (LiteDRAM, Project Trellis) since about 2020; on Gowin no public open-flow DDR3 using the hard DQS, OSER8_MEM and IDES8_MEM primitives or reaching DDR3-800 was found as of 2026-11-24, which this project now does"
 TOOL-068: "A READ two PCLK after a READ comes back as the bus between two bursts; one PCLK apart or three or more read whole, so ddr3_ctl never issues that spacing and tb_ctrl checks it"
 TOOL-069: "synth_gowin merges identical behavioural flops whatever their keep or syn_preserve attribute -- seven copies of ctrl_own came out as one, dq_r folded into dq_ra, rd_align's rot_pat_r into 8 flops -- while instantiated Gowin DFF primitives with keep survive"
 TOOL-070: "The fork's chipdb generator writes the LUT RAM data-input setup arc as DI[n with no closing bracket, naming no port, so nextpnr never times a path into RAM16SDP4 data inputs; tools/nextpnr_arcs.sh builds a chipdb with it and the LUT1 to LUT3 arcs, byte-identical otherwise"
@@ -1108,12 +1110,25 @@ PROV-001: "Reuse source and interface ideas with their original license boundari
   topic_id: DDR3
   title: "An open-flow DDR3 controller runs on the Tang Console 138K in DLL-off mode at 200 MT/s"
   status: SOURCED
-  verified_date: 2026-11-23
-  statement: "github.com/e-karge/gowin-ddr3 (Apache-2.0, created 2026-10-22, last pushed 2026-10-26) runs the Tang Console 138K's DDR3 in DLL-off mode at a 100 MHz CK, 200 MT/s, with ODDR, IDDR and IODELAY primitives rather than the DDR3 serializers, tested over 4 MB, built with its own Apicula and nextpnr forks; its core derives from nand2mario/ddr3-tang-primer-20k, a GW2A design for the Gowin IDE."
+  verified_date: 2026-11-24
+  statement: "github.com/e-karge/gowin-ddr3 (Apache-2.0, created 2026-10-22, last pushed 2026-10-26) runs the Tang Console 138K's DDR3 in DLL-off mode with ODDR, IDDR and IODELAY primitives rather than the DDR3 serializers, sampling DQ on both clock edges and ignoring DQS on reads: at a 100 MHz CK, 200 MT/s, tested over 4 MB, at 50 MHz over 4 MB, and with a slow PHY at 50 MT/s over 16 MB, passing also at 120 and 130 MHz CK; its README notes that DLL-off mode is outside the guaranteed range of some parts. The GW5A builds need its own apicula and nextpnr branches (gw5a-iob-regs, gw5a-iodelay, gw5a-pll). Its core derives from nand2mario/ddr3-tang-primer-20k, a GW2A DDR3-800 design built with the Gowin IDE."
   consequence: "A slower open-flow route to working DDR3 on this board exists and is a fallback if DDR3-800 cannot be made robust; it shows nothing about 800 MT/s, the serializers or this project's toolchain forks."
   sources:
-    - "github.com/e-karge/gowin-ddr3 README, read 2026-11-23"
-  verification: "Read from the repository's README and metadata only; not built or run here."
+    - "github.com/e-karge/gowin-ddr3 README and repository metadata, read 2026-11-23 and 2026-11-24"
+  verification: "Read from the repository's README and metadata only; not built or run here. Revised 2026-11-24 (entry 13): its README re-read through the GitHub API, adding the tested sizes, the other rates and the fork branches; unchanged since 2026-10-26."
+
+- record_id: DDR3-005
+  topic_id: DDR3
+  title: "Open-flow DDR3 before this project, and what is new here"
+  status: SOURCED
+  verified_date: 2026-11-24
+  statement: "On Lattice ECP5, LiteDRAM's ECP5 DDR3 PHY (ported by David Shah) has been built in the fully open Yosys, Project Trellis and nextpnr flow since about 2020, and LiteX boards such as the Versa ECP5 and the OrangeCrab use DDR3 that way; on Xilinx 7-series, LiteX with LiteDRAM is built with F4PGA (SymbiFlow) on boards such as the Arty, whose architecture tests include a LiteX DDR design, though no end-to-end DDR3 report was found. On Gowin, e-karge/gowin-ddr3 is open flow but DLL-off at up to 200 MT/s with DQS ignored (DDR3-004); nand2mario's DDR3-800 controller and Juste-Leo2/tang-primer-20k-ddr3-axi4, which uses OSER8_MEM, IDES8_MEM and DQS, both need the Gowin IDE; Apicula's primitive table lists no support for DQS, IDES8_MEM or OSER8_MEM, and Prokuma/Setsuna issue 5 reports a missing GW2A DQS BEL blocking a DDR3 PHY in nextpnr. No public open-flow Gowin DDR3 design using the hard DDR3 primitives or running DDR3-800 was found."
+  consequence: "Open-flow DDR3 with an open controller is not new in general: ECP5 had it years earlier. What this project appears to be first to do, as far as a public search found, is DDR3-800 with the DLL on, in the JEDEC-rated mode, on a Gowin FPGA in a fully open flow, through the GW5A's hard DDRDLL, DQS, OSER8_MEM and IDES8_MEM, with its own controller and training, timed at 100 MHz on every path and tested over the whole 1 GiB warm and cold. Claims are to be worded as the first known, not the first."
+  sources:
+    - "github.com/enjoy-digital/litedram README (ECP5 DDR3 PHY); github.com/enjoy-digital/linux-on-litex-vexriscv (versa_ecp5 with Yosys+Trellis+nextpnr); groups.google.com/g/linux-litex/c/P1nRNzy6MlM (LiteDRAM's ECP5 port); FOSDEM 2024 'Using the ECP5 for Libre-SOC prototyping' slides (OrangeCrab DDR3L with LiteDRAM)"
+    - "f4pga-examples.readthedocs.io xc7 LiteX demo; symbiflow-arch-defs xilinx/xc7/tests/soc/litex/mini_ddr_eth"
+    - "github.com/e-karge/gowin-ddr3; nand2mario.github.io/projects and /guides; github.com/Juste-Leo2/tang-primer-20k-ddr3-axi4; github.com/YosysHQ/apicula/wiki/Supported-primitives; github.com/Prokuma/Setsuna/issues/5, all read 2026-11-24"
+  verification: "Web searches and the cited pages only, on 2026-11-24, at the user's request before the v0.1.0 release; nothing was built or run. The ECP5 result is well attested but its exact first date and the 7-series end-to-end result were not pinned down. Absence of an earlier Gowin result is the absence of what a search found, not proof."
 
 - record_id: TOOL-068
   topic_id: TOOL
