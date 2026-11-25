@@ -564,3 +564,41 @@ Load a full-array memory test and the miss-latency measurement over the boot ROM
 - User Test: NOT RUN
 
 ---
+
+## 17 COMMIT Unreleased 2026-11-25T11:27:09-07:00
+
+#### Coming From:
+
+v0.1.0 c049c6c
+
+#### Purpose:
+
+Prove the DDR3 from the A25's side with a loaded program that tests the whole array and measures what a cache miss costs, for comparison with AE350-003.
+
+#### Outcome:
+
+Every word of the array the A25 can be given passed and a miss costs 503 cycles. TinyNES's runtime came across as `firmware/rt` (`crt0.S`, `syscalls.c`, `link.ld`, `rt.mk`, `include/sys/dirent.h`, renamed to `tv_` and linked for the DDR3 from `0x40000000` to the block RAM at `0x7fff0000`, which holds the stack), `tinyvcmi.h` gained `tv_cycles64`, and TinyNES's `tools/load_ae350.py` became TinyVCMI's without its file service and link mode, defaulting to the Tang's UART by its `/dev/serial/by-id` path and discarding what arrives in its first second, because the boot ROM's text from while the port was closed arrives behind the open and the first run printed about 70 stale banners between `loaded` and `RUN`, where a stale `BAD` line would have failed a good run. `firmware/apps/ddr3_test` measures by Tang-PSX's memlat method, dependent loads along a random cycle of 32-byte lines (Sattolo), streamed loads and stored lines, then runs `tv_test_words` from the first MiB after the program to `0x7fff0000`, 1,022 MiB, a hashed address pattern and its inverse under two seeds, cached, with the D-cache written back and invalidated before each read; it builds under `-Werror`. On the board, entry 16's seed 25 image still in SRAM and the boot ROM at `LOAD`, it loaded 48,188 bytes in 0.35 s and reported, in core cycles, 3.2 for dependent loads within 16 KiB, 499.8, 503.0 and 503.1 over 256 KiB, 4 MiB and 64 MiB, 477.2 per streamed line and 662.6 per stored line with write-back, against Tang-PSX's 3.2, 568 and 570, 552 and 637 (AE350-004), then both seeds' passes with 0 failures in 102,950 ms each, `TinyVCMI DDR3 FULL OK 1022 MiB` and exit 0. Run again from the rebooted ROM with the loader's fix, it gave no stale text and the same figures to the tenth of a cycle with 0 failures. AE350-004 was added and BRD-001 gained a revision note. The board was left in one-wire mode with seed 25 in SRAM and the boot ROM waiting for a program, the desktop not restored; the user takes the agent's word for this result, VCMI on HDMI being their test. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering and active-log capacity.
+
+#### Next Steps:
+
+Work toward the user's acceptance test, VCMI visibly running on HDMI. That needs an 800x600 video path scanning a framebuffer out of the DDR3 beside the CPU's traffic (VIDEO-001, VIDEO-002), which means a second client on `ddr3_ctl` with priority for scanout and an HDMI encoder in this open flow, the TinyTang link and input for keyboard and mouse (INPUT-002), and the VCMI port itself, starting from the source inventory GAP-004 asks for and the runtime's file and thread needs, with GAP-003's memory budget measured as subsets run. A first cycle should propose the video path's design and its memory bandwidth budget for the user's approval. Rebuilding the controller image with entry 16's `ddr3_ctl`, robust closure, the STA disagreement on `m_n_r`, the frequency sweep, the nextpnr patch's upstream report and any 0.2.0 release wait for the user.
+
+#### Files Modified:
+
+- firmware/apps/ddr3_test/Makefile
+- firmware/apps/ddr3_test/main.c
+- firmware/include/tinyvcmi.h
+- firmware/rt/crt0.S
+- firmware/rt/include/sys/dirent.h
+- firmware/rt/link.ld
+- firmware/rt/rt.mk
+- firmware/rt/syscalls.c
+- tools/load_ae350.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: NOT RUN
+
+---

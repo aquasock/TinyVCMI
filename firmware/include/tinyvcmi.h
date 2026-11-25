@@ -88,4 +88,17 @@ static inline uint32_t tv_cycles(void)
 	return value;
 }
 
+/* The whole 64-bit cycle count, reread if the low half carried between
+ * the reads of the high half. */
+static inline uint64_t tv_cycles64(void)
+{
+	uint32_t high, low, check;
+	do {
+		__asm__ volatile("csrr %0, mcycleh" : "=r"(high));
+		__asm__ volatile("csrr %0, mcycle" : "=r"(low));
+		__asm__ volatile("csrr %0, mcycleh" : "=r"(check));
+	} while (high != check);
+	return (uint64_t)high << 32 | low;
+}
+
 #endif

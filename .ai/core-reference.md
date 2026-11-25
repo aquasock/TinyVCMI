@@ -112,6 +112,7 @@ Topic IDs are the `record_id` prefix. An entry reserves a namespace; it does not
 | Where does the AE350 boot and where is main RAM mapped? | AE350 | AE350-001 |
 | What clocks and caches does the AE350 use? | AE350 | AE350-002 |
 | What does a DDR3 cache miss cost in the proven implementation? | AE350 | AE350-003 |
+| What does a DDR3 cache miss cost through TinyVCMI's own controller? | AE350 | AE350-004 |
 | Which video architecture has already worked in the open flow? | VIDEO | VIDEO-001 |
 | What resolution does the existing VCMI port require? | VIDEO | VIDEO-002 |
 | What do the Logitech keyboard and mouse report? | INPUT | INPUT-001 |
@@ -214,6 +215,7 @@ DDR3-003: "Current Gowin DDR3 output is encrypted RTL plus a post-PnR simulation
 AE350-001: "Reset is 0x80000000; cacheable main memory is on the 64-bit RAM AHB port and EXTS is at 0xe8000000"
 AE350-002: "The A25 runs at 750 MHz in the qualified sibling designs, with 32 KiB instruction and data caches and a 75 MHz fabric bus"
 AE350-003: "Tang-PSX measured about 570 core cycles for a DDR3 D-cache miss through its proven path"
+AE350-004: "TinyVCMI's open path measured 503 core cycles for a dependent DDR3 miss (about 670 ns), 477 per streamed line and 663 per stored line with write-back, against Tang-PSX's 570, 552 and 637"
 VIDEO-001: "TinyNES and TinyGBC use SDRAM-backed framebuffers and FPGA HDMI scanout in the open flow"
 VIDEO-002: "MiSTer-VCMI supports 800x600 and states that VCMI needs at least 800x600"
 INPUT-001: "The Logitech K950 supplies an 8-byte boot-keyboard report and the M750 a 4-byte boot-mouse report"
@@ -335,14 +337,14 @@ PROV-001: "Reuse source and interface ideas with their original license boundari
   topic_id: BRD
   title: "The onboard DDR3 array is 1 GiB with a 32-bit data bus"
   status: VERIFIED
-  verified_date: 2026-10-22
+  verified_date: 2026-11-25
   statement: "The Tang Console 138K SOM fits two Hynix H5TQ4G63EFR-RDC 4-Gbit x16 DDR3 devices on one address and command bus with separate data lanes, forming DQ[31:0], DQS[3:0] and DM[3:0] for 1 GiB total capacity."
   consequence: "The board has enough physical capacity for the measured VCMI working set. Capacity is not the blocking question; an open controller, PHY integration, timing model, placement, routing and hardware qualification are."
   sources:
     - "Tang-PSX commit 61974ca, .ai/core-reference.md BRD-001 and BRD-002"
     - "Tang-PSX commit 61974ca, gateware/gowin_ddr3.py: ddram32_io"
     - "Hynix H5TQ4G63EFR datasheet: organization and x16 interface"
-  verification: "Tang-PSX records 232 full-array passes with zero errors and an AE350 walking-address test across 1 GiB. TinyVCMI has not yet reproduced that result."
+  verification: "Tang-PSX records 232 full-array passes with zero errors and an AE350 walking-address test across 1 GiB. Revised 2026-11-25 (core-log entry 17): TinyVCMI's A25 wrote and read back every word from 0x40100000 to 0x7fff0000, 1,022 MiB, with a hashed address pattern and its inverse under two seeds, cached, through its own open-flow controller, with no failure on two runs (firmware/apps/ddr3_test); its fabric controller test had already covered the whole 1 GiB (core-log entries 11 to 14)."
 
 - record_id: BRD-002
   topic_id: BRD
@@ -443,6 +445,19 @@ PROV-001: "Reuse source and interface ideas with their original license boundari
     - "Tang-PSX commit 61974ca, .ai/core-reference.md AE350-009 and AE350-010"
     - "Tang-PSX commit 61974ca, software/programs/memlat and gateware/l2_cache.py"
   verification: "The values are hardware measurements from the sibling design and have not been reproduced by TinyVCMI."
+
+- record_id: AE350-004
+  topic_id: AE350
+  title: "Measured DDR3 cache-miss cost through TinyVCMI's open path"
+  status: VERIFIED
+  verified_date: 2026-11-25
+  statement: "With both L1 caches on, firmware/apps/ddr3_test measured, in 750 MHz A25 cycles per access and by Tang-PSX's memlat method (AE350-003): 3.2 for dependent loads within 16 KiB; 499.8, 503.0 and 503.1 for dependent loads over random 32-byte lines of 256 KiB, 4 MiB and 64 MiB; 477.2 per line for consecutive independent loads over 4 MiB; and 662.6 per line for stores over 4 MiB, each evicting a dirty line. The path is ahb_ram, ahb_ddr3's bus half and its toggle handshake from the 75 MHz bus clock to the 100 MHz PCLK, ahb_ddr3's PCLK half and ddr3_ctl, with seed 25 of core-log entry 16's AE350 image. Two runs gave the same figures to the tenth of a cycle."
+  consequence: "A miss costs about 670 ns, about 50 bus clocks, roughly 12 per cent less than the Gowin-IP path's 570 cycles, while a store that writes back a dirty line costs about 4 per cent more than there, plausibly because the bridge makes the next DDR3 transfer wait until a write is in ddr3_ctl's FIFO, which was not measured. Streamed loads cost nearly what dependent ones do, so misses do not overlap. The figures are this image's and bridge's, not a limit of the DDR3 or the A25; VCMI-scale working sets will pay them on every miss, so latency and any fabric cache remain worth measuring against real workloads."
+  sources:
+    - "TinyVCMI firmware/apps/ddr3_test/main.c, run with tools/load_ae350.py"
+    - "TinyVCMI fpga/ae350_ddr3/ahb_ram.sv and ahb_ddr3.v; fpga/ddr3_ctrl/ddr3_ctl.v"
+    - "Tang-PSX commit 8e7eee4, software/programs/memlat/main.c and .ai/core-reference.md AE350-009"
+  verification: "Measured on the board on 2026-11-25 (core-log entry 17), twice, with the image of entry 16 warm after a cold start that morning. The comparison with Tang-PSX assumes its counter and cache settings match, which its memlat source and record state."
 
 - record_id: PROT-002
   topic_id: PROT
