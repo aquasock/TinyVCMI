@@ -6,7 +6,8 @@
 #
 # The netlist is $TINYVCMI_CTRL_JSON (default build/ddr3_ctrl/open/ctrl.json,
 # written by tools/build_ddr3_ctrl.sh, which also runs the simulations and the
-# boundary check this skips).  The pins are appended to the generated top.cst.
+# boundary check this skips).  The pins are appended to the generated top.cst,
+# or to $TINYVCMI_CST and the SDC is $TINYVCMI_SDC when they are set.
 # After routing, every pinned cell is checked to be on the bel it was given.
 # Nothing here touches the board.
 set -uo pipefail
@@ -24,7 +25,7 @@ mkdir -p "$out"
 rm -f "$out/DONE" "$out/FAILED"
 fail() { echo "seed $seed: $*" | tee "$out/FAILED"; exit 1; }
 
-cat "$root/fpga/ddr3_ctrl/top.cst" ${pins:+"$pins"} >"$out/top.cst"
+cat "${TINYVCMI_CST:-$root/fpga/ddr3_ctrl/top.cst}" ${pins:+"$pins"} >"$out/top.cst"
 
 "$nextpnr_himbaechel" \
     --json "$json" --write "$out/ctrl-routed.json" \

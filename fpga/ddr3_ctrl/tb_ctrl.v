@@ -91,7 +91,19 @@ module tb_ctrl;
     wire [31:0]  dm;
     wire [511:0] ext_status;
 
-    ctrl_glue #(.N_LOG2(NL), .R_LOG2(NL), .SNAP_LOG2(4)) dut (
+    // TB_CPU: the AE350 image's glue, handed to the x_ port after the test
+`ifdef TB_CPU
+    localparam integer CPU = 1;
+`else
+    localparam integer CPU = 0;
+`endif
+    reg          x_valid = 1'b0, x_we = 1'b0;
+    reg  [24:0]  x_addr = 25'd0;
+    reg  [255:0] x_wdata = 256'd0;
+    reg  [31:0]  x_wmask = 32'd0;
+    wire         x_ready, x_rvalid, x_rst, cpu_run;
+    wire [255:0] x_rdata;
+    ctrl_glue #(.N_LOG2(NL), .R_LOG2(NL), .SNAP_LOG2(4), .CPU(CPU), .HAND_LOG2(4)) dut (
         .sys_clk(sys_clk), .pclk(pclk), .dq_q(dq_q),
         .wc_cs_n(1'b1), .wc_ras_n(1'b1), .wc_cas_n(1'b1), .wc_we_n(1'b1),
         .wc_ba(3'd0), .wc_addr(16'd0), .wc_odt(1'b0), .wc_dq_pat(8'h00),
@@ -101,7 +113,9 @@ module tb_ctrl;
         .p_cs_n(p_cs_n), .p_ras_n(p_ras_n), .p_cas_n(p_cas_n), .p_we_n(p_we_n),
         .p_ba(p_ba), .p_addr(p_addr), .p_odt(p_odt), .p_dq_drive(p_dq_drive),
         .p_dqs_drive(p_dqs_drive), .wdq(wdq), .dm(dm), .ctrl_rd(ctrl_rd), .ctrl_accept(ctrl_accept),
-        .ext_status(ext_status));
+        .ext_status(ext_status),
+        .x_valid(x_valid), .x_we(x_we), .x_addr(x_addr), .x_wdata(x_wdata), .x_wmask(x_wmask),
+        .x_ready(x_ready), .x_rvalid(x_rvalid), .x_rdata(x_rdata), .x_rst(x_rst), .cpu_run(cpu_run));
 
     // a controller a timing short, so the monitor is seen to catch it
 `ifdef CTL_T_RCD
@@ -412,6 +426,9 @@ module tb_ctrl;
         if (n_refs < (4 * cyc) / 3120 - 1) fail("fewer REFRESHes than the run's length needs");
         if (max_refi > 3120) fail("a refresh interval over 7.8 us");
         if (!ctrl_accept || !ext_status[15]) fail("the controller did not accept the trained alignment");
+`ifdef TB_CPU
+        cpu_client;
+`endif
 `ifndef MODEL_FAULTS
         if (errors == 0)
             $display("PASS  ddr3_ctl through dfi_phy: %0d words written and %0d read back whole",
@@ -423,12 +440,91 @@ module tb_ctrl;
         $finish;
     end
 
+`ifdef TB_CPU
+    // After the test, command 0x3C 0x50 hands the controller to the x_
+    // port: the test must stop, x_rst fall and cpu_run rise; then the port
+    // writes 256 words whole, overwrites them under random masks, with
+    // some reads straight after a write to the same word, and reads them
+    // all back, every byte checked against its own reference.
+    localparam integer XW = 256;
+    reg [255:0] x_ref [0:XW-1];
+    reg [24:0]  x_q [0:1023];
+    reg [255:0] x_e [0:1023];               // each read's expected word, as at its issue
+    integer     x_qw = 0, x_qr = 0, x_reads = 0, x_bad = 0, xi, xk;
+    always @(posedge pclk)
+        if (x_rvalid) begin
+            if (x_qr == x_qw) fail("the x_ port got read data it did not ask for");
+            else begin
+                if (x_rdata !== x_e[x_qr % 1024]) x_bad = x_bad + 1;
+                x_qr = x_qr + 1;
+                x_reads = x_reads + 1;
+            end
+        end
+    // The driver works on the falling edge and learns whether the rising
+    // edge took its request from x_took, which an always block samples as
+    // the controller does; a task that reads x_ready just after the rising
+    // edge can see the FIFO's new state instead.  Called at a falling edge.
+    reg x_took = 1'b0;
+    always @(posedge pclk) x_took <= x_valid && x_ready;
+    task x_req(input we, input [24:0] a, input [255:0] d, input [31:0] m);
+        begin
+            x_valid = 1'b1; x_we = we; x_addr = a; x_wdata = d; x_wmask = m;
+            @(negedge pclk);
+            while (!x_took) @(negedge pclk);
+            x_valid = 1'b0;
+            if (we) begin
+                for (xk = 0; xk < 32; xk = xk + 1)
+                    if (!m[xk]) x_ref[a % XW][8*xk +: 8] = d[8*xk +: 8];
+            end else begin
+                x_q[x_qw % 1024] = a;
+                x_e[x_qw % 1024] = x_ref[a % XW];
+                x_qw = x_qw + 1;
+            end
+        end
+    endtask
+    function [255:0] rnd256(input integer dummy);
+        rnd256 = {$random, $random, $random, $random, $random, $random, $random, $random};
+    endfunction
+    task cpu_client;
+        reg [24:0] a;
+        begin
+            @(posedge sys_clk) ext_cmd <= 8'h50;
+            @(posedge sys_clk) ext_tog <= ~ext_tog;
+            wait (!x_rst);
+            if (dut.bist.cmd_valid) fail("the test still requests after the hand-over");
+            wait (cpu_run);
+            repeat (40) @(posedge sys_clk);
+            if (!ext_status[0]) fail("the status frame does not show the hand-over");
+            @(negedge pclk);
+            for (xi = 0; xi < XW; xi = xi + 1)
+                x_req(1'b1, 25'h000100 + xi * 25'd13, rnd256(0), 32'd0);
+            for (xi = 0; xi < 4 * XW; xi = xi + 1) begin
+                a = 25'h000100 + ($random & 255) * 25'd13;
+                x_req(1'b1, a, rnd256(0), $random);
+                if (xi % 3 == 0) x_req(1'b0, a, 256'd0, 32'd0);
+            end
+            for (xi = 0; xi < XW; xi = xi + 1)
+                x_req(1'b0, 25'h000100 + xi * 25'd13, 256'd0, 32'd0);
+            wait (x_qr == x_qw);
+            repeat (10) @(posedge pclk);
+            if (x_bad != 0) fail("a word read on the x_ port differed from what it wrote");
+            if (dut.bist.state != 0) fail("the test ran after the hand-over");
+            $display("      the CPU port after the hand-over: %0d WRITEs, %0d READs, %0d wrong",
+                     5 * XW, x_reads, x_bad);
+        end
+    endtask
+`endif
+
     // progress, so a stall shows at once
     always begin
         #20000;
         $display("      t=%0t state %0d passes %0d written %0d checked %0d; pads %0d WRITE %0d READ; cmd valid %b ready %b",
                  $time, dut.bist.state, dut.bist.passes, dut.bist.n_written, dut.bist.n_checked,
                  n_writes, n_reads, dut.bist.cmd_valid, dut.cmd_ready);
+`ifdef TB_CPU
+        $display("      x: own %b rst %b run %b valid %b ready %b, %0d reads asked %0d back, item %0d",
+                 dut.cpu_own, x_rst, cpu_run, x_valid, x_ready, x_qw, x_qr, xi);
+`endif
     end
 
     initial begin

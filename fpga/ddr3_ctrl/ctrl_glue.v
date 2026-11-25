@@ -26,10 +26,19 @@
 //                   0 the summary below, 1 each DQ q's failing words at
 //                   [16q +: 16], 2 lane l and beat b's at [16(8l + b) +: 16],
 //                   3 the log of the first eight failing words (ddr3_bist)
+//   0x3C 0x50       with CPU 1, once the controller owns the bus: hand the
+//                   controller to the x_ port for good, the test held in
+//                   reset, and, 2^HAND_LOG2 sys_clk later, when wr_core's
+//                   reply has left the pin, raise cpu_run; ignored otherwise
+//
+// With CPU 1 the x_ port is a second client of the controller, the AE350's
+// (fpga/ae350_ddr3/ahb_ddr3.v), held in reset (x_rst) until the hand-over.
+// cpu_run, on sys_clk, lets the AE350 run and gives it the UART; it never
+// falls again.  With CPU 0 the port is unused and the mux folds away.
 //
 // Frame 0x3D, little-endian, byte 0 in the low bits:
 //   0      {ctrl_own, trained, test running, READ/WRITE off phase 0,
-//           read offset[1:0], an error seen, 0}
+//           read offset[1:0], an error seen, handed to the CPU}
 //   1      {the training found dfi_phy's write alignment, 0, 0, 0, the test's
 //          state: 0 idle, 1/2 writing, 3/4 reading in order, 5/6 at random}
 //   2-3    passes completed
@@ -43,7 +52,9 @@ module ctrl_glue #(
     parameter integer WB = 2,
     parameter integer N_LOG2 = 25,      // the test's words per pass: all 1 GiB
     parameter integer R_LOG2 = 20,
-    parameter integer SNAP_LOG2 = 10    // PCLK between status snapshots
+    parameter integer SNAP_LOG2 = 10,   // PCLK between status snapshots
+    parameter integer CPU = 0,          // 1: the x_ port and command 0x3C 0x50
+    parameter integer HAND_LOG2 = 20    // sys_clk from the hand-over to cpu_run: 21 ms
 ) (
     input  wire         sys_clk,
     input  wire         pclk,
@@ -73,7 +84,19 @@ module ctrl_glue #(
     output wire [31:0]  dm,             // the DM pads: lane l, beat b at 8l + b
     output wire         ctrl_rd,
     output reg          ctrl_accept = 1'b0, // sys_clk: the training found dfi_phy's alignment
-    output reg  [511:0] ext_status = 512'd0
+    output reg  [511:0] ext_status = 512'd0,
+
+    // the CPU's client port, on PCLK, as ddr3_ctl's request port (CPU 1)
+    input  wire         x_valid,
+    output wire         x_ready,
+    input  wire         x_we,
+    input  wire [24:0]  x_addr,
+    input  wire [255:0] x_wdata,
+    input  wire [31:0]  x_wmask,
+    output wire         x_rvalid,
+    output wire [255:0] x_rdata,
+    output reg          x_rst = 1'b1,
+    output reg          cpu_run = 1'b0  // sys_clk
 );
     // ---- the write alignment: dfi_phy's is built in -------------------
     localparam [2:0] WD3 = WD, WB3 = WB;
@@ -91,6 +114,7 @@ module ctrl_glue #(
     reg [1:0] rd_off = 2'd1;
     reg [1:0] page = 2'd0;
     reg       bist_en = 1'b1, bist_clr = 1'b0;
+    reg       cpu_own = 1'b0;           // the controller is the x_ port's, for good
     reg [7:0] cmd_p = 8'd0;
     always @(posedge pclk) begin
         tog_p <= {tog_p[1:0], ext_tog};
@@ -102,12 +126,26 @@ module ctrl_glue #(
                 4'h2: bist_en <= cmd_p[0];
                 4'h3: bist_clr <= 1'b1;
                 4'h4: page <= cmd_p[1:0];
+                4'h5: if (CPU != 0 && ctrl_own) cpu_own <= 1'b1;
                 default: ;
             endcase
     end
     reg ld_rst = 1'b1;
-    always @(posedge pclk)
+    always @(posedge pclk) begin
         ld_rst <= !ctrl_own;
+        x_rst <= !ctrl_own || !cpu_own;
+    end
+    // cpu_run follows cpu_own into sys_clk once wr_core's reply has had
+    // 2^HAND_LOG2 sys_clk to leave the pin
+    reg [2:0] own_s = 3'd0;
+    reg [HAND_LOG2:0] hand_t = {(HAND_LOG2 + 1){1'b0}};
+    always @(posedge sys_clk) begin
+        own_s <= {own_s[1:0], cpu_own};
+        if (own_s[2] && !cpu_run) begin
+            hand_t <= hand_t + 1'b1;
+            if (hand_t[HAND_LOG2]) cpu_run <= 1'b1;
+        end
+    end
 
     // ---- the controller ---------------------------------------------------
     wire [3:0]   dfi_cs_n, dfi_ras_n, dfi_cas_n, dfi_we_n, dfi_wrdata_en, dfi_rddata_en;
@@ -120,6 +158,20 @@ module ctrl_glue #(
     wire [24:0]  cmd_addr;
     wire [255:0] cmd_wdata, rdata_data;
     wire [31:0]  cmd_wmask;
+    // the test's requests, or the CPU's once it has the controller
+    wire         b_valid, b_we;
+    wire [24:0]  b_addr;
+    wire [255:0] b_wdata;
+    wire [31:0]  b_wmask;
+    wire         sel_x = (CPU != 0) && cpu_own;
+    assign cmd_valid = sel_x ? x_valid : b_valid;
+    assign cmd_we    = sel_x ? x_we    : b_we;
+    assign cmd_addr  = sel_x ? x_addr  : b_addr;
+    assign cmd_wdata = sel_x ? x_wdata : b_wdata;
+    assign cmd_wmask = sel_x ? x_wmask : b_wmask;
+    assign x_ready   = cmd_ready;
+    assign x_rvalid  = rdata_valid && sel_x;
+    assign x_rdata   = rdata_data;
     wire [31:0]  n_act, n_ref;
     ddr3_ctl ctl (
         .pclk(pclk), .rst(ld_rst),
@@ -163,9 +215,9 @@ module ctrl_glue #(
     wire [511:0] b_pin_err, b_beat_err, b_elog;
     wire [3:0]   b_n_log;
     ddr3_bist #(.AW(25), .N_LOG2(N_LOG2), .R_LOG2(R_LOG2)) bist (
-        .pclk(pclk), .rst(ld_rst || !bist_en), .clr(bist_clr),
-        .cmd_valid(cmd_valid), .cmd_ready(cmd_ready), .cmd_we(cmd_we), .cmd_addr(cmd_addr),
-        .cmd_wdata(cmd_wdata), .cmd_wmask(cmd_wmask), .rdata_valid(rdata_valid), .rdata_data(rdata_data),
+        .pclk(pclk), .rst(ld_rst || !bist_en || sel_x), .clr(bist_clr),
+        .cmd_valid(b_valid), .cmd_ready(cmd_ready && !sel_x), .cmd_we(b_we), .cmd_addr(b_addr),
+        .cmd_wdata(b_wdata), .cmd_wmask(b_wmask), .rdata_valid(rdata_valid && !sel_x), .rdata_data(rdata_data),
         .state(b_state), .passes(b_passes), .n_written(b_written), .n_checked(b_checked),
         .lane_err(b_lane_err), .err_seen(b_err_seen), .err_addr(b_err_addr),
         .err_diff(b_err_diff), .pin_err(b_pin_err), .beat_err(b_beat_err), .elog(b_elog),
@@ -217,8 +269,8 @@ module ctrl_glue #(
                 default:
                     snap <= {b_err_diff, 3'd0, b_n_log, b_err_addr, b_lane_err, b_checked,
                              b_written, b_passes, walign_ok, 3'd0, b_state,
-                             ctrl_own, trained_p[2], bist_en && !ld_rst, bad_phase, rd_off,
-                             b_err_seen, 1'b0};
+                             ctrl_own, trained_p[2], bist_en && !ld_rst && !sel_x, bad_phase, rd_off,
+                             b_err_seen, cpu_own};
             endcase
             snap_tog <= ~snap_tog;
         end

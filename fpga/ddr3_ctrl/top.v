@@ -1108,7 +1108,9 @@ module top (
         .p_cs_n(p_cs_n), .p_ras_n(p_ras_n), .p_cas_n(p_cas_n), .p_we_n(p_we_n),
         .p_ba(p_ba), .p_addr(p_addr), .p_odt(p_odt), .p_dq_drive(p_dq_drive),
         .p_dqs_drive(p_dqs_drive), .wdq(wdq), .dm(dm), .ctrl_rd(ctrl_rd), .ctrl_accept(ctrl_accept),
-        .ext_status(ext_status));
+        .ext_status(ext_status),
+        .x_valid(1'b0), .x_we(1'b0), .x_addr(25'd0), .x_wdata(256'd0), .x_wmask(32'd0),
+        .x_ready(), .x_rvalid(), .x_rdata(), .x_rst(), .cpu_run());
 endmodule
 module bnd_ff #(parameter [0:0] INIT = 1'b0) (input wire CLK, input wire D, output wire Q);
 `ifdef YOSYS

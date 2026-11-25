@@ -286,6 +286,7 @@ class Core:
         u32 = lambda o: int.from_bytes(b[o:o + 4], "little")
         return {"own": b[0] >> 7, "trained": b[0] >> 6 & 1, "running": b[0] >> 5 & 1,
                 "bad_phase": b[0] >> 4 & 1, "rd_off": b[0] >> 2 & 3, "err": b[0] >> 1 & 1,
+                "cpu": b[0] & 1,
                 "state": b[1] & 15, "walign_ok": b[1] >> 7, "passes": int.from_bytes(b[2:4], "little"),
                 "written": u32(4), "checked": u32(8),
                 "lane_err": [u32(12 + 4 * l) for l in range(4)],
@@ -1382,6 +1383,12 @@ def main() -> int:
                     help="seconds to report the test's progress for, once a second")
     ct.add_argument("--diag", action="store_true",
                     help="then the test's per-pin and per-lane-and-beat counts and its log")
+    ho = sub.add_parser("handover", help="the AE350 image: hand the controller and the UART "
+                                         "to the AE350 (0x3C 0x50), then print what it sends")
+    ho.add_argument("--listen", type=float, default=10,
+                    help="seconds to print the AE350's UART output for")
+    ho.add_argument("--soak", type=float, default=0,
+                    help="first run the memory test this many seconds, which must stay clean")
     mg = sub.add_parser("margin", help="the controller image: each lane's read delay stepped away "
                                        "from where training left it, under the memory test")
     mg.add_argument("--lanes", type=int, nargs="+", default=[0, 1, 2, 3])
@@ -1782,6 +1789,36 @@ def main() -> int:
                     print(f"  log {e}: word {en['addr']:#09x} pass {en['pass']} "
                           f"{'random' if en['random'] else 'in order'}, lanes {en['lanes']:04b} "
                           f"beats {en['beats']:08b}, {how}")
+        elif args.cmd == "handover":
+            # The hand-over is for good: from it the UART is the AE350's, so
+            # the link answers nothing more until the image is loaded again.
+            c = core.ctrl()
+            if not (c["own"] and c["trained"] and c["walign_ok"]):
+                print("the controller does not own a trained bus; no hand-over")
+                return 1
+            if args.soak:
+                core.request(0x3C, 0x30)
+                core.request(0x3C, 0x21)
+                time.sleep(args.soak)
+                c = core.ctrl()
+                print(f"memory test: {c['passes']} passes, lane errors {c['lane_err']}")
+                if c["err"] or any(c["lane_err"]):
+                    print("the memory test failed; no hand-over")
+                    return 1
+            core.request(0x3C, 0x50)
+            print("handed over: the controller and the UART are the AE350's")
+            t0 = time.time()
+            line = b""
+            while time.time() - t0 < args.listen:
+                ch = core.ser.read(256)
+                for byte in ch:
+                    if byte == 0x0A:
+                        print(f"{time.time() - t0:6.2f} s  {line.decode('latin-1').rstrip()}", flush=True)
+                        line = b""
+                    elif byte != 0x0D:
+                        line += bytes([byte])
+            if line:
+                print(f"{time.time() - t0:6.2f} s  {line.decode('latin-1')}")
         elif args.cmd == "margin":
             # The test is stopped while a lane's delay moves, so it measures
             # only the new point: each run starts with a fresh write pass,

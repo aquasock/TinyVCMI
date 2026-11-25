@@ -35,6 +35,12 @@ run trained
 grep -v '^      t=' "$out/trained.log" | grep -v '^- '
 grep -q "^PASS" "$out/trained.log"
 
+# the AE350 image's glue: after the test, command 0x3C 0x50 hands the
+# controller to the CPU's port, which writes, masks and reads back its own
+run cpu +define+TB_CPU
+grep -E '^PASS|^FAIL|CPU port' "$out/cpu.log"
+grep -q "^PASS" "$out/cpu.log"
+
 # the test's diagnostics against a word written wrong and a word read wrong
 run faults +define+MODEL_FAULTS
 grep -E '^PASS|^FAIL' "$out/faults.log"

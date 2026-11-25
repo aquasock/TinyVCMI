@@ -55,3 +55,11 @@ tools/ddr3_openflow_preflight.sh
 
 See `docs/ddr3-open-flow.md` for the milestone sequence and current primitive
 matrix.
+
+## License
+
+TinyVCMI is free software under the GNU General Public License, version 3
+only (GPL-3.0-only); see `LICENSE`. The AE350 system in `fpga/ae350_ddr3` and
+the firmware in `firmware/` start from TinyNES's, which is under the same
+license. VCMI itself is GPL-2.0-or-later, which permits its use in a
+GPL-3.0 work.

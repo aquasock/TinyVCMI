@@ -465,3 +465,66 @@ Bridge the AE350's 64-bit RAM AHB port to the controller's 256-bit port with byt
 - User Test: NOT RUN
 
 ---
+
+## 15 COMMIT Unreleased 2026-11-25T02:16:48-07:00
+
+#### Coming From:
+
+v0.1.0 83a739a
+
+#### Purpose:
+
+Make the 1 GiB DDR3 the AE350's main memory by bringing TinyNES's AE350 system into this repository behind a new AHB-to-DDR3 bridge, with the UART handed from the DDR3 diagnostics to the AE350, stopping for an agent handoff at the user's direction once the first trial builds had run.
+
+#### Outcome:
+
+The AE350 image's sources are complete and pass simulation, and two trial builds have run, but no image has yet met timing and nothing has been loaded. Entries 12 to 14 put main memory at `0x80000000`, which is the A25's reset vector on the ROM port (AE350-001); main memory is at `0x40000000`, and because the RAM port is proven only from `0x40000000` to `0x7fffffff` (TinyNES DEV-011), the boot ROM's 64 KiB of block RAM sits at `0x7fff0000` and the DDR3 serves `0x40000000` to `0x7ffeffff`, 1 GiB less 64 KiB. New in `fpga/ae350_ddr3`: `ahb_ddr3.v`, the bridge, whose bus half takes `ahb_ram`'s one-at-a-time 64-bit transfers, answers a cache-line fill's other three doublewords from a one-line buffer, sends each write as one masked DDR3 write of its own lanes (mask bit k is the line's byte k) merged into the buffer on a hit, acknowledges writes at once, and crosses to its PCLK half by a toggle handshake, the PCLK half driving `ddr3_ctl`'s request port, which serves requests strictly in order; `ae350_sys.sv`, TinyNES f0f8501's `ae350_soc.sv` with the SDRAM, video, audio, pads and link removed, its NOBOOT report kept, ID `TV01`, held in reset until `run`; `ahb_ram.sv` with the DDR3 window; and TinyNES's `ahb_boot_rom.sv` and `exts_uart.sv` unchanged. `ctrl_glue` gains a `CPU` parameter and a second client port, `x_`, muxed onto `ddr3_ctl`; command `0x3C 0x50` hands the controller to it for good with the test held in reset, raises `cpu_run` 2^20 `sys_clk` later so `wr_core`'s reply leaves the pin first, and shows the hand-over in status bit 0; with `CPU` 0 the mux folds away, so the controller image only gains tied-off ports. `tools/ddr3_write.py` generates `fpga/ae350_ddr3/top.v`, `top.cst` and `open.sdc` as a third variant: the CPU PLL at `PLL_R[0]` (750 MHz core on CLKOUT1, 75 MHz `bus_clk` on CLKOUT0), the system as instance `soc`, the bridge's PCLK half as `xport` beside the controller, a UART mux on `cpu_run`, and `bus_clk` constrained to 13.333 ns. `firmware/` is TinyNES's boot ROM renamed to TinyVCMI (`tv_`, `tinyvcmi.h`): it tests the block RAM and the DDR3's lanes and address lines with the caches off and on, runs cached 64 KiB pattern tests at the bottom of the DDR3 and just below the block RAM, prints `TinyVCMI DDR3 OK 1024M-64K` and `TinyVCMI LOAD`, and keeps TinyNES's loader and magic; it builds with the xpack GCC under `-Werror`. `tools/ddr3_write_probe.py handover [--soak S] [--listen S]` sends the hand-over and prints the AE350's UART. The repository is now GPL-3.0-only (`LICENSE`, README), which the user chose after VCMI was confirmed GPL-2.0-or-later and its bundled FuzzyLite GPL-3.0. Gates: `tools/sim_ae350_ddr3.sh` drives `ahb_ram` and the bridge with a pipelined AHB master against a behavioural request port at 74.99 and 100.14 MHz and passes 33,730 reads and 29,939 writes, 8,063 WRAP4 bursts and 520 refusals, 19,090 of 31,474 DDR3 reads from the line buffer, while a mask on the wrong doubleword and an unmerged buffer each fail with thousands of errors; `tools/sim_ddr3_ctrl.sh` gains a run in which the hand-over gives the CPU port the real controller and PHY, and it wrote 1,280 words, masked and plain, and read 598 back with none wrong, every earlier run and mutant unchanged; `tools/sim_ddr3_lockstep.sh` still matches commit `0d3bce3`; `tools/ddr3_write.py --check` passes for all three images. The boundary check moved into `tools/ddr3_boundary_check.py`, and `tools/ddr3_pin_seed.sh` takes `TINYVCMI_CST`. `tools/ae350_ddr3_sweep.sh` builds the image as `tools/ddr3_ctrl_sweep.sh` builds the controller, with `NPNR_GOWIN_CLK_FIRST=bus_clk` checked in each log (DEV-016). The first trial, seed 1, used 26 per cent of the LUTs, 24 per cent of the flip-flops and 52 block RAMs, with the boundary intact and all 306 DDR3 tables equal to the vendor reference, but reached `bus_clk` 37.43 MHz and `pclk` 91.69 MHz: the placer had pulled `ahb_ram`, the UART registers and the bridge to the left beside `ddr3_ctl`, while the AE350 macro is fixed at X159 Y0, so the EXTS paths, which pass through the macro combinationally from `EXTS_HREADYIN` to `EXTS_HSEL`, spent 23 ns crossing the chip and back. The bridge was then split into its two clock halves, with only the handshake's registers between them, and `tools/ae350_place.py`, a `--pre-place` script, keeps every cell under `soc`, every cell clocked by `bus_clk` and the logic feeding only those within X105 to 181, Y0 to 50 (5,329 cells; block RAM rows at y 9, 27 and 45). The second trial, seed 1 (`.fs` SHA-256 `a84ea7d096f5ae95ecc7ec48e3c3372a054e9f00e439376ef1ffba5d552f11d6`), reached `bus_clk` 68.92 MHz, `pclk` 94.49 MHz, `core.rx.clk` 58.61 MHz and `mclk` 548.55 MHz, all tables again equal. Its `bus_clk` critical path starts at the system's reset register and runs through a register's asynchronous clear-to-Q arc (1.43 ns) before 9.2 ns of `ahb_ram` and bridge logic, now placed beside the macro; measured from that register's clock instead the path would be about 9.5 ns. Its `pclk` path runs from `ddr3_ctl`'s FIFO read pointer to `wr_core`'s status frame. The board still holds entry 14's seed 3 image in one-wire mode, the desktop not restored. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering and active-log capacity.
+
+#### Next Steps:
+
+Close the AE350 image's timing, then load it. For `bus_clk`, find whether nextpnr's asynchronous clear-to-Q arc belongs in the path at all, the reset being released once while the bus is idle; if it does, register or synchronously release the resets that reach `ahb_ram` and the bridge, then shorten the remaining `ahb_ram` to bridge logic. For `pclk`, see whether the CPU port's mux in `ctrl_glue` or the new placement lengthened the controller's paths, or whether this is the usual seed spread, which a 16-seed `tools/ae350_ddr3_sweep.sh` run, the user's limit, will show. Load a closing image with `openFPGALoader -c ft2232`, address the UART as `/dev/serial/by-id/usb-SIPEED_USB_Debugger_2025041420-if01-port0` because an ESP32 shares the tty ports, check training and a soak with `tools/ddr3_write_probe.py ctrl`, then `handover --soak 60 --listen 15` and expect the boot ROM's `TinyVCMI DDR3 OK` and `LOAD` lines, or NOBOOT counts if the A25 does not start. The user has given standing permission to deploy and to use the relay power cycle. Then entry 16: load a full-array memory test and the miss-latency measurement over the loader, adapting TinyNES's `tools/load_ae350.py` to the DDR3 window, and compare with AE350-003's 570 cycles. The user is not cutting 0.2.0 yet. Robust closure, the STA disagreement on `m_n_r`, folding the settings into `tools/build_ddr3_ctrl.sh`, the frequency sweep and the nextpnr patch's upstream report still wait for the user.
+
+#### Files Modified:
+
+- LICENSE
+- README.md
+- firmware/boot/Makefile
+- firmware/boot/crt0.S
+- firmware/boot/link.ld
+- firmware/boot/load.c
+- firmware/boot/load.h
+- firmware/boot/main.c
+- firmware/common/memtest.c
+- firmware/common/memtest.h
+- firmware/common/uart.c
+- firmware/common/uart.h
+- firmware/include/tinyvcmi.h
+- fpga/ae350_ddr3/ae350_sys.sv
+- fpga/ae350_ddr3/ahb_boot_rom.sv
+- fpga/ae350_ddr3/ahb_ddr3.v
+- fpga/ae350_ddr3/ahb_ram.sv
+- fpga/ae350_ddr3/exts_uart.sv
+- fpga/ae350_ddr3/open.sdc
+- fpga/ae350_ddr3/tb_ahb_ddr3.v
+- fpga/ae350_ddr3/top.cst
+- fpga/ae350_ddr3/top.v
+- fpga/ddr3_ctrl/ctrl_glue.v
+- fpga/ddr3_ctrl/tb_ctrl.v
+- fpga/ddr3_ctrl/top.v
+- tools/ae350_ddr3_sweep.sh
+- tools/ae350_place.py
+- tools/build_ddr3_ctrl.sh
+- tools/ddr3_boundary_check.py
+- tools/ddr3_pin_seed.sh
+- tools/ddr3_write.py
+- tools/ddr3_write_probe.py
+- tools/sim_ae350_ddr3.sh
+- tools/sim_ddr3_ctrl.sh
+
+#### Status:
+
+- Build: FAIL
+- Deployment: NOT RUN
+- User Test: NOT RUN
+
+---
