@@ -98,15 +98,24 @@ module ddr3_ctl #(
     // from the 283-bit RAM spread down the device, whose read put m_n_r 1.4
     // ns over 100 MHz fully timed (TOOL-065)
     (* ram_style = "logic" *) reg [17:0] fq_br [0:3];
-    wire [17:0] head_br = fq_br[fq_r];
+    // and the head's {row, bank} itself in a register, loaded at every edge
+    // with the entry fq_r points to after it (or the request written there
+    // at the same edge), so the row compares start from a flop and not from
+    // fq_r through a 4-to-1 mux, which put m_n_r 0.4 to 1.6 ns over 100 MHz
+    // on nine seeds of sixteen of the AE350 image (core-log entry 16)
+    reg [17:0]  head_br = 18'd0;
     // the entries' write masks, beside the FIFO, and nxt's, cur's and the
     // held one beside nxt, cur and wr_hold
     reg  [31:0] fq_m [0:3];
     reg  [31:0] nxt_m = 32'd0, cur_m = 32'd0, wm_hold = 32'd0;
     wire         h_v = (fq_n != 3'd0);
     // fq_n < 3, one slot spare because the ready is registered at the
-    // requester; written out so it is one LUT and not a carry chain
-    assign cmd_ready = !fq_n[2] && !(fq_n[1] && fq_n[0]);
+    // requester; made from fq_n's next value and registered beside it, so it
+    // is a flop and not a LUT of fq_n in front of the requesters' enables
+    // (ddr3_bist's rcnt, ctrl_glue's b_addr), which missed 100 MHz on three
+    // seeds of the AE350 image (core-log entry 16)
+    reg         rdy = 1'b1;
+    assign cmd_ready = rdy;
     reg          nxt_v = 1'b0, cur_v = 1'b0;
     reg [282:0]  nxt = 283'd0, cur = 283'd0;
     // `same` is made as an entry leaves the FIFO for nxt, against the entry
@@ -324,6 +333,10 @@ module ddr3_ctl #(
     endfunction
     wire f_in = cmd_valid && cmd_ready;
     wire f_out = h_v && (!nxt_v || !cur_v || p_pop);
+    // fq_n and fq_r after this edge, as the always block below sets them
+    wire [2:0] fq_n_nx = rst ? 3'd0 : (f_in && !f_out) ? inc3w(fq_n) :
+                         (f_out && !f_in) ? dec3w(fq_n) : fq_n;
+    wire [1:0] fq_r_nx = rst ? 2'd0 : f_out ? inc2w(fq_r) : fq_r;
 
     // bank k's open flag and row after this edge, as the plan going out and
     // a reset set them below
@@ -384,6 +397,8 @@ module ddr3_ctl #(
         end else if (nxt_v && (!cur_v || p_pop))
             nxt_v <= 1'b0;
         fq_n <= (f_in && !f_out) ? inc3w(fq_n) : (f_out && !f_in) ? dec3w(fq_n) : fq_n;
+        rdy <= !fq_n_nx[2] && !(fq_n_nx[1] && fq_n_nx[0]);
+        head_br <= (f_in && fq_w == fq_r_nx) ? cmd_addr[24:7] : fq_br[fq_r_nx];
 
         // the row compares of the next PCLK's registers (see m_n_r)
         // Every compare is made from registers: the plan's row and each
@@ -527,6 +542,10 @@ module ddr3_ctl #(
     always @(posedge pclk) begin
         if (m_n_r != m_n || m_h_r != m_h)
             $fatal(1, "FAIL  ddr3_ctl: the early row compares disagree with the registers'");
+        if (h_v && head_br != fq_br[fq_r])
+            $fatal(1, "FAIL  ddr3_ctl: the head's row register disagrees with the FIFO head");
+        if (rdy != (!fq_n[2] && !(fq_n[1] && fq_n[0])))
+            $fatal(1, "FAIL  ddr3_ctl: the registered ready disagrees with fq_n");
         for (kz = 0; kz < 8; kz = kz + 1)
             if (za[kz] != (c_act[kz] == 3'd0) || zc[kz] != (c_cas[kz] == 2'd0) ||
                     zp[kz] != (c_pre[kz] == 3'd0))

@@ -528,3 +528,39 @@ Close the AE350 image's timing, then load it. For `bus_clk`, find whether nextpn
 - User Test: NOT RUN
 
 ---
+
+## 16 COMMIT Unreleased 2026-11-25T11:13:34-07:00
+
+#### Coming From:
+
+v0.1.0 8a8f647
+
+#### Purpose:
+
+Close the AE350 image's timing on every clock and load it, so that the A25 boots and tests the DDR3 as its main memory on the board.
+
+#### Outcome:
+
+The AE350 image closes every clock with every path timed and the A25 runs from the DDR3, first configuration after a cold power-up. Entry 15's `bus_clk` critical path began at `ae350_sys`'s reset flop and ran through the asynchronous CLEAR of `ahb_ram`'s `sd_addr` and its 1.43 ns clear-to-Q arc before the bridge's line-buffer compare (TOOL-073), so every fabric register on `bus_clk` in `ae350_sys`, `ahb_ram`, the bridge's bus half, `ahb_boot_rom` and `exts_uart` now takes `resetn` synchronously, the reset generator keeping its asynchronous assert and synchronous release; under `soc` the netlist's 975 `DFFCE` and 13 `DFFPE` became `DFFRE` and `DFFSE`. Fifteen seeds of that netlist, built with `tools/ae350_ddr3_sweep.sh` and the patched nextpnr, closed `bus_clk` at 84.18 to 94.12 MHz against 75, but `pclk` at 84.90 to 97.68 MHz, median 92.22, with nine failing on `ddr3_ctl`'s `m_n_r` from the FIFO read pointer `fq_r` and three on `cmd_ready` decoded from `fq_n` into the requesters' enables, none on the bridge or the CPU port; seed 14 was stopped after about 70 minutes of routing once its netlist was superseded. At the user's choice the path was fixed rather than screened: `ddr3_ctl` now keeps the FIFO head's `{row, bank}` in a register, `head_br`, loaded at every edge with the entry `fq_r` will point to or the request written there at that edge, and registers `cmd_ready` from `fq_n`'s next value, each with a simulation invariant that failed on a planted mutant, the bypass removed and the ready made from the current count, the latter also as a lockstep mismatch on `ready`. Every gate passed: `tools/sim_ae350_ddr3.sh` with the counts and mutant failures of entry 15, `tools/sim_ddr3_ctrl.sh` with every mutant and the CPU port's 1,280 WRITEs and 598 READs with none wrong, `tools/sim_ddr3_lockstep.sh` equal to commit `0d3bce3` on every output, and `tools/ddr3_write.py --check`. Thirty-two seeds of the new netlist closed `pclk` at 87.56 to 100.28 MHz, median 96.41 (TOOL-072's revision note), with no single path dominating the failures, and `bus_clk` at 82.73 to 95.22 MHz; seed 25 closed every clock, `pclk` 100.28, `bus_clk` 84.72, `core.rx.clk` 62.54 and `mclk` 798.08 MHz, with all 306 DDR3 tables equal to the vendor reference, the boundary at 469 `DFFN` and 18 `DFFNS` on the CLKDIV and `bus_clk` routed first (`.fs` SHA-256 `eb66c7aa2cfc6be19621407dc991073747f46b5933b9c9f43207f4ff748bb861`). The Tang had been off overnight; the user powered it on in one-wire mode at about 11:02, from the host's 5 V over USB-C OTG, because the relay script does not work on the first power-up from fully off, and seed 25 was loaded with `openFPGALoader -c ft2232` from 11:02:56 to 11:07:02 as the first configuration. The loader's closing line, where `DONE` is printed, was dropped by the agent's output filter, so the load was not confirmed by `DONE`; it was not repeated so as to keep the cold result, and the image's identity rests on the trained controller and the TinyVCMI boot ROM answering. It trained `error 0` to `d 1 b 2` in 422 trials with 7 CALIB pulses a lane, STEP `0x2b`, and its memory test ran with no lane error; `tools/ddr3_write_probe.py handover --soak 60 --listen 15`, which refuses to hand over unless the 60 s soak is clean, handed over, its soak summary line lost to the same filter, and the A25 printed `TinyVCMI AE350 C OK UNC=0491d418 CAC=001f6cbc`, `TinyVCMI DDR3 OK 1024M-64K CAC=0097997e` and `TinyVCMI LOAD` once a second, the boot ROM's block RAM, lane, address-line and cached pattern tests of the DDR3 all passing. The probe's `handover` asked for a status frame after listening, which the AE350's UART cannot answer, and now returns instead. The user did not test the board, accepted the agent's report, and set VCMI on HDMI as the proof that counts. The `ddr3_ctl` change also reaches the controller image of `fpga/ddr3_ctrl`, whose simulations pass but which was not rebuilt. The board was left in one-wire mode with seed 25 in SRAM and the boot ROM waiting for a program, the desktop not restored. TOOL-073 was added and TOOL-072 gained a revision note. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering and active-log capacity.
+
+#### Next Steps:
+
+Load a full-array memory test and the miss-latency measurement over the boot ROM's loader, adapting TinyNES's `tools/load_ae350.py` to the DDR3 window, and compare the miss cost with AE350-003's 570 cycles; and confirm every load by `DONE` in the loader's unfiltered output. Then move toward the user's acceptance test, VCMI visibly running on HDMI, which needs a video path from the DDR3 (VIDEO-001, VIDEO-002) and the TinyTang link. If a later netlist closes `pclk` on too few seeds, the most frequent remaining paths are `ddr3_bist`'s retry and log decisions, then `rd_check`. Robust closure, the STA disagreement on `m_n_r`, folding the settings into `tools/build_ddr3_ctrl.sh`, rebuilding the controller image with the new `ddr3_ctl`, the frequency sweep, the nextpnr patch's upstream report and any 0.2.0 release wait for the user.
+
+#### Files Modified:
+
+- fpga/ae350_ddr3/ae350_sys.sv
+- fpga/ae350_ddr3/ahb_boot_rom.sv
+- fpga/ae350_ddr3/ahb_ddr3.v
+- fpga/ae350_ddr3/ahb_ram.sv
+- fpga/ae350_ddr3/exts_uart.sv
+- fpga/ddr3_ctrl/ddr3_ctl.v
+- tools/ddr3_write_probe.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: NOT RUN
+
+---

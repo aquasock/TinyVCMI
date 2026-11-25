@@ -194,6 +194,7 @@ Topic IDs are the `record_id` prefix. An entry reserves a namespace; it does not
 | Does nextpnr time the paths into a LUT RAM's data inputs? | TOOL | TOOL-070 |
 | Why does placement fail with the design at a quarter of the device, and what fixes it? | TOOL | TOOL-071 |
 | Which LUT mapping and settings close the controller at 100 MHz fully timed? | TOOL | TOOL-072 |
+| Why does an asynchronously reset register slow a path in nextpnr's timing? | TOOL | TOOL-073 |
 | Why did the Gowin control miss PCLK timing? | TOOL | TOOL-028 |
 | Which sources and licenses constrain reuse? | PROV | PROV-001 |
 
@@ -293,6 +294,7 @@ TOOL-069: "synth_gowin merges identical behavioural flops whatever their keep or
 TOOL-070: "The fork's chipdb generator writes the LUT RAM data-input setup arc as DI[n with no closing bracket, naming no port, so nextpnr never times a path into RAM16SDP4 data inputs; tools/nextpnr_arcs.sh builds a chipdb with it and the LUT1 to LUT3 arcs, byte-identical otherwise"
 TOOL-071: "At 24 per cent utilisation the heap placer's strict legaliser gave up on up to five seeds of seven, rip-up thrash among the 256-bit flop paths at the DDR3 I/O; --placer-heap-beta 0.7 placed them, 0.6 was slower and still refused one, and --placer-heap-no-ctrl-set did not help"
 TOOL-072: "With every path timed (TOOL-070), abc9 -W 3000 -D 9000 and placement density 0.7 closed pclk at 100.25 MHz on one seed of seventeen, median 93.11 MHz and standard deviation 3.30 MHz; the image reproduces byte for byte and ran clean from a cold start"
+TOOL-073: "nextpnr times a DFFCE's asynchronous CLEAR as a 1.43 ns arc to Q, so an asynchronously reset register puts its reset source at the head of every path through it; the AE350 system's bus_clk went from 68.92 MHz to 82.73 to 95.22 MHz with synchronous resets"
 TOOL-031: "LiteDRAM's control layer alone generates, synthesises and places in the open flow at ~1% of the LUTs, with none of TOOL-025's three gaps"
 TOOL-030: "Closed-page scatter READs do not reach the read capture in the open or the vendor build of the same RTL; no cadence, gate position or shared RCLKSEL recovers them, and failing READs return other rows' patterns"
 PROV-001: "Reuse source and interface ideas with their original license boundaries and attribution intact"
@@ -1182,12 +1184,24 @@ PROV-001: "Reuse source and interface ideas with their original license boundari
   topic_id: TOOL
   title: "Delay-driven LUT mapping closes the controller at 100 MHz fully timed"
   status: VERIFIED
-  verified_date: 2026-11-24
+  verified_date: 2026-11-25
   statement: "synth_gowin ends with `abc9 -maxlut 8 -W 500`. On the same sources, round four's -W 1500 gave 91.17 and 91.86 MHz where -W 500 gave 84.44 and 81.38 MHz on the same seeds. On the fully timed chipdb (TOOL-070) and with the restructured sources of entry 11, round fourteen's -W 3000 -D 9000 mapping placed five seeds at 100.25, 95.13, 90.64, 92.00 and 88.23 MHz and the -W 1500 mapping four at 93.92, 94.38, 95.85 and 93.10 MHz; seed 1 of the former (`.fs` SHA-256 56981a03543437999b7a63a7f16034038949a052db74d1eed59fe24bed2a3a0c) closed pclk at 100.25 MHz, core.rx.clk at 62.84 MHz and mclk at 798.08 MHz, all 306 DDR3 tables equal to the vendor reference. Across rounds, one netlist's seeds spread about 10 MHz."
   consequence: "tools/ddr3_ctrl_sweep.sh builds with -W 3000 -D 9000, --placer-heap-beta 0.7 and the patched chipdb, and images are chosen by seed among those that close; a source change is judged by its median over several seeds, not its best one. Mapped as LUT4 only (-maxlut 4) the design did not place at all."
   sources:
     - "TinyVCMI tools/ddr3_ctrl_sweep.sh; build/timing/i4, i4w, i13, i13d, i14 and i14d, not committed"
-  verification: "Frequencies are nextpnr's final figures after routing. Seed comparisons are paired on identical netlists except for the mapping. Small samples: five and four seeds in round fourteen. Revised 2026-11-24 (entry 12): tools/ddr3_ctrl_sweep.sh regenerated seed 1's netlist and image byte for byte, and twelve further seeds, 6 to 17, closed pclk at 87.89 to 97.14 MHz, none at 100, so over seventeen seeds the median is 93.11 MHz, the mean 93.60 MHz with a standard deviation of 3.30 MHz, and one seed in seventeen closes; mclk passed on all, at as little as 402.74 MHz. Their critical paths were ddr3_ctl's m_n_r from the FIFO read pointer on five seeds, wr_core's pause bookkeeping on four, rd_check on two and ddr3_bist's rcnt enable on one. The closing image trained and ran clean from a cold start (core-log entry 12)."
+  verification: "Frequencies are nextpnr's final figures after routing. Seed comparisons are paired on identical netlists except for the mapping. Small samples: five and four seeds in round fourteen. Revised 2026-11-24 (entry 12): tools/ddr3_ctrl_sweep.sh regenerated seed 1's netlist and image byte for byte, and twelve further seeds, 6 to 17, closed pclk at 87.89 to 97.14 MHz, none at 100, so over seventeen seeds the median is 93.11 MHz, the mean 93.60 MHz with a standard deviation of 3.30 MHz, and one seed in seventeen closes; mclk passed on all, at as little as 402.74 MHz. Their critical paths were ddr3_ctl's m_n_r from the FIFO read pointer on five seeds, wr_core's pause bookkeeping on four, rd_check on two and ddr3_bist's rcnt enable on one. The closing image trained and ran clean from a cold start (core-log entry 12). Revised 2026-11-25 (entry 16): the AE350 image (fpga/ae350_ddr3, built by tools/ae350_ddr3_sweep.sh with the same mapping and settings) spread the same way: with ddr3_ctl's FIFO head row and cmd_ready registered, 32 seeds of one netlist closed pclk at 87.56 to 100.28 MHz, median 96.41 MHz, mean 95.46 MHz, standard deviation 3.51 MHz, and one seed in 32 (seed 25) closed; 15 seeds of the netlist before those two registers had a median of 92.22 MHz and none closed, nine of them failing on m_n_r from fq_r. With them the failing paths no longer share one cause: ddr3_bist's retry and log decisions, rd_check, ddr3_bist's expected data, the CPU port's cmd_valid into ddr3_ctl and wr_core's pause bookkeeping."
+
+- record_id: TOOL-073
+  topic_id: TOOL
+  title: "nextpnr times an asynchronous clear as a path through the register"
+  status: VERIFIED
+  verified_date: 2026-11-25
+  statement: "In the fork's Gowin timing, as built by tools/nextpnr_arcs.sh, a DFFCE's CLEAR input has a combinational arc to Q, 1.43 ns in the C1/I0 report, so a path is timed from the reset source through the register. In the AE350 image's second trial (core-log entry 15, seed 1) the bus_clk critical path therefore began at the reset generator's flop in ae350_sys, ran through a LUT1 inverter into the CLEAR of ahb_ram's sd_addr and out of its Q, and on through the bridge's line-buffer compare into the CE of x_wd, 14.51 ns at 68.92 MHz, where the same path from sd_addr's clock is about 9.5 ns. With every fabric register on bus_clk reset synchronously instead, which Yosys maps onto DFFRE's reset pin, 47 placements of two netlists closed bus_clk at 82.73 to 95.22 MHz against 75."
+  consequence: "Every asynchronously reset register puts its reset source at the head of every path through it, so such a reset makes a design look slower than it is, and nothing here showed that the release of such a reset is checked. Fabric logic in this project takes a synchronous reset, generated once per clock domain with an asynchronous assert and a synchronous release; an asynchronous clear is kept only where the clock may be stopped, such as the reset generator itself, whose CLEAR arc from cpu_run then appears as a pclk-to-bus_clk path."
+  sources:
+    - "TinyVCMI build/ae350/a2/s1/nextpnr.log, bus_clk critical path; build/ae350/a3, a4 and a5 seed logs, not committed"
+    - "TinyVCMI fpga/ae350_ddr3/ae350_sys.sv, ahb_ram.sv, ahb_ddr3.v, ahb_boot_rom.sv and exts_uart.sv"
+  verification: "Read from nextpnr's own critical-path report, where the CLEAR-to-Q hop is listed as logic. The 1.43 ns figure is the report's, not read from the chipdb, and whether the generator models any recovery check was not looked for in its source. The netlists were counted: under soc, entry 15's second trial held 975 DFFCE and 13 DFFPE, asynchronous clear and preset, beside 638 DFFRE, and the synchronous-reset netlist holds none, 1,638 DFFRE and 16 DFFSE."
 
 - record_id: TOOL-031
   topic_id: TOOL

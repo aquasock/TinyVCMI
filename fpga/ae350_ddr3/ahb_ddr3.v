@@ -136,7 +136,7 @@ module ahb_ddr3_bus #(
         end
     endfunction
 
-    always @(posedge clk or negedge resetn) begin
+    always @(posedge clk) begin
         if (!resetn) begin
             ack <= 1'b0;
             rdata <= 64'd0;

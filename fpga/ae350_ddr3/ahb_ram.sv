@@ -90,7 +90,7 @@ module ahb_ram #(
         end
     endgenerate
 
-    always @(posedge clk or negedge resetn) begin
+    always @(posedge clk) begin
         if (!resetn) begin
             word <= 0;
             write <= 1'b0;

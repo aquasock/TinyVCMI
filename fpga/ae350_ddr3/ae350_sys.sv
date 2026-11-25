@@ -13,7 +13,12 @@
 // level raises it once the controller is trained and handed over, and it
 // never falls again.  The reset counter clears asynchronously while run or
 // the PLL's lock is low and releases the system 256 bus clocks after both
-// are high, so run may come from any clock.
+// are high, so run may come from any clock.  Every fabric register below it
+// takes resetn synchronously: nextpnr times an asynchronous clear as a path
+// through the register's clear-to-Q arc, which put the reset flop at the
+// head of every bus_clk path through ahb_ram and the bridge (core-log entry
+// 16), while a synchronous reset is a timed setup on DFFRE's reset pin, and
+// resetn, released from a bus_clk flop, holds for 256 bus clocks.
 //
 // If the CPU has written nothing to the UART 2^NOBOOT_BITS bus clocks after
 // reset (about 1.8 s), fabric reports instead, about once a second until the
@@ -279,7 +284,7 @@ module ae350_sys #(
     reg [31:0] stray_first = 32'd0;
     reg [31:0] stray_last = 32'd0;
     reg [15:0] stray_count = 16'd0;
-    always @(posedge bus_clk or negedge resetn) begin
+    always @(posedge bus_clk) begin
         if (!resetn) begin
             rom_count <= 32'd0;
             rom_last <= 32'd0;
@@ -376,7 +381,7 @@ module ae350_sys #(
     assign fb_valid = noboot_armed && noboot_wait == 0 && !cpu_owns;
     assign fb_data = noboot_char(noboot_index);
 
-    always @(posedge bus_clk or negedge resetn) begin
+    always @(posedge bus_clk) begin
         if (!resetn) begin
             noboot_wait <= 0;
             noboot_armed <= 1'b0;

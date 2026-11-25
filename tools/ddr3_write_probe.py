@@ -1819,6 +1819,8 @@ def main() -> int:
                         line += bytes([byte])
             if line:
                 print(f"{time.time() - t0:6.2f} s  {line.decode('latin-1')}")
+            # the link no longer answers, so no closing status frame
+            return 0
         elif args.cmd == "margin":
             # The test is stopped while a lane's delay moves, so it measures
             # only the new point: each run starts with a fresh write pass,

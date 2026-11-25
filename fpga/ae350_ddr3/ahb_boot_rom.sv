@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
-// From TinyNES f0f8501 fpga/ae350_soc/ahb_boot_rom.sv, unchanged.
+// From TinyNES f0f8501 fpga/ae350_soc/ahb_boot_rom.sv, with its reset made synchronous (ae350_sys).
 // AE350 boot ROM on the ROM AHB port, which the A25 fetches from at its
 // reset vector 0x80000000. Block RAM is initialised at synthesis from
 // INIT_FILE ($readmemh, one 32-bit word per line). The ROM repeats every
@@ -32,7 +32,7 @@ module ahb_boot_rom #(
     always @(posedge clk)
         q <= rom[word];
 
-    always @(posedge clk or negedge resetn) begin
+    always @(posedge clk) begin
         if (!resetn) begin
             word <= 0;
             stage <= 2'b00;

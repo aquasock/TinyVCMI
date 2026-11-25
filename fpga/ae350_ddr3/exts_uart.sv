@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
-// From TinyNES f0f8501 fpga/ae350_soc/exts_uart.sv, unchanged.
+// From TinyNES f0f8501 fpga/ae350_soc/exts_uart.sv, with its reset made synchronous (ae350_sys).
 // Fabric registers in the AE350's uncached EXTS window, and the FPGA UART
 // (8N1) they drive. Offsets from 0xe8000000:
 //   0x00  write: byte to transmit (bits 7:0). The transfer waits while the
@@ -175,7 +175,7 @@ module exts_uart #(
             decode = REG_NONE;
     endfunction
 
-    always @(posedge clk or negedge resetn) begin
+    always @(posedge clk) begin
         if (!resetn) begin
             target <= REG_NONE;
             write <= 1'b0;
