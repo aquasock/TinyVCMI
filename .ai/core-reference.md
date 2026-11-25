@@ -290,7 +290,7 @@ TOOL-068: "A READ two PCLK after a READ comes back as the bus between two bursts
 TOOL-069: "synth_gowin merges identical behavioural flops whatever their keep or syn_preserve attribute -- seven copies of ctrl_own came out as one, dq_r folded into dq_ra, rd_align's rot_pat_r into 8 flops -- while instantiated Gowin DFF primitives with keep survive"
 TOOL-070: "The fork's chipdb generator writes the LUT RAM data-input setup arc as DI[n with no closing bracket, naming no port, so nextpnr never times a path into RAM16SDP4 data inputs; tools/nextpnr_arcs.sh builds a chipdb with it and the LUT1 to LUT3 arcs, byte-identical otherwise"
 TOOL-071: "At 24 per cent utilisation the heap placer's strict legaliser gave up on up to five seeds of seven, rip-up thrash among the 256-bit flop paths at the DDR3 I/O; --placer-heap-beta 0.7 placed them, 0.6 was slower and still refused one, and --placer-heap-no-ctrl-set did not help"
-TOOL-072: "With every path timed (TOOL-070), abc9 -W 3000 -D 9000 in place of synth_gowin's abc9 -W 500 and placement density 0.7 closed pclk at 100.25 MHz on one seed of five; the same sources at -W 1500 reached 95.85, and results spread about 10 MHz from seed to seed"
+TOOL-072: "With every path timed (TOOL-070), abc9 -W 3000 -D 9000 and placement density 0.7 closed pclk at 100.25 MHz on one seed of seventeen, median 93.11 MHz and standard deviation 3.30 MHz; the image reproduces byte for byte and ran clean from a cold start"
 TOOL-031: "LiteDRAM's control layer alone generates, synthesises and places in the open flow at ~1% of the LUTs, with none of TOOL-025's three gaps"
 TOOL-030: "Closed-page scatter READs do not reach the read capture in the open or the vendor build of the same RTL; no cadence, gate position or shared RCLKSEL recovers them, and failing READs return other rows' patterns"
 PROV-001: "Reuse source and interface ideas with their original license boundaries and attribution intact"
@@ -1172,7 +1172,7 @@ PROV-001: "Reuse source and interface ideas with their original license boundari
   consequence: "tools/ddr3_ctrl_sweep.sh builds with -W 3000 -D 9000, --placer-heap-beta 0.7 and the patched chipdb, and images are chosen by seed among those that close; a source change is judged by its median over several seeds, not its best one. Mapped as LUT4 only (-maxlut 4) the design did not place at all."
   sources:
     - "TinyVCMI tools/ddr3_ctrl_sweep.sh; build/timing/i4, i4w, i13, i13d, i14 and i14d, not committed"
-  verification: "Frequencies are nextpnr's final figures after routing. Seed comparisons are paired on identical netlists except for the mapping. Small samples: five and four seeds in round fourteen."
+  verification: "Frequencies are nextpnr's final figures after routing. Seed comparisons are paired on identical netlists except for the mapping. Small samples: five and four seeds in round fourteen. Revised 2026-11-24 (entry 12): tools/ddr3_ctrl_sweep.sh regenerated seed 1's netlist and image byte for byte, and twelve further seeds, 6 to 17, closed pclk at 87.89 to 97.14 MHz, none at 100, so over seventeen seeds the median is 93.11 MHz, the mean 93.60 MHz with a standard deviation of 3.30 MHz, and one seed in seventeen closes; mclk passed on all, at as little as 402.74 MHz. Their critical paths were ddr3_ctl's m_n_r from the FIFO read pointer on five seeds, wr_core's pause bookkeeping on four, rd_check on two and ddr3_bist's rcnt enable on one. The closing image trained and ran clean from a cold start (core-log entry 12)."
 
 - record_id: TOOL-031
   topic_id: TOOL

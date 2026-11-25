@@ -363,3 +363,33 @@ Confirm that `tools/ddr3_ctrl_sweep.sh` regenerated the closed image byte for by
 - User Test: NOT RUN
 
 ---
+
+## 12 COMMIT Unreleased 2026-11-24T23:08:00-07:00
+
+#### Coming From:
+
+Unreleased b65d5f8
+
+#### Purpose:
+
+Confirm that the 100 MHz controller image reproduces from the repository, measure how often its netlist closes across seeds, and qualify it from a cold start.
+
+#### Outcome:
+
+The closed image reproduces and runs from cold. `tools/ddr3_ctrl_sweep.sh`, run as committed with the patched nextpnr, regenerated seed 1's netlist and its image byte for byte (`.fs` SHA-256 `56981a03543437999b7a63a7f16034038949a052db74d1eed59fe24bed2a3a0c`). Twelve further seeds of the same netlist and settings, 6 to 17, closed `pclk` at 87.89 to 97.14 MHz and none at 100, so over seventeen seeds the median is 93.11 MHz, the mean 93.60 MHz with a standard deviation of 3.30 MHz, and one seed in seventeen closes; `core.rx.clk` passed on all, and `mclk` on all at as little as 402.74 MHz. Their critical paths were `ddr3_ctl`'s `m_n_r` from the FIFO read pointer on five seeds, `wr_core`'s pause bookkeeping (`wcount`, `wnx`, `we_n`) on four, `rd_check` on two and `ddr3_bist`'s `rcnt` enable on one, and the user chose to leave the closure's robustness, and the frequency sweep, until there is another reason to build. For the cold start the user left the Tang unpowered for over 40 minutes and brought it up in one-wire mode at 22:50:33, powered from the host's 5 V over USB-C OTG; the closed image, the first configuration since power-up, was loaded with `openFPGALoader -c ft2232` reporting `DONE` at 22:54:55, trained `error 0` to `d 1 b 2` in 422 trials with 7 CALIB pulses a lane on the first attempt, handed over and ran 734 passes of the 1 GiB test in 600 s with no error on any lane. Cold, the DLL's STEP read `0x2c` against `0x2b` warm, and lane 0 trained to RCLKSEL 4 with 39 passing taps centred at tap 21 against RCLKSEL 5 with 54 centred at 29 warm, the narrowest window of the four. With this the first milestone's evidence is complete: an open-flow DDR3 controller that meets 100 MHz with every path timed, trains itself and tests the whole array cleanly warm and cold; no release was cut, the user not having asked for one and `.ai/core.md`'s Releasing section being empty. The board was left in one-wire mode with the closed image in SRAM and the desktop not restored. TOOL-072 gained a revision note. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering and active-log capacity.
+
+#### Next Steps:
+
+The next milestone is the AE350 running code from DDR3: re-apply the write mask path (B1) on this base first, one change at a time and checked with the simulation gates and `tools/sim_ddr3_lockstep.sh`, then bridge the AE350's 64-bit RAM AHB port to the controller's 256-bit port so the array is the CPU's main memory at `0x80000000`, and prove it from the CPU side by loading a program over the PROT-001 path and running a memory test and a miss-cost measurement against AE350-003. Images are built with `tools/ddr3_ctrl_sweep.sh` and loaded only if they close; whether `tools/ddr3_sta.py` or nextpnr is right about `m_n_r`, making closure robust across seeds, folding the build settings into `tools/build_ddr3_ctrl.sh`, the frequency sweep and committing `tools/nextpnr_arcs.patch` to the aquasock fork with an upstream report wait for the user, as does any release. Restore the desktop with a cold power-up into two-wire mode when the board is next needed for it.
+
+#### Files Modified:
+
+None.
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: NOT RUN
+
+---
