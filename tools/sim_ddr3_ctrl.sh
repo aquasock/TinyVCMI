@@ -47,8 +47,12 @@ grep -q "^PASS" "$out/faults.log"
 # and tRP (6), whatever T_RCD and T_RP say.  tRC is exceeded by tRAS and tRP.
 # READ to WRITE and WRITE to READ: the test turns between them only between
 # passes, its last command long out, even with T_WTR = 1.
+# The last three are the write mask: a device that ignores DM, and DM a beat
+# late or on the next lane, each of which leaves masked bytes that differ in
+# all eight bits from what the test expects.
 for m in "late_read +define+MODEL_RDO=8" "late_write +define+MODEL_D=2" \
-         "short_ras +define+CTL_T_RAS=2"; do
+         "short_ras +define+CTL_T_RAS=2" "nodm +define+MODEL_NODM" \
+         "dm_beat +define+MODEL_DMBEAT" "dm_lane +define+MODEL_DMLANE"; do
     set -- $m
     run "$1" "$2"
     if grep -q "^PASS" "$out/$1.log"; then

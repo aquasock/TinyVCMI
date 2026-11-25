@@ -32,8 +32,16 @@
 // switch rows in a bank, and every word must come back as written, with no
 // READ or WRITE off phase 0.
 //
-// With MODEL_FAULTS the model writes word 100 wrong the first time, lane 1
-// pin 1 beat 3 flipped, and reads word 2000 wrong the first time, lane 2
+// The model honours DM: each WRITE's mask is taken from the DM pads' words
+// with the same shift as its data, and a byte whose DM bit is set keeps what
+// it held.  The test writes every word twice a pass, the second time inverted
+// under a mask, so a burst whose mask is lost, a beat off or on the wrong
+// lane leaves bytes that differ in all eight bits; MODEL_NODM, MODEL_DMBEAT
+// and MODEL_DMLANE make the model do exactly those, and the test must see it.
+//
+// With MODEL_FAULTS the model leaves word 100 wrong after its masked write,
+// the first time, lane 1 pin 1 beat 3 flipped (after the merge, so the fault
+// is the word's whatever its mask), and reads word 2000 wrong the first time, lane 2
 // pin 1 beat 5 flipped, and the test's diagnostics must say so: those pins
 // and beats counted and nothing else, both words logged, the first re-read
 // as wrong as the first read and the second right.
@@ -80,6 +88,7 @@ module tb_ctrl;
     wire [63:0]  p_addr;
     wire         p_odt, p_dq_drive, p_dqs_drive, ctrl_rd, ctrl_accept;
     wire [255:0] wdq;
+    wire [31:0]  dm;
     wire [511:0] ext_status;
 
     ctrl_glue #(.N_LOG2(NL), .R_LOG2(NL), .SNAP_LOG2(4)) dut (
@@ -91,7 +100,7 @@ module tb_ctrl;
         .ctrl_rot(12'd0), .ext_cmd(ext_cmd), .ext_tog(ext_tog),
         .p_cs_n(p_cs_n), .p_ras_n(p_ras_n), .p_cas_n(p_cas_n), .p_we_n(p_we_n),
         .p_ba(p_ba), .p_addr(p_addr), .p_odt(p_odt), .p_dq_drive(p_dq_drive),
-        .p_dqs_drive(p_dqs_drive), .wdq(wdq), .ctrl_rd(ctrl_rd), .ctrl_accept(ctrl_accept),
+        .p_dqs_drive(p_dqs_drive), .wdq(wdq), .dm(dm), .ctrl_rd(ctrl_rd), .ctrl_accept(ctrl_accept),
         .ext_status(ext_status));
 
     // a controller a timing short, so the monitor is seen to catch it
@@ -128,6 +137,8 @@ module tb_ctrl;
     integer     rd_key [0:63];
     integer     rd_n = 0;
     reg [255:0] wdq_hist [0:15];        // the serializers' words, newest at 0
+    reg [31:0]  dm_hist [0:15];         // and the DM pads' words
+    integer     n_mbytes = 0, n100 = 0;
     reg [15:0]  drv_hist = 16'd0;
     integer     n_reads = 0, n_writes = 0, n_bad_pin = 0, n_refs = 0;
     reg         fault_w = 1'b0, fault_r = 1'b0;
@@ -149,6 +160,8 @@ module tb_ctrl;
     reg [2:0]  cb;
     reg [15:0] ca;
     reg [255:0] burst, w_first, w_second;
+    reg [31:0]  d_first, d_second, mburst;     // mburst: 1 suppresses beat b, lane l at 4b + l
+    integer     ml, mp, mb2;
     reg        cmd_cs, cmd_ras, cmd_cas, cmd_we;
     initial begin
         for (i = 0; i < 8; i = i + 1) begin
@@ -157,15 +170,22 @@ module tb_ctrl;
         end
         for (i = 0; i < 4; i = i + 1) t_act4[i] = -1000;
         for (i = 0; i < (1 << NL); i = i + 1) mem[i] = 256'd0;
-        for (i = 0; i < 16; i = i + 1) wdq_hist[i] = 256'd0;
+        for (i = 0; i < 16; i = i + 1) begin
+            wdq_hist[i] = 256'd0;
+            dm_hist[i] = 32'd0;
+        end
     end
 
     // the pads hold a PCLK's values from one rising edge to the next; read
     // them at the falling edge, and set dq_q there for the next rising edge
     always @(negedge pclk) begin
         cyc = cyc + 1;
-        for (i = 15; i > 0; i = i - 1) wdq_hist[i] = wdq_hist[i - 1];
+        for (i = 15; i > 0; i = i - 1) begin
+            wdq_hist[i] = wdq_hist[i - 1];
+            dm_hist[i] = dm_hist[i - 1];
+        end
         wdq_hist[0] = wdq;
+        dm_hist[0] = dm;
         drv_hist = {drv_hist[14:0], p_dq_drive && p_dqs_drive};
 
         // our drive against a read burst on the bus in this PCLK
@@ -255,18 +275,45 @@ module tb_ctrl;
         while (wr_n > 0 && cyc == wr_cyc[0] + WD + 1) begin
             w_first = wdq_hist[1];
             w_second = wdq_hist[0];
+            d_first = dm_hist[1];
+            d_second = dm_hist[0];
             if (!drv_hist[0] || !drv_hist[1]) fail("DQ or DQS not driven over a burst");
             for (pn = 0; pn < 32; pn = pn + 1)
                 for (bb = 0; bb < 8; bb = bb + 1)
                     burst[8*pn + bb] = (bb < 8 - WB) ? w_first[8*pn + WB + bb]
                                                      : w_second[8*pn + bb - (8 - WB)];
+            // DM takes the same shift as each of its lane's pins
+            for (ml = 0; ml < 4; ml = ml + 1)
+                for (bb = 0; bb < 8; bb = bb + 1)
+                    mburst[4*bb + ml] = (bb < 8 - WB) ? d_first[8*ml + WB + bb]
+                                                      : d_second[8*ml + bb - (8 - WB)];
+`ifdef MODEL_NODM
+            mburst = 32'd0;                     // a DM that never reaches the device
+`endif
+`ifdef MODEL_DMBEAT
+            mburst = {mburst[27:0], mburst[31:28]};   // every lane's DM a beat late
+`endif
+`ifdef MODEL_DMLANE
+            for (mb2 = 0; mb2 < 8; mb2 = mb2 + 1)     // lane l's DM on lane l + 1
+                mburst[4*mb2 +: 4] = {mburst[4*mb2 +: 3], mburst[4*mb2 + 3]};
+`endif
+            for (mb2 = 0; mb2 < 32; mb2 = mb2 + 1) n_mbytes = n_mbytes + mburst[mb2];
+            // a suppressed byte, beat b of lane l, keeps what the word held
+            for (ml = 0; ml < 4; ml = ml + 1)
+                for (bb = 0; bb < 8; bb = bb + 1)
+                    if (mburst[4*bb + ml])
+                        for (mp = 0; mp < 8; mp = mp + 1)
+                            burst[64*ml + 8*mp + bb] = mem[wr_key[0]][64*ml + 8*mp + bb];
+            mem[wr_key[0]] = burst;
 `ifdef MODEL_FAULTS
-            if (wr_key[0] == 100 && !fault_w) begin
-                burst[8*9 + 3] = ~burst[8*9 + 3];
-                fault_w = 1'b1;
+            if (wr_key[0] == 100) begin
+                n100 = n100 + 1;
+                if (n100 == 2 && !fault_w) begin   // after its masked write
+                    mem[100][8*9 + 3] = ~mem[100][8*9 + 3];
+                    fault_w = 1'b1;
+                end
             end
 `endif
-            mem[wr_key[0]] = burst;
             for (i = 0; i < wr_n - 1; i = i + 1) begin
                 wr_cyc[i] = wr_cyc[i + 1];
                 wr_key[i] = wr_key[i + 1];
@@ -359,6 +406,8 @@ module tb_ctrl;
         end
 `endif
         if (dut.phy.bad_phase || st_badph) fail("a READ or WRITE reached the DFI off phase 0");
+        $display("      %0d bytes masked at the pads", n_mbytes);
+        if (n_mbytes < (1 << NL) * 8) fail("too few bytes were masked for the masked pass to have run");
         $display("      %0d REFRESHes, the longest interval %0d memory clocks", n_refs, max_refi);
         if (n_refs < (4 * cyc) / 3120 - 1) fail("fewer REFRESHes than the run's length needs");
         if (max_refi > 3120) fail("a refresh interval over 7.8 us");

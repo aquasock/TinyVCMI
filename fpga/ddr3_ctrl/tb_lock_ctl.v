@@ -21,19 +21,42 @@ module tb_lock_ctl;
         .dfi_cs_n(cs0), .dfi_ras_n(ras0), .dfi_cas_n(cas0), .dfi_we_n(we0), .dfi_address(a0),
         .dfi_bank(b0), .dfi_wrdata(w0), .dfi_wrdata_en(wen0), .dfi_rddata_en(ren0),
         .dfi_rddata(dfi_rddata), .dfi_rddata_valid(dfi_rddata_valid), .n_act(na0), .n_ref(nr0));
+    // the working tree's write mask tied low: every byte written, as the
+    // reference writes it, and dfi_wrmask must stay low
+    wire [31:0] wm1;
     ddr3_ctl n (.pclk(pclk), .rst(rst), .cmd_valid(cmd_valid), .cmd_ready(r1), .cmd_we(cmd_we),
-        .cmd_addr(cmd_addr), .cmd_wdata(cmd_wdata), .rdata_valid(v1), .rdata(d1),
+        .cmd_addr(cmd_addr), .cmd_wdata(cmd_wdata), .cmd_wmask(32'd0), .rdata_valid(v1), .rdata(d1),
+        .dfi_wrmask(wm1),
         .dfi_cs_n(cs1), .dfi_ras_n(ras1), .dfi_cas_n(cas1), .dfi_we_n(we1), .dfi_address(a1),
         .dfi_bank(b1), .dfi_wrdata(w1), .dfi_wrdata_en(wen1), .dfi_rddata_en(ren1),
         .dfi_rddata(dfi_rddata), .dfi_rddata_valid(dfi_rddata_valid), .n_act(na1), .n_ref(nr1));
+    // and one with each request's mask a slice of its own data, whose DFI
+    // mask must therefore be the same slice of its DFI data at every PCLK:
+    // the mask travels with its data through the FIFO, nxt, cur and the holds
+    wire r2, v2; wire [255:0] d2, w2; wire [31:0] wm2;
+    wire [3:0] cs2, ras2, cas2, we2, wen2, ren2; wire [59:0] a2; wire [11:0] b2; wire [31:0] na2, nr2;
+    ddr3_ctl n2 (.pclk(pclk), .rst(rst), .cmd_valid(cmd_valid), .cmd_ready(r2), .cmd_we(cmd_we),
+        .cmd_addr(cmd_addr), .cmd_wdata(cmd_wdata), .cmd_wmask(cmd_wdata[95:64]), .rdata_valid(v2), .rdata(d2),
+        .dfi_wrmask(wm2),
+        .dfi_cs_n(cs2), .dfi_ras_n(ras2), .dfi_cas_n(cas2), .dfi_we_n(we2), .dfi_address(a2),
+        .dfi_bank(b2), .dfi_wrdata(w2), .dfi_wrdata_en(wen2), .dfi_rddata_en(ren2),
+        .dfi_rddata(dfi_rddata), .dfi_rddata_valid(dfi_rddata_valid), .n_act(na2), .n_ref(nr2));
+    integer merrs = 0, mwrites = 0;
+    always @(posedge pclk) begin
+        if (wm2 !== w2[95:64]) begin
+            merrs = merrs + 1;
+            if (merrs < 4) $display("MISMATCH the write mask left its data: mask %h, data slice %h", wm2, w2[95:64]);
+        end
+        if (wen2[0]) mwrites = mwrites + 1;
+    end
     integer cyc = 0, errs = 0, cmds = 0, acts = 0;
     reg [31:0] rnd;
     reg [24:0] last = 0;
     always @(posedge pclk) begin
         cyc <= cyc + 1;
         if (cyc == 20) rst <= 0;
-        if (cyc > 20 && ({r0,v0,d0,cs0,ras0,cas0,we0,a0,b0,w0,wen0,ren0,na0,nr0} !==
-                         {r1,v1,d1,cs1,ras1,cas1,we1,a1,b1,w1,wen1,ren1,na1,nr1})) begin
+        if (cyc > 20 && ({r0,v0,d0,cs0,ras0,cas0,we0,a0,b0,w0,wen0,ren0,na0,nr0,32'd0} !==
+                         {r1,v1,d1,cs1,ras1,cas1,we1,a1,b1,w1,wen1,ren1,na1,nr1,wm1})) begin
             errs = errs + 1;
             if (errs < 10) $display("MISMATCH cycle %0d: cs %b/%b ras %b/%b cas %b/%b we %b/%b a %h/%h b %h/%h ready %b/%b",
                 cyc, cs0, cs1, ras0, ras1, cas0, cas1, we0, we1, a0[14:0], a1[14:0], b0[2:0], b1[2:0], r0, r1);
@@ -56,8 +79,10 @@ module tb_lock_ctl;
         dfi_rddata_valid <= {4{rnd[30]}};
         dfi_rddata <= {8{$random}};
         if (cyc == 4000000) begin
-            if (errs == 0 && na0 > 1000 && nr0 > 100)
-                $display("PASS  lockstep: %0d cycles, %0d commands, %0d ACTIVATEs, %0d REFRESHes, no output differs", cyc, cmds, na0, nr0);
+            if (merrs != 0 || mwrites < 1000)
+                $display("FAIL  lockstep: the write mask was not carried with its data (%0d mismatches over %0d WRITEs)", merrs, mwrites);
+            else if (errs == 0 && na0 > 1000 && nr0 > 100)
+                $display("PASS  lockstep: %0d cycles, %0d commands, %0d ACTIVATEs, %0d REFRESHes, no output differs, and over %0d WRITEs the mask stayed with its data", cyc, cmds, na0, nr0, mwrites);
             else
                 $display("FAIL  lockstep: %0d mismatching cycles (%0d ACTIVATEs, %0d REFRESHes)", errs, na0, nr0);
             $finish;

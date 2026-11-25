@@ -18,8 +18,11 @@ module tb_lock_bist;
         .rdata_valid(rdata_valid), .rdata_data(rdata), .state(st0), .passes(p0), .n_written(nw0),
         .n_checked(nc0), .lane_err(le0), .err_seen(es0), .err_addr(ea0), .err_diff(ed0),
         .pin_err(pe0), .beat_err(be0), .elog(el0), .n_log(nl0));
-    ddr3_bist #(.AW(AW), .N_LOG2(NL), .R_LOG2(RL)) n (.pclk(pclk), .rst(rst), .clr(clr),
-        .cmd_valid(v1), .cmd_ready(cmd_ready), .cmd_we(we1), .cmd_addr(a1), .cmd_wdata(wd1),
+    // the working tree's test without its masked pass, which is the
+    // reference's test; its write mask must stay low
+    wire [31:0] wm1;
+    ddr3_bist #(.AW(AW), .N_LOG2(NL), .R_LOG2(RL), .MASKPASS(0)) n (.pclk(pclk), .rst(rst), .clr(clr),
+        .cmd_valid(v1), .cmd_ready(cmd_ready), .cmd_we(we1), .cmd_addr(a1), .cmd_wdata(wd1), .cmd_wmask(wm1),
         .rdata_valid(rdata_valid), .rdata_data(rdata), .state(st1), .passes(p1), .n_written(nw1),
         .n_checked(nc1), .lane_err(le1), .err_seen(es1), .err_addr(ea1), .err_diff(ed1),
         .pin_err(pe1), .beat_err(be1), .elog(el1), .n_log(nl1));
@@ -40,8 +43,8 @@ module tb_lock_bist;
         if (cyc == 10) rst <= 0;
         el0_d <= el0;
         clr_d <= clr;
-        if (cyc > 10 && ({v0,we0,a0,wd0,st0,p0,nw0,nc0,le0,es0,ea0,ed0,pe0,be0,el0 & ~m37,nl0} !==
-                         {v1,we1,a1,wd1,st1,p1,nw1,nc1,le1,es1,ea1,ed1,pe1,be1,el1 & ~m37,nl1} ||
+        if (cyc > 10 && ({v0,we0,a0,wd0,st0,p0,nw0,nc0,le0,es0,ea0,ed0,pe0,be0,el0 & ~m37,nl0,32'd0} !==
+                         {v1,we1,a1,wd1,st1,p1,nw1,nc1,le1,es1,ea1,ed1,pe1,be1,el1 & ~m37,nl1,wm1} ||
                          ((el1 & m37) !== (el0_d & m37) && !clr && !clr_d))) begin
             errs = errs + 1;
             if (errs < 6) $display("MISMATCH cycle %0d: state %0d/%0d addr %h/%h nlog %0d/%0d", cyc, st0, st1, a0, a1, nl0, nl1);

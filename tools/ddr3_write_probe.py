@@ -98,6 +98,13 @@ AD_PATTERNS = [0x01, 0x03, 0x05, 0x07, 0x09, 0x0B, 0x0D, 0x0F, 0x13, 0x15, 0x17,
                0x3F, 0x57, 0x5B, 0x5F, 0x6F, 0x7F, 0x0B, 0x13]
 
 
+
+#: ddr3_bist's pass states, as the controller status reports them; the
+#: masked inverse write (7, 8) runs between the full write and the reads
+BIST_STATES = {0: "idle", 1: "writing", 2: "written", 3: "reading in order",
+               4: "read", 5: "random reads", 6: "random read", 7: "masked writing",
+               8: "masked written"}
+
 def adata_pattern(bank: int, row4: int, burst: int) -> int:
     """The pattern the fill writes at (bank, row's low four bits, burst)."""
     x = (burst << 7) | (row4 << 3) | bank
@@ -1738,7 +1745,8 @@ def main() -> int:
                 c = core.ctrl()
                 line = (f"controller {'owns the bus' if c['own'] else 'not yet'}"
                         f"{', trained' if c['trained'] else ''}, read offset {6 + c['rd_off']}, "
-                        f"test {'running' if c['running'] else 'stopped'} in state {c['state']}: "
+                        f"test {'running' if c['running'] else 'stopped'} in state {c['state']}"
+                        f" ({BIST_STATES.get(c['state'], '?')}): "
                         f"{c['passes']} passes, {c['written']} written, {c['checked']} checked, "
                         f"lane errors {c['lane_err']}")
                 if not c["walign_ok"]:

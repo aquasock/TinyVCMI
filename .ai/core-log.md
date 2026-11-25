@@ -424,3 +424,44 @@ Entry 12's next steps stand for 0.2.0, the AE350 running code from DDR3: the wri
 - User Test: N/A
 
 ---
+
+## 14 COMMIT Unreleased 2026-11-25T00:58:51-07:00
+
+#### Coming From:
+
+v0.1.0 88f1e2d
+
+#### Purpose:
+
+Re-apply the write mask path on the 100 MHz controller and prove on the board that masked bytes keep what they held, as the first step toward the AE350 running code from DDR3.
+
+#### Outcome:
+
+The controller now writes under a byte mask, and on the board every masked byte kept its old value and every unmasked byte took the new one. `ddr3_ctl` takes a 32-bit `cmd_wmask` beside `cmd_wdata`, where bit 4b + l suppresses beat b of lane l, and carries it through its FIFO, `nxt`, `cur` and the write holds beside the data to `dfi_wrmask`; `dfi_phy` turns it into each lane's eight DM beats with the same delay line and write-alignment shift as the data, `ctrl_glue` drives the DM pads from it only while the controller owns the bus, the training writing every byte, and `tools/ddr3_write.py` generates `top.v`'s DM boundary from it, so the boundary check in `tools/build_ddr3_ctrl.sh` now expects 469 `DFFN` and 18 `DFFNS`. `ddr3_bist` gains a masked pass, on with its `MASKPASS` parameter: after the full write it rewrites every word with the generator's exact inverse, `gen(a, s ^ 0x5e6cfce7)`, which the generator's linearity makes `~gen(a, s)`, under a mask drawn from the generator at seed `s ^ 0x7f4a7c15`, and the reads expect the merge, so a byte the mask gets wrong fails in all eight bits; its states 7 and 8 are named in `tools/ddr3_write_probe.py`'s report. `tb_ctrl.v`'s memory model now honours DM with the same shift as the data, its write fault moved to after word 100's masked write, and `tools/sim_ddr3_ctrl.sh` passes with 131,072 bytes masked and fails, as it must, the three new mutants that ignore DM, apply it a beat late or apply it on the next lane, beside the three old ones. `tools/sim_ddr3_lockstep.sh` shows `ddr3_ctl` with its mask tied low and `ddr3_bist` with `MASKPASS` 0 equal to commit `0d3bce3` on every output, and a second `ddr3_ctl` given each request's mask as a slice of its own data kept that slice equal to its DFI data over 286,395 WRITEs, a check shown to fail when the hold took its mask from `nxt` instead of `cur`. The write image's sources and generated top level are unchanged, as `tools/ddr3_write.py --check` confirmed, so its gates were not rerun. Sixteen seeds built with `tools/ddr3_ctrl_sweep.sh` and the patched nextpnr, the user making 16 parallel builds the hard limit, and four closed every clock with every path timed against one in seventeen before, a difference within one netlist's seed spread: seed 3 at `pclk` 101.04, `mclk` 761.03 and `core.rx.clk` 59.79 MHz (`.fs` SHA-256 `9add97135331a6589bde503a551807bf36ff86df3bcb027847fa56bb73f7305f`), seed 4 (`b065ff3f17bdce8c84f1216645e8103a50785e07434bbd8be6f89be3a0c660ab`), seed 7 (`44d1b9f8945a710ce948c04cfb8a1183406391c1362fc2e7c43a8bacdac5224d`) and seed 15 (`506e791791bdcdd180f63bbb6bab796d6bbbab2c104a06f128a8886485cba983`), each with all 306 DDR3 tables equal to the vendor reference and the boundary on the CLKDIV. The user gave standing permission to deploy to the Tang and use the relay power cycle at will, warning that an ESP32 shares the tty ports, so the probe now addresses the Tang's UART by `/dev/serial/by-id/usb-SIPEED_USB_Debugger_2025041420-if01-port0`. Seed 3, loaded warm in one-wire mode with `openFPGALoader -c ft2232` reporting `DONE` at 00:45:31, trained `error 0` to `d 1 b 2` in 422 trials with 7 CALIB pulses a lane, handed over and ran 507 passes of the 1 GiB test with its masked pass in 600 s with no error on any lane and no failing word on any DQ; the first status showed 67,108,864 words written before the first read, the full write and the masked write, and the probe's samples found the masked write in 174 of 570, as often as the plain write. The fewer passes than entry 11's 734 are the masked pass's extra write, and the 32-bit written and checked counters saturate within the soak. The user chose not to cut 0.2.0 yet. The board was left in one-wire mode with seed 3's image in SRAM and the desktop not restored. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering and active-log capacity.
+
+#### Next Steps:
+
+Bridge the AE350's 64-bit RAM AHB port to the controller's 256-bit port with byte masks, so that the array is the CPU's main memory at `0x80000000`, and prove it from the CPU side by loading a program over the PROT-001 path and running a memory test and a miss-cost measurement against AE350-003. Whether `tools/ddr3_sta.py` or nextpnr is right about `m_n_r`, robust closure, folding the build settings into `tools/build_ddr3_ctrl.sh`, the frequency sweep, committing `tools/nextpnr_arcs.patch` to the aquasock fork with an upstream report, and any release wait for the user. Restore the desktop with a cold power-up into two-wire mode when the board is next needed for it.
+
+#### Files Modified:
+
+- fpga/ddr3_ctrl/ctrl_glue.v
+- fpga/ddr3_ctrl/ddr3_bist.v
+- fpga/ddr3_ctrl/ddr3_ctl.v
+- fpga/ddr3_ctrl/dfi_phy.v
+- fpga/ddr3_ctrl/tb_ctrl.v
+- fpga/ddr3_ctrl/tb_lock_bist.v
+- fpga/ddr3_ctrl/tb_lock_ctl.v
+- fpga/ddr3_ctrl/top.v
+- tools/build_ddr3_ctrl.sh
+- tools/ddr3_write.py
+- tools/ddr3_write_probe.py
+- tools/sim_ddr3_ctrl.sh
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: NOT RUN
+
+---

@@ -13,6 +13,17 @@
 // the pass's seed, so every DQ pin carries its own sequence and no two
 // words, beats or passes are alike.
 //
+// With MASKPASS, each pass writes every word a second time, before reading
+// any, with the inverse of its data under a write mask: bit 4b + l of the
+// mask, set, suppresses beat b's byte on lane l, and the mask is one more
+// xorshift of the address, so about half of every word's 32 bytes are
+// suppressed and which ones change from word to word and pass to pass.  The
+// inverse needs no logic of its own: gen() is linear, and with its seed XORed
+// with KINV it returns the complement of every beat.  Every word read is then
+// owed its first data with the bytes the mask let through inverted, so a byte
+// written when it should have been suppressed, or the reverse, fails in all
+// eight of its bits.
+//
 // A write carries its data, made from its address as the port takes it.
 // ddr3_ctl returns read data in request order, so each word read is checked
 // against the oldest read address, kept in a FIFO; a READ is offered only
@@ -36,7 +47,8 @@
 module ddr3_bist #(
     parameter integer AW = 25,          // native port address, 256-bit words
     parameter integer N_LOG2 = 25,      // words written and read per pass
-    parameter integer R_LOG2 = 20       // random READs per pass
+    parameter integer R_LOG2 = 20,      // random READs per pass
+    parameter integer MASKPASS = 1      // the masked inverse write pass (0: the test of 0d3bce3)
 ) (
     input  wire          pclk,
     input  wire          rst,           // also stops the test
@@ -47,6 +59,7 @@ module ddr3_bist #(
     output reg           cmd_we = 1'b0,
     output reg  [AW-1:0] cmd_addr = {AW{1'b0}},
     output wire [255:0]  cmd_wdata,
+    output wire [31:0]   cmd_wmask,     // 1 suppresses beat b, lane l at 4b + l
     input  wire          rdata_valid,
     input  wire [255:0]  rdata_data,
 
@@ -90,7 +103,11 @@ module ddr3_bist #(
     endfunction
 
     localparam [3:0] S_IDLE = 4'd0, S_WR = 4'd1, S_WRW = 4'd2, S_RD = 4'd3, S_RDW = 4'd4,
-                     S_RR = 4'd5, S_RRW = 4'd6;
+                     S_RR = 4'd5, S_RRW = 4'd6, S_MW = 4'd7, S_MWW = 4'd8;
+    // gen(a, s ^ KINV) is ~gen(a, s) in every beat (xorshift32(KINV) is all ones),
+    // and the mask of address a is beat 0 of gen(a, s ^ KM)
+    localparam [31:0] KINV = 32'h5e6cfce7;
+    localparam [31:0] KM = 32'h7f4a7c15;
     localparam integer DEPTH = 64;
     localparam [AW-1:0] LAST = (1 << N_LOG2) - 1;
     localparam [31:0] RLAST = (1 << R_LOG2) - 1;
@@ -113,7 +130,28 @@ module ddr3_bist #(
     // (registered at set_addr instead, gen sat behind the address and seed
     // adders and put the word 4.7 ns over 100 MHz fully timed, against 1.6 ns
     // into the controller's FIFO as it is here)
-    assign cmd_wdata = gen(cmd_addr, seed);
+    // the writes' seed: the pass's, or the pass's with KINV in the masked pass
+    reg  [31:0]  wseed = 32'h2545f491;
+    reg          mpass = 1'b0;          // in the masked pass
+    function [31:0] mfun(input [AW-1:0] a, input [31:0] s);
+        reg [255:0] g;
+        begin
+            g = gen(a, s ^ KM);
+            mfun = g[31:0];
+        end
+    endfunction
+    // a word's 32 mask bits to its 256 data bits: byte (beat b, lane l) at
+    // 32b + 8l from bit 4b + l
+    function [255:0] mexp(input [31:0] m);
+        integer eb, el;
+        begin
+            for (eb = 0; eb < 8; eb = eb + 1)
+                for (el = 0; el < 4; el = el + 1)
+                    mexp[32*eb + 8*el +: 8] = {8{m[4*eb + el]}};
+        end
+    endfunction
+    assign cmd_wdata = gen(cmd_addr, wseed);
+    assign cmd_wmask = mpass ? mfun(cmd_addr, seed) : 32'd0;
 
     // the check, three PCLK behind the word, each step registered for 100 MHz:
     // c0 the word and the address it is owed (the FIFO's head), ck the word
@@ -253,7 +291,8 @@ module ddr3_bist #(
         ck_retry <= c0_retry;
         ck_a <= c0_a;
         ck_got <= c0_got;
-        ck_exp <= gen(c0_a, seed);
+        // with the masked pass, the bytes its mask let through were inverted
+        ck_exp <= (MASKPASS != 0) ? gen(c0_a, seed) ^ mexp(~mfun(c0_a, seed)) : gen(c0_a, seed);
         d_v <= ck_v;
         d_retry <= ck_retry;
         d_a <= ck_a;
@@ -340,6 +379,27 @@ module ddr3_bist #(
                     inc_addr;
             end
             S_WRW: begin
+                set_addr({AW{1'b0}});
+                cmd_valid <= 1'b1;
+                if (MASKPASS != 0) begin        // every word again, inverted, masked
+                    mpass <= 1'b1;
+                    wseed <= seed ^ KINV;
+                    state <= S_MW;
+                end else begin
+                    cmd_we <= 1'b0;
+                    state <= S_RD;
+                end
+            end
+            S_MW: if (take) begin
+                if (a_last) begin
+                    cmd_valid <= 1'b0;
+                    state <= S_MWW;
+                end else
+                    inc_addr;
+            end
+            S_MWW: begin
+                mpass <= 1'b0;
+                wseed <= seed;
                 cmd_we <= 1'b0;
                 set_addr({AW{1'b0}});
                 cmd_valid <= 1'b1;
@@ -403,6 +463,7 @@ module ddr3_bist #(
                 if (passes != 16'hffff)
                     passes <= passes + 16'd1;
                 seed <= seed + 32'h9e3779b9;
+                wseed <= seed + 32'h9e3779b9;
                 cmd_we <= 1'b1;
                 set_addr({AW{1'b0}});
                 cmd_valid <= 1'b1;
@@ -427,11 +488,15 @@ module ddr3_bist #(
             cmd_retry <= 1'b0;
             retry_pend <= 1'b0;
             retry_fly <= 1'b0;
+            mpass <= 1'b0;
+            wseed <= seed;
         end
     end
 `ifndef SYNTHESIS
     // the flags must equal the compares they stand for at every edge
     always @(posedge pclk) begin
+        if (wseed != (mpass ? seed ^ KINV : seed))
+            $fatal(1, "FAIL  ddr3_bist: the write seed is not the pass's");
         if (a_last != (cmd_addr == LAST) || r_last != (rcnt == RLAST[R_LOG2-1:0]))
             $fatal(1, "FAIL  ddr3_bist: a_last or r_last disagrees with its compare");
     end

@@ -37,8 +37,10 @@
 // anyway, and a PRECHARGE holds the bank's PRECHARGE timer for one PCLK so a
 // stale flag cannot repeat it.  Gowin's build of a single-stage decision put
 // 15.6 ns, twelve levels, from the FIFO through the row compare.  The DFI's other
-// signals -- CKE, ODT, the masks -- are not driven here: wr_core holds CKE
-// and dfi_phy makes ODT from the WRITEs.
+// signals -- CKE and ODT -- are not driven here: wr_core holds CKE and
+// dfi_phy makes ODT from the WRITEs.  A request's write mask travels beside
+// its data, in a FIFO and registers of its own that move with the data's,
+// and reaches the DFI with it, a PCLK after the command.
 module ddr3_ctl #(
     parameter integer T_RCD = 2,
     parameter integer T_RP = 2,
@@ -62,6 +64,7 @@ module ddr3_ctl #(
     input  wire          cmd_we,
     input  wire [24:0]   cmd_addr,
     input  wire [255:0]  cmd_wdata,     // beat b, DQ q at 32b + q
+    input  wire [31:0]   cmd_wmask,     // 1 suppresses beat b, lane l at 4b + l
     output reg           rdata_valid = 1'b0,
     output reg  [255:0]  rdata = 256'd0,
 
@@ -73,6 +76,7 @@ module ddr3_ctl #(
     output wire [59:0]   dfi_address,
     output wire [11:0]   dfi_bank,
     output reg  [255:0]  dfi_wrdata = 256'd0,
+    output reg  [31:0]   dfi_wrmask = 32'd0,    // with dfi_wrdata, as cmd_wmask
     output wire [3:0]    dfi_wrdata_en,
     output wire [3:0]    dfi_rddata_en,
     input  wire [255:0]  dfi_rddata,
@@ -95,6 +99,10 @@ module ddr3_ctl #(
     // ns over 100 MHz fully timed (TOOL-065)
     (* ram_style = "logic" *) reg [17:0] fq_br [0:3];
     wire [17:0] head_br = fq_br[fq_r];
+    // the entries' write masks, beside the FIFO, and nxt's, cur's and the
+    // held one beside nxt, cur and wr_hold
+    reg  [31:0] fq_m [0:3];
+    reg  [31:0] nxt_m = 32'd0, cur_m = 32'd0, wm_hold = 32'd0;
     wire         h_v = (fq_n != 3'd0);
     // fq_n < 3, one slot spare because the ready is registered at the
     // requester; written out so it is one LUT and not a carry chain
@@ -341,6 +349,8 @@ module ddr3_ctl #(
         q_a <= p_a;
         wr_hold <= h_data;
         dfi_wrdata <= wr_hold;
+        wm_hold <= cur_m;
+        dfi_wrmask <= wm_hold;
         rdata_valid <= !rst && dfi_rddata_valid[0];
         rdata <= dfi_rddata;
 
@@ -348,11 +358,13 @@ module ddr3_ctl #(
         // FIFO refills nxt; cur's flags are made from the banks' registers
         if (cmd_valid && cmd_ready) begin
             fq[fq_w] <= {1'b0, cmd_we, cmd_addr, cmd_wdata};
+            fq_m[fq_w] <= cmd_wmask;
             fq_br[fq_w] <= cmd_addr[24:7];
             fq_w <= inc2w(fq_w);
         end
         if (nxt_v && (!cur_v || p_pop)) begin
             cur <= nxt;
+            cur_m <= nxt_m;
             cur_v <= 1'b1;
             hit <= m_n_r[n_bank];
             c_open <= b_open[n_bank];
@@ -364,6 +376,7 @@ module ddr3_ctl #(
         end
         if (h_v && (!nxt_v || !cur_v || p_pop)) begin
             nxt <= {last_v && (head_br == last_br), head[281:0]};
+            nxt_m <= fq_m[fq_r];
             last_br <= head_br;
             last_v <= 1'b1;
             nxt_v <= 1'b1;

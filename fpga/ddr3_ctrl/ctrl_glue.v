@@ -70,6 +70,7 @@ module ctrl_glue #(
     output wire [63:0]  p_addr,
     output wire         p_odt, p_dq_drive, p_dqs_drive,
     output wire [255:0] wdq,
+    output wire [31:0]  dm,             // the DM pads: lane l, beat b at 8l + b
     output wire         ctrl_rd,
     output reg          ctrl_accept = 1'b0, // sys_clk: the training found dfi_phy's alignment
     output reg  [511:0] ext_status = 512'd0
@@ -113,17 +114,19 @@ module ctrl_glue #(
     wire [59:0]  dfi_address;
     wire [11:0]  dfi_bank;
     wire [255:0] dfi_wrdata, dfi_rddata;
+    wire [31:0]  dfi_wrmask;
     wire [3:0]   dfi_rddata_valid;
     wire         cmd_valid, cmd_ready, cmd_we, rdata_valid;
     wire [24:0]  cmd_addr;
     wire [255:0] cmd_wdata, rdata_data;
+    wire [31:0]  cmd_wmask;
     wire [31:0]  n_act, n_ref;
     ddr3_ctl ctl (
         .pclk(pclk), .rst(ld_rst),
         .cmd_valid(cmd_valid), .cmd_ready(cmd_ready), .cmd_we(cmd_we), .cmd_addr(cmd_addr),
-        .cmd_wdata(cmd_wdata), .rdata_valid(rdata_valid), .rdata(rdata_data),
+        .cmd_wdata(cmd_wdata), .cmd_wmask(cmd_wmask), .rdata_valid(rdata_valid), .rdata(rdata_data),
         .dfi_cs_n(dfi_cs_n), .dfi_ras_n(dfi_ras_n), .dfi_cas_n(dfi_cas_n), .dfi_we_n(dfi_we_n),
-        .dfi_address(dfi_address), .dfi_bank(dfi_bank), .dfi_wrdata(dfi_wrdata),
+        .dfi_address(dfi_address), .dfi_bank(dfi_bank), .dfi_wrdata(dfi_wrdata), .dfi_wrmask(dfi_wrmask),
         .dfi_wrdata_en(dfi_wrdata_en), .dfi_rddata_en(dfi_rddata_en),
         .dfi_rddata(dfi_rddata), .dfi_rddata_valid(dfi_rddata_valid),
         .n_act(n_act), .n_ref(n_ref));
@@ -134,17 +137,18 @@ module ctrl_glue #(
     wire [63:0]  c_addr;
     wire         c_odt, c_dq_drive, c_dqs_drive, c_rd_load, bad_phase;
     wire [255:0] c_wdq;
+    wire [31:0]  c_dm;
     wire [31:0]  n_wr, n_rd;
     dfi_phy #(.WD(WD), .WB(WB)) phy (
         .pclk(pclk), .rst(ld_rst),
         .dfi_cs_n(dfi_cs_n), .dfi_ras_n(dfi_ras_n), .dfi_cas_n(dfi_cas_n), .dfi_we_n(dfi_we_n),
-        .dfi_address(dfi_address), .dfi_bank(dfi_bank), .dfi_wrdata(dfi_wrdata),
+        .dfi_address(dfi_address), .dfi_bank(dfi_bank), .dfi_wrdata(dfi_wrdata), .dfi_wrmask(dfi_wrmask),
         .dfi_wrdata_en(dfi_wrdata_en), .dfi_rddata_en(dfi_rddata_en),
         .dfi_rddata(dfi_rddata), .dfi_rddata_valid(dfi_rddata_valid),
         .rot(ctrl_rot), .rd_off(rd_off), .dq_q(dq_q),
         .p_cs_n(c_cs_n), .p_ras_n(c_ras_n), .p_cas_n(c_cas_n), .p_we_n(c_we_n),
         .p_ba(c_ba), .p_addr(c_addr), .p_odt(c_odt), .p_dq_drive(c_dq_drive),
-        .p_dqs_drive(c_dqs_drive), .wdq(c_wdq), .rd_load(c_rd_load),
+        .p_dqs_drive(c_dqs_drive), .wdq(c_wdq), .p_dm(c_dm), .rd_load(c_rd_load),
         .bad_phase(bad_phase), .n_wr(n_wr), .n_rd(n_rd));
     assign ctrl_rd = c_rd_load;
 
@@ -161,7 +165,7 @@ module ctrl_glue #(
     ddr3_bist #(.AW(25), .N_LOG2(N_LOG2), .R_LOG2(R_LOG2)) bist (
         .pclk(pclk), .rst(ld_rst || !bist_en), .clr(bist_clr),
         .cmd_valid(cmd_valid), .cmd_ready(cmd_ready), .cmd_we(cmd_we), .cmd_addr(cmd_addr),
-        .cmd_wdata(cmd_wdata), .rdata_valid(rdata_valid), .rdata_data(rdata_data),
+        .cmd_wdata(cmd_wdata), .cmd_wmask(cmd_wmask), .rdata_valid(rdata_valid), .rdata_data(rdata_data),
         .state(b_state), .passes(b_passes), .n_written(b_written), .n_checked(b_checked),
         .lane_err(b_lane_err), .err_seen(b_err_seen), .err_addr(b_err_addr),
         .err_diff(b_err_diff), .pin_err(b_pin_err), .beat_err(b_beat_err), .elog(b_elog),
@@ -186,6 +190,7 @@ module ctrl_glue #(
     assign p_odt   = ctrl_own_x[6] ? c_odt   : wc_odt;
     assign p_dq_drive  = ctrl_own_x[6] ? c_dq_drive  : wc_dq_drive;
     assign p_dqs_drive = ctrl_own_x[6] ? c_dqs_drive : wc_dqs_drive;
+    assign dm          = ctrl_own_x[6] ? c_dm        : 32'd0;  // the training writes every byte
     genvar gq;
     generate
         for (gq = 0; gq < 4; gq = gq + 1) begin : g_wdq

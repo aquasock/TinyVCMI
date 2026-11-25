@@ -64,6 +64,7 @@ module dfi_phy #(
     input  wire [59:0]  dfi_address,    // phase p at 15p +: 15
     input  wire [11:0]  dfi_bank,       // phase p at 3p +: 3
     input  wire [255:0] dfi_wrdata,     // phase p at 64p +: 64
+    input  wire [31:0]  dfi_wrmask,     // 1 suppresses beat b, lane l at 4b + l
     input  wire [3:0]   dfi_wrdata_en,
     input  wire [3:0]   dfi_rddata_en,
     output reg  [255:0] dfi_rddata = 256'd0,
@@ -85,6 +86,7 @@ module dfi_phy #(
     output reg          p_dq_drive = 1'b0,
     output reg          p_dqs_drive = 1'b0,
     output reg  [255:0] wdq = 256'd0,
+    output reg  [31:0]  p_dm = 32'd0,   // lane l, beat b at 8l + b: the DM pads
     output reg          rd_load = 1'b0, // a READ loads the command registers at this edge
     output reg          bad_phase = 1'b0,   // a READ or WRITE came on phase 1, 2 or 3
     output reg  [31:0]  n_wr = 32'd0,
@@ -157,14 +159,32 @@ module dfi_phy #(
     // word k of the delay line, k = 0 the newest: wd[k] and its flag wf[k];
     // wfx[k + 1] is wf[k], and wfx[0] the flag of the word loading now
     reg [255:0] wd [0:WD+1];
+    // the write masks beside the data, gathered as each lane's DM pad takes
+    // them, lane l, beat b at 8l + b, as wr_pin gathers the data
+    wire [31:0] wr_dm;
+    genvar gml, gmb;
+    generate
+        for (gml = 0; gml < 4; gml = gml + 1) begin : g_ml
+            for (gmb = 0; gmb < 8; gmb = gmb + 1) begin : g_mb
+                assign wr_dm[8*gml + gmb] = dfi_wrmask[4*gmb + gml];
+            end
+        end
+    endgenerate
+    reg [31:0]  wm [0:WD+1];
     reg [WD+3:0] wf = {(WD+4){1'b0}};
     wire [WD+4:0] wfx = {wf, wen_d};
     integer k;
-    initial for (k = 0; k < WD + 2; k = k + 1) wd[k] = 256'd0;
+    initial for (k = 0; k < WD + 2; k = k + 1) begin
+        wd[k] = 256'd0;
+        wm[k] = 32'd0;
+    end
     always @(posedge pclk) begin
         wd[0] <= wen_d ? wr_pin : 256'd0;
-        for (k = 1; k < WD + 2; k = k + 1)
+        wm[0] <= wen_d ? wr_dm : 32'd0;
+        for (k = 1; k < WD + 2; k = k + 1) begin
             wd[k] <= wd[k - 1];
+            wm[k] <= wm[k - 1];
+        end
         wf <= {wf[WD+2:0], wen_d} & {(WD+4){!rst}};
     end
     // beats b..7 carry the burst in word d, 0..b-1 the one before in word
@@ -173,12 +193,20 @@ module dfi_phy #(
     // d - 1 .. d + 2 at this edge
     wire [255:0] w_new = wd[WD];
     wire [255:0] w_old = wd[WD + 1];
-    integer pn;
-    reg [15:0] pair;
+    // and each lane's DM bits take the shift each of its pins does, so a
+    // beat's DM bit is serialised with that beat's byte
+    wire [31:0]  m_new = wm[WD];
+    wire [31:0]  m_old = wm[WD + 1];
+    integer pn, ml;
+    reg [15:0] pair, mpair;
     always @(posedge pclk) begin
         for (pn = 0; pn < 32; pn = pn + 1) begin
             pair = {w_new[8*pn +: 8], w_old[8*pn +: 8]};
             wdq[8*pn +: 8] <= pair >> (8 - WB);
+        end
+        for (ml = 0; ml < 4; ml = ml + 1) begin
+            mpair = {m_new[8*ml +: 8], m_old[8*ml +: 8]};
+            p_dm[8*ml +: 8] <= mpair >> (8 - WB);
         end
         p_dq_drive <= !rst && (|wfx[WD+3:WD]);
         p_dqs_drive <= !rst && (|wfx[WD+3:WD]);
