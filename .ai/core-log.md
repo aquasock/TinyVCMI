@@ -682,7 +682,7 @@ None.
 
 ---
 
-## 20 COMMIT Unreleased 2026-11-25T20:02:11-07:00
+## 20 COMMIT Unreleased 2026-11-25T19:58:43-07:00
 
 #### Coming From:
 
@@ -712,7 +712,7 @@ Cycle B starts on the user's approval of the plan and its open questions: the co
 
 ---
 
-## 21 COMMIT Unreleased 2026-11-25T20:09:37-07:00
+## 21 COMMIT Unreleased 2026-11-25T20:05:54-07:00
 
 #### Coming From:
 
@@ -729,6 +729,36 @@ No source, firmware or bitstream changed and no hardware ran. `/run/media/vash/U
 #### Next Steps:
 
 The asset-delivery question is the one still open, now narrowed to boot-time send against a BL616 file service, and cycle B should settle it before the file layer's shape is fixed. Cycle B's remaining work is unchanged and awaits the user: the cooperative pthread shim, the archive-backed read-only file layer, the link-mode keyboard and mouse receiver, and the G0 bench, whose result chooses the canvas and predicts the frame rate. The hardware items still waiting are also unchanged: closure robustness led by `wr_core`'s pause bookkeeping, the HDMI heat test, rebuilding the controller-only image with entry 16's `ddr3_ctl`, the STA disagreement on `m_n_r`, the frequency sweep, the nextpnr patch's upstream report and any 0.2.0 release.
+
+#### Files Modified:
+
+- docs/vcmi-port-plan.md
+
+#### Status:
+
+- Build: N/A
+- Deployment: N/A
+- User Test: N/A
+
+---
+
+## 22 COMMIT Unreleased 2026-11-25T20:08:05-07:00
+
+#### Coming From:
+
+Unreleased 9dd165a
+
+#### Purpose:
+
+Follow the Heroes III data to the path the user moved it to and confirm the move kept it intact.
+
+#### Outcome:
+
+No source, firmware or bitstream changed and no hardware ran. The user moved the staged data from `root/vcmi/data` in entry 21 to `/run/media/vash/TINYTANG/root/media/vcmi/data`, which is the card's own convention, sitting beside `gb`, `gba`, `gbc`, `music`, `nes`, `reader`, `snes` and `ti89`; the old path no longer exists. All 224 files are present at the new path, `Data` with 7, `Maps` with 160 and `Mp3` with 57, 345 MiB, and every one was rechecked with `md5sum` against the installer's own MD5 from the GOG `.exe` with no mismatch, so the move across vfat lost nothing. No two staged files differ only by case, so nothing collided, but the card is case-insensitive and the archive this port will build is not, and the music already mixes conventions with `AITHEME1.MP3` beside `AITheme0.mp3`, so the plan now says the archive builder must store the card's exact names and that whether VCMI ever asks for one of these files in a different case is unmeasured. `docs/vcmi-port-plan.md`'s Assets section and its open questions name the new path. Entries 20 and 21 had been given timestamps a few minutes ahead of the clock, 20:02:11 against a commit at 19:58:43 and 20:09:37 against one at 20:05:54; both headers were corrected to their real commit times in this commit, and no other part of either entry changed. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering, the active log's 22 of 100 entries, and that the three timestamps now ascend.
+
+#### Next Steps:
+
+The asset-delivery choice is still the open decision, boot-time images against a BL616 file service, and the file layer's shape waits on it. Cycle B's other work is unchanged and awaits the user: the cooperative pthread shim, the archive-backed read-only file layer, the link-mode keyboard and mouse receiver, and the G0 bench, whose result chooses the canvas and predicts the frame rate. The hardware items waiting are unchanged too: closure robustness led by `wr_core`'s pause bookkeeping, the HDMI heat test, rebuilding the controller-only image with entry 16's `ddr3_ctl`, the STA disagreement on `m_n_r`, the frequency sweep, the nextpnr patch's upstream report and any 0.2.0 release.
 
 #### Files Modified:
 

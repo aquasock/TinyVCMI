@@ -153,15 +153,25 @@ No conclusion is drawn here: the number that decides is the A25's own.
 
 The Heroes III data now sits on the Tang's SD card, extracted from the GOG
 "Heroes of Might and Magic 3 - Complete" 4.0 (3.2) installer with
-`innoextract` at `/run/media/vash/TINYTANG/root/vcmi/data`, holding `Data`,
-`Maps` and `Mp3` in the same shape MiSTer's `/media/fat/vcmi/data` uses, so the
-file layer's paths carry over. It is 224 files and 345 MiB: seven `Data` files
-(260 MiB, the two `.lod` bitmap and sprite archives, the two adventure-map
-`.lod`s, and the three sound archives), 160 maps and 57 music tracks. Every one
-of the 224 files was checked against the installer's own MD5, with no mismatch.
+`innoextract` at `/run/media/vash/TINYTANG/root/media/vcmi/data`, holding
+`Data`, `Maps` and `Mp3` in the same shape MiSTer's `/media/fat/vcmi/data`
+uses, so the file layer's paths carry over. `root/media` is the card's own
+convention, beside `gb`, `nes`, `snes`, `ti89` and the rest. It is 224 files and
+345 MiB: seven `Data` files (260 MiB, the two `.lod` bitmap and sprite archives,
+the two adventure-map `.lod`s, and the three sound archives), 160 maps and 57
+music tracks. Every one of the 224 files was checked against the installer's
+own MD5, with no mismatch, before and again after the data was moved there.
 `VIDEO.VID` (599 MiB) was deliberately left out, as MiSTer leaves it out,
 because video playback is not built. The `Mp3` tracks are staged but unused
 until audio lands. Nothing here is committed to the repository.
+
+The card is vfat, so the staged names are case-insensitive on the card while
+the archive this port will build is not. No two staged files differ only by
+case, so the set survives the transfer, but the music mixes conventions
+(`AITHEME1.MP3` beside `AITheme0.mp3`) and the archive builder must store the
+names exactly as the card holds them rather than assuming VCMI's own lookup
+spelling matches. Whether VCMI requests any of these files in a different case
+than the GOG names is unmeasured.
 
 The delivery rates available today are: 200 KB/s at 2 Mbaud (the rate
 `exts_uart` is built for, `UART_DIV2 = 75`), and 625 KB/s or 1.25 MB/s at the
@@ -254,8 +264,8 @@ before it has a result.
   Recommended: measure G0 first and decide with the numbers; the engine code is
   identical either way.
 - Assets: the data is staged and verified on the card at
-  `root/vcmi/data`; what remains open is whether the first milestone loads it
-  whole at boot or pages it from the card through a BL616 file service.
+  `root/media/vcmi/data`; what remains open is whether the first milestone loads
+  it whole at boot or pages it from the card through a BL616 file service.
   Recommended: load `Data` and the chosen maps at boot first, and add the file
   service when the load time starts to cost real cycles. At the current 2 Mbaud
   a full boot-time send is about 30 minutes, which is the argument for the file
