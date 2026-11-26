@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // The TinyVCMI AE350 system, from TinyNES f0f8501 fpga/ae350_soc/ae350_soc.sv
-// with the SDRAM replaced by the DDR3 and the video, audio, pads and link
-// left out.  The A25 boots C firmware from a block-RAM ROM on the ROM port
-// (ahb_boot_rom), keeps the boot ROM's data and stack in 64 KiB of block RAM
-// at 0x7fff0000 on the RAM port (ahb_ram), reaches the DDR3 at 0x40000000
-// to 0x7ffeffff on the same port through ahb_ddr3's bus half, and sends and receives
-// on the FPGA UART at 2,000,000 baud 8N1 through registers in the EXTS window
+// with the SDRAM replaced by the DDR3, TinyNES's video replaced by this
+// project's registers for its own (exts_video; the video unit itself is at
+// the top level, video_ddr3.v), and the audio, pads and link left out.  The
+// A25 boots C firmware from a block-RAM ROM on the ROM port (ahb_boot_rom),
+// keeps the boot ROM's data and stack in 64 KiB of block RAM at 0x7fff0000
+// on the RAM port (ahb_ram), reaches the DDR3 at 0x40000000 to 0x7ffeffff on
+// the same port through ahb_ddr3's bus half, and sends and receives on the
+// FPGA UART at 2,000,000 baud 8N1 through registers in the EXTS window
 // (exts_uart).  The CPU and bus clocks, from PLL_R[0], come from the top
 // level, which must place that PLL.
 //
@@ -48,7 +50,16 @@ module ae350_sys #(
     output wire [7:0]    x_lanes,
     output wire [63:0]   x_wd,
     input  wire          y_tog,
-    input  wire [255:0]  y_line
+    input  wire [255:0]  y_line,
+
+    // the video unit's registers (exts_video), to and from its pixel side
+    output wire          vid_enable,
+    output wire [24:0]   vid_base,
+    output wire          vid_base_tog,
+    input  wire          vid_base_ack,
+    input  wire          vid_vbl_tog,
+    input  wire          vid_in_vbl,
+    input  wire [15:0]   vid_late
 );
     wire arst_n = pll_locked && run;
     reg [7:0] reset_count = 8'd0;
@@ -138,8 +149,45 @@ module ae350_sys #(
         .x_wd(x_wd), .y_tog(y_tog), .y_line(y_line)
     );
 
-    // The EXTS window holds only the UART's registers; TinyNES's link,
-    // video, pads and audio are not here, so the link's inputs are idle.
+    // The EXTS window holds the UART's registers at 0xe8000000 and the
+    // video unit's at 0xe8010000 (exts_video); TinyNES's link, pads and
+    // audio are not here, so the link's inputs are idle.  Each slave drives
+    // its own hready and hresp, which are combined, and the read data is
+    // that of the slave the last transfer went to, as TinyNES chooses it.
+    wire video_hit = exts_addr[16];
+    wire [31:0] uart_rdata, video_rdata;
+    wire uart_ready, uart_resp, video_ready, video_resp;
+    reg  data_video = 1'b0;
+    always @(posedge bus_clk)
+        if (!resetn)
+            data_video <= 1'b0;
+        else if (exts_ready && exts_sel && exts_trans[1])
+            data_video <= video_hit;
+    assign exts_rdata = data_video ? video_rdata : uart_rdata;
+    assign exts_ready = uart_ready & video_ready;
+    assign exts_resp = uart_resp | video_resp;
+
+    exts_video video_regs (
+        .clk(bus_clk),
+        .resetn(resetn),
+        .haddr(exts_addr),
+        .htrans(exts_trans),
+        .hsel(exts_sel && video_hit),
+        .hwrite(exts_write),
+        .hwdata(exts_wdata),
+        .hready_in(exts_ready),
+        .hrdata(video_rdata),
+        .hready(video_ready),
+        .hresp(video_resp),
+        .enable(vid_enable),
+        .base_line(vid_base),
+        .base_tog(vid_base_tog),
+        .base_ack(vid_base_ack),
+        .vbl_tog(vid_vbl_tog),
+        .in_vbl(vid_in_vbl),
+        .late(vid_late)
+    );
+
     wire fb_valid;
     wire [7:0] fb_data;
     wire fb_ready;
@@ -149,13 +197,13 @@ module ae350_sys #(
         .resetn(resetn),
         .haddr(exts_addr),
         .htrans(exts_trans),
-        .hsel(exts_sel),
+        .hsel(exts_sel && !video_hit),
         .hready_in(exts_ready),
         .hwrite(exts_write),
         .hwdata(exts_wdata),
-        .hrdata(exts_rdata),
-        .hready(exts_ready),
-        .hresp(exts_resp),
+        .hrdata(uart_rdata),
+        .hready(uart_ready),
+        .hresp(uart_resp),
         .fb_valid(fb_valid),
         .fb_data(fb_data),
         .fb_ready(fb_ready),

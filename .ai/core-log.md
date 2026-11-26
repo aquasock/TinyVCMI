@@ -602,3 +602,52 @@ Work toward the user's acceptance test, VCMI visibly running on HDMI. That needs
 - User Test: NOT RUN
 
 ---
+
+## 18 COMMIT Unreleased 2026-11-25T18:42:38-07:00
+
+#### Coming From:
+
+v0.1.0 c8fe27e
+
+#### Purpose:
+
+Put a 1280x720 picture on HDMI from a 32-bit frame buffer in the DDR3, drawn by the A25, as the video path VCMI will draw into.
+
+#### Outcome:
+
+The AE350 now shows 1280x720 at 60 Hz on HDMI from the DDR3 and the user saw the picture right (VIDEO-003). The user set 1280x720, TinyTang's resolution, as VCMI's target, an 800x600 Pmod VGA output being left for later, and approved a 32-bit XRGB8888 frame buffer, which is VCMI's own surface format. New in `fpga/ae350_ddr3`: `dvi_tx.v`, a DVI 1.0 transmitter of this project's own, its TMDS encoders in two registered stages feeding four OSER10s, the clock lane one of them as TinyNES DEV-018 requires; `video_ddr3.v`, whose `vid_fetch` on PCLK reads each line's 160 words into an eight-word flip-flop FIFO with Gray pointers, asking no further ahead than the FIFO has room for, and whose `vid_pix` on the pixel clock runs CEA-861 720p, asks for the next line at each line's start, writes two pixels a clock into block-RAM line buffers with both ports on the pixel clock (TinyNES's rule for this chip), takes BASE at the first blank line and counts LATE lines; `ddr3_arb.v`, the video before the CPU onto `ctrl_glue`'s CPU port, with a registered request, a one-entry video slot so the fetcher's ready is a register, and a tag FIFO routing each returning word; and `exts_video.sv`, CTRL, STATUS, FRAMES, BASE, LATE and ID at `0xe8010000`, beside `exts_uart` in `ae350_sys`. `tools/ddr3_write.py` generates the HDMI clocks, pins and wiring, `tinyvcmi.h` gained the registers and the runtime's heap now stops below 16 MiB kept for frame buffers at `0x7f000000`. Gates: `tools/sim_ae350_ddr3.sh` adds `tb_video.v`, which checked every pixel of three frames (2,764,800) across two page flips with CPU traffic beside them, decoded every TMDS symbol back to its pixel or sync with the disparity bounded, saw no late line after the first frame, and fails mutants of the arbiter's tags, the pixel pairs and the disparity's sign; `tools/sim_ddr3_ctrl.sh` adds a run with `ddr3_arb` and `vid_fetch` on the real `ddr3_ctl` and PHY model, 40 lines of 160 words with none wrong beside the CPU port's 1,280 writes and 598 reads with none wrong; every earlier run and mutant passes. Building it took most of the cycle. Every one of 49 placements of the first netlist failed routing, its final error naming the HDMI serial clock into an OSER10 or a ground tie into `hdmi_pll27`'s CLKFB, which led through a clock order, a free column at x 181, the stock nextpnr binary and a pixel-side placement region before the global router's own messages showed the cause: the fork lets only one CLKDIV clock onto the global network (TOOL-074), so the DDR3's `pclk` or a CLKDIV pixel clock lost every sink. The pixel clock now comes from `hdmi_pll`'s CLKOUT0 (VCO / 20) with the serial clock on CLKOUT1, no CLKDIV; it still reaches no global route from PLL_R[3] and runs on general routing (TOOL-075). `tools/ae350_place.py` now keeps the pixel side's 2,897 cells beside the HDMI bank and all other logic out of x 181, and `tools/ae350_clock_check.py`, run on every seed by `tools/ae350_ddr3_sweep.sh`, fails an image whose AE350 clock taps are not on GB10 (TinyNES DEV-016), whose pixel clock uses an unmeasured bridge set, or whose video block RAM is on two clocks or not in a 9-bit width; the empty set of general routing was accepted as measured after the user's test. Of 13 finished seeds of the final netlist, `pclk` reached a median of 94.30 MHz, the video slot having moved the worst path to `wr_core`'s pause bookkeeping, and seed 3 closed every clock, `pclk` 100.87, `bus_clk` 86.28, `core.rx.clk` 61.01, `mclk` 761.03 and `pix_clk` 96.88 MHz, no hold violation reported, all 306 DDR3 tables equal to the vendor reference and the boundary at 469 `DFFN` and 18 `DFFNS` (`.fs` SHA-256 `f9574b4fd4181f41e0dbe5bee59d493dcbf4da3abf76198ed2c57cd8015e48d7`). It was loaded warm in one-wire mode with `openFPGALoader -c ft2232` from 18:35:01 to 18:39:21; the agent's output filter again swallowed the loader's lines, so `DONE` was not seen, and the load is identified by a freshly started controller answering where the last image had been handed over. It trained `error 0` to `d 1 b 2` in 422 trials with 7 CALIB pulses a lane, STEP `0x2a`, soaked 51 passes clean in 60 s and handed over, and the boot ROM's tests passed. `firmware/apps/video_test` measured a full-frame fill at 105,197 us, drew the test screen and flipped a page every frame for 60 s, 3,601 frames and 3,601 flips with LATE 0, and exited 0; the user reported that everything passes and the video looks perfect. VIDEO-003, TOOL-074 and TOOL-075 were added. The board was left in one-wire mode with seed 3 in SRAM, the test screen up and the boot ROM waiting, the desktop not restored. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering and active-log capacity.
+
+#### Next Steps:
+
+Start the VCMI port itself: inventory VCMI 1.7.5's dependencies and its threading and filesystem contracts (GAP-004) against the runtime in `firmware/rt`, plan an SDL video driver whose screen surface is the frame buffer at `0x7f000000`, and decide with the user how the Heroes III data files reach the DDR3 and how TinyTang's keyboard and mouse frames (INPUT-002) reach the AE350, which needs a link mode this image does not have yet; propose that plan for approval before building. A whole-screen redraw costs 105 ms of memory traffic, so redraw strategy matters from the start. Confirm every load by `DONE` in the loader's raw output saved to a file. Still open and waiting for the user: closure robustness, now led by `wr_core`'s pause bookkeeping, a heat test of the HDMI picture, rebuilding the controller-only image with entry 16's `ddr3_ctl`, the STA disagreement on `m_n_r`, the frequency sweep, the nextpnr patch's upstream report and any 0.2.0 release.
+
+#### Files Modified:
+
+- firmware/apps/video_test/Makefile
+- firmware/apps/video_test/main.c
+- firmware/include/tinyvcmi.h
+- firmware/rt/link.ld
+- fpga/ae350_ddr3/ae350_sys.sv
+- fpga/ae350_ddr3/ddr3_arb.v
+- fpga/ae350_ddr3/dvi_tx.v
+- fpga/ae350_ddr3/exts_video.sv
+- fpga/ae350_ddr3/open.sdc
+- fpga/ae350_ddr3/tb_video.v
+- fpga/ae350_ddr3/top.cst
+- fpga/ae350_ddr3/top.v
+- fpga/ae350_ddr3/video_ddr3.v
+- fpga/ddr3_ctrl/tb_ctrl.v
+- tools/ae350_clock_check.py
+- tools/ae350_ddr3_sweep.sh
+- tools/ae350_place.py
+- tools/ddr3_write.py
+- tools/sim_ae350_ddr3.sh
+- tools/sim_ddr3_ctrl.sh
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: PASS
+
+---

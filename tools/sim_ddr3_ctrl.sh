@@ -41,6 +41,13 @@ run cpu +define+TB_CPU
 grep -E '^PASS|^FAIL|CPU port' "$out/cpu.log"
 grep -q "^PASS" "$out/cpu.log"
 
+# the AE350 image's ddr3_arb and video fetcher beside the CPU's port: the
+# fetcher reads 40 lines the CPU wrote while the CPU's traffic runs
+run video +define+TB_CPU +define+TB_VIDEO "$root/fpga/ae350_ddr3/ddr3_arb.v" \
+    "$root/fpga/ae350_ddr3/video_ddr3.v"
+grep -E '^PASS|^FAIL|CPU port|video beside' "$out/video.log"
+grep -q "^PASS" "$out/video.log"
+
 # the test's diagnostics against a word written wrong and a word read wrong
 run faults +define+MODEL_FAULTS
 grep -E '^PASS|^FAIL' "$out/faults.log"

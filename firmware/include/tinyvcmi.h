@@ -28,6 +28,29 @@
 
 #define TV_ID_VALUE        0x54563031u /* "TV01" */
 
+/* The video unit (fpga/ae350_ddr3/exts_video.sv, video_ddr3.v): 1280x720 at
+ * 60 Hz on HDMI from a frame buffer in the DDR3, pixel (x, y) the 32-bit
+ * word at BASE + 5120 y + 4 x, 0x00RRGGBB. BASE is taken at the next
+ * vertical blank, so a page flip is writing it; write the D-cache back
+ * first (tv_dcache_wbinval), since the video reads the DDR3, not the cache.
+ * The top 16 MiB of the DDR3 below the block RAM are kept for frame
+ * buffers: the runtime's heap stops below TV_VIDEO_BASE. */
+#define TV_VID_REG(offset) (*(volatile uint32_t *)(0xe8010000u + (offset)))
+#define TV_VID_CTRL    TV_VID_REG(0x00) /* bit 0: show the frame buffer */
+#define TV_VID_STATUS  TV_VID_REG(0x04) /* bit 0 vblank, bit 1 BASE pending */
+#define TV_VID_FRAMES  TV_VID_REG(0x08) /* vertical blanks since reset */
+#define TV_VID_BASE    TV_VID_REG(0x0c) /* frame buffer byte address */
+#define TV_VID_LATE    TV_VID_REG(0x10) /* lines shown before they were in */
+#define TV_VID_ID      TV_VID_REG(0x14) /* TV_VID_ID_VALUE */
+#define TV_VID_ID_VALUE  0x54565631u /* "TVV1" */
+#define TV_VID_STATUS_VBLANK  0x01u
+#define TV_VID_STATUS_PENDING 0x02u
+#define TV_VID_WIDTH   1280u
+#define TV_VID_HEIGHT  720u
+#define TV_VID_STRIDE  (TV_VID_WIDTH * 4u)
+#define TV_VID_FRAME_BYTES (TV_VID_STRIDE * TV_VID_HEIGHT)
+#define TV_VIDEO_BASE  0x7f000000u /* 16 MiB below the block RAM */
+
 #define TV_UART_BAUD 2000000u
 #define TV_CORE_HZ   750000000u
 

@@ -15,11 +15,37 @@
 # top-level nets), and then any logic cell all of whose loads are already
 # constrained.  The region holds 69 or so block RAMs on rows y 9, 27 and 45,
 # against the 48 the boot ROM and the block RAM need.
-X0, Y0, X1, Y1 = 105, 0, 181, 50
+#
+# No logic goes in the rightmost column, x 181, which holds the HDMI clocks'
+# only ways in: the 371.25 MHz serial clock reaches the HCLK lane that feeds
+# every OSER10 from hdmi_pll at X177Y81 through X181Y81's X01 and CLK0
+# wires, and hdmi_pll27's CLKFB, tied low, through X181Y45's local wires
+# (TinyNES's routed image).  With this region reaching x 181 and the pixel
+# side's flops drawn to the divider at X181Y81, every seed of the first
+# video sweep left one of those two arcs unrouted.  So the region stops at
+# x 180, and every other unplaced logic cell is kept in x 0 to 180.
+#
+# The video's pixel side is kept the same way beside the HDMI bank, whose
+# TMDS pins' OSER10s sit at x 181, rows 57 to 104, with the pixel clock's
+# divider at X181Y81: every cell under vpix and hdmi, every cell clocked by
+# pix_clk, and logic feeding only those.  Left to itself the placer spread it
+# toward the middle of the die, after the FIFO's PCLK flops, and the global
+# router found no branch to carry pix_clk to 632 of its sinks there; routed
+# before pclk, pix_clk instead took the branches pclk needed and left all
+# 25,036 of pclk's sinks to general routing, which could not route them.
+X0, Y0, X1, Y1 = 105, 0, 180, 50
 REGION = "ae350"
+PX0, PY0, PX1 = 140, 55, 180
+PIXEL = "pixel"
+FABRIC = "fabric"
+X_LAST = 180
 CLOCK = "bus_clk"
+PIX_CLOCK = "pix_clk"
 
 ctx.createRectangularRegion(REGION, X0, Y0, X1, Y1)
+Y_LAST = max(ctx.getBelLocation(b).y for b in ctx.getBels())
+ctx.createRectangularRegion(FABRIC, 0, 0, X_LAST, Y_LAST)
+ctx.createRectangularRegion(PIXEL, PX0, PY0, PX1, Y_LAST)
 
 
 def clock_net(cell):
@@ -30,29 +56,49 @@ def clock_net(cell):
 
 
 fixed_types = ("AE350_SOC", "PLL", "IOB", "IBUF", "OBUF", "TBUF", "IOBUF")
-inside = set()
-for name, cell in ctx.cells:
-    if cell.type in fixed_types or cell.bel is not None:
-        continue
-    if name.startswith("soc.") or clock_net(cell) == CLOCK:
-        inside.add(name)
-
 logic = ("LUT1", "LUT2", "LUT3", "LUT4", "MUX2_LUT5", "MUX2_LUT6", "MUX2_LUT7", "MUX2_LUT8")
-for _ in range(4):
-    grown = 0
-    for name, cell in ctx.cells:
-        if name in inside or cell.type not in logic or cell.bel is not None:
-            continue
-        loads = []
-        for pname, port in cell.ports:
-            if port.type == PortType.PORT_OUT and port.net is not None:
-                loads += [u.cell.name for u in port.net.users]
-        if loads and all(l in inside for l in loads):
-            inside.add(name)
-            grown += 1
-    if not grown:
-        break
 
+
+def gather(prefixes, clock, taken):
+    """Cells under the prefixes or clocked by clock, then logic all of whose
+    loads are among them."""
+    got = set()
+    for name, cell in ctx.cells:
+        if name in taken or cell.type in fixed_types or cell.bel is not None:
+            continue
+        if name.startswith(prefixes) or clock_net(cell) == clock:
+            got.add(name)
+    for _ in range(4):
+        grown = 0
+        for name, cell in ctx.cells:
+            if name in got or name in taken or cell.type not in logic or cell.bel is not None:
+                continue
+            loads = []
+            for pname, port in cell.ports:
+                if port.type == PortType.PORT_OUT and port.net is not None:
+                    loads += [u.cell.name for u in port.net.users]
+            if loads and all(l in got for l in loads):
+                got.add(name)
+                grown += 1
+        if not grown:
+            break
+    return got
+
+
+inside = gather(("soc.",), CLOCK, set())
+pixel = gather(("vpix.", "hdmi."), PIX_CLOCK, inside)
 for name in inside:
     ctx.constrainCellToRegion(name, REGION)
-print(f"ae350_place: {len(inside)} cells kept in X{X0}..{X1} Y{Y0}..{Y1} beside the AE350")
+for name in pixel:
+    ctx.constrainCellToRegion(name, PIXEL)
+inside |= pixel
+movable = logic + ("ALU", "DFF", "DFFE", "DFFS", "DFFSE", "DFFR", "DFFRE", "DFFP", "DFFPE",
+                   "DFFC", "DFFCE", "DFFN", "DFFNE", "DFFNS", "DFFNSE", "DFFNR", "DFFNRE",
+                   "DFFNP", "DFFNPE", "DFFNC", "DFFNCE", "RAM16SDP1", "RAM16SDP2", "RAM16SDP4")
+rest = [name for name, cell in ctx.cells
+        if name not in inside and cell.bel is None and cell.type in movable]
+for name in rest:
+    ctx.constrainCellToRegion(name, FABRIC)
+print(f"ae350_place: {len(inside) - len(pixel)} cells kept in X{X0}..{X1} Y{Y0}..{Y1} beside "
+      f"the AE350, {len(pixel)} in X{PX0}..{PX1} Y{PY0}.. beside the HDMI bank, "
+      f"{len(rest)} more in X0..{X_LAST}")

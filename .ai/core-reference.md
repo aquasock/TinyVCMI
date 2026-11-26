@@ -115,6 +115,7 @@ Topic IDs are the `record_id` prefix. An entry reserves a namespace; it does not
 | What does a DDR3 cache miss cost through TinyVCMI's own controller? | AE350 | AE350-004 |
 | Which video architecture has already worked in the open flow? | VIDEO | VIDEO-001 |
 | What resolution does the existing VCMI port require? | VIDEO | VIDEO-002 |
+| Does TinyVCMI's own video path work, and what does a redraw cost? | VIDEO | VIDEO-003 |
 | What do the Logitech keyboard and mouse report? | INPUT | INPUT-001 |
 | Can TinyTang already send keyboard and mouse input into a core? | INPUT | INPUT-002 |
 | How do TinyNES and TinyGBC load AE350 programs? | PROT | PROT-001 |
@@ -196,6 +197,8 @@ Topic IDs are the `record_id` prefix. An entry reserves a namespace; it does not
 | Why does placement fail with the design at a quarter of the device, and what fixes it? | TOOL | TOOL-071 |
 | Which LUT mapping and settings close the controller at 100 MHz fully timed? | TOOL | TOOL-072 |
 | Why does an asynchronously reset register slow a path in nextpnr's timing? | TOOL | TOOL-073 |
+| Why did a second CLKDIV clock make routing fail, and how is that read from the log? | TOOL | TOOL-074 |
+| Which PLL outputs reach the global network, and can the pixel clock run off it? | TOOL | TOOL-075 |
 | Why did the Gowin control miss PCLK timing? | TOOL | TOOL-028 |
 | Which sources and licenses constrain reuse? | PROV | PROV-001 |
 
@@ -218,6 +221,7 @@ AE350-003: "Tang-PSX measured about 570 core cycles for a DDR3 D-cache miss thro
 AE350-004: "TinyVCMI's open path measured 503 core cycles for a dependent DDR3 miss (about 670 ns), 477 per streamed line and 663 per stored line with write-back, against Tang-PSX's 570, 552 and 637"
 VIDEO-001: "TinyNES and TinyGBC use SDRAM-backed framebuffers and FPGA HDMI scanout in the open flow"
 VIDEO-002: "MiSTer-VCMI supports 800x600 and states that VCMI needs at least 800x600"
+VIDEO-003: "TinyVCMI shows 1280x720p60 on HDMI from a 32-bit DDR3 frame buffer: 3,601 frames and flips in 60 s with LATE 0, a correct picture by the user's eye, and a full-frame fill costing the A25 105 ms"
 INPUT-001: "The Logitech K950 supplies an 8-byte boot-keyboard report and the M750 a 4-byte boot-mouse report"
 INPUT-002: "TinyTang sends live mouse frames as command 0x16 and BLE keyboard state as command 0x17"
 PROT-001: "TinyNES/TinyGBC load AE350 ELF-derived images through a checked UART protocol and then enter TinyTang link mode"
@@ -297,6 +301,8 @@ TOOL-070: "The fork's chipdb generator writes the LUT RAM data-input setup arc a
 TOOL-071: "At 24 per cent utilisation the heap placer's strict legaliser gave up on up to five seeds of seven, rip-up thrash among the 256-bit flop paths at the DDR3 I/O; --placer-heap-beta 0.7 placed them, 0.6 was slower and still refused one, and --placer-heap-no-ctrl-set did not help"
 TOOL-072: "With every path timed (TOOL-070), abc9 -W 3000 -D 9000 and placement density 0.7 closed pclk at 100.25 MHz on one seed of seventeen, median 93.11 MHz and standard deviation 3.30 MHz; the image reproduces byte for byte and ran clean from a cold start"
 TOOL-073: "nextpnr times a DFFCE's asynchronous CLEAR as a 1.43 ns arc to Q, so an asynchronously reset register puts its reset source at the head of every path through it; the AE350 system's bus_clk went from 68.92 MHz to 82.73 to 95.22 MHz with synchronous resets"
+TOOL-074: "Only one CLKDIV-derived clock reaches the global network (the fork's single CLKDIV entry, TinyNES DEV-017): with the DDR3's pclk and a CLKDIV pixel clock, the second got none of its sinks, and the router's final error named unrelated HDMI arcs"
+TOOL-075: "PLL_L[0] and PLL_R[0] CLKOUT0 route globally, no CLKOUT1 does, and PLL_R[3] reached it from neither; the pixel clock from hdmi_pll's CLKOUT0 on general routing timed 91.9 to 107.2 MHz and showed a correct picture"
 TOOL-031: "LiteDRAM's control layer alone generates, synthesises and places in the open flow at ~1% of the LUTs, with none of TOOL-025's three gaps"
 TOOL-030: "Closed-page scatter READs do not reach the read capture in the open or the vendor build of the same RTL; no cadence, gate position or shared RCLKSEL recovers them, and failing READs return other rows' patterns"
 PROV-001: "Reuse source and interface ideas with their original license boundaries and attribution intact"
@@ -495,6 +501,19 @@ PROV-001: "Reuse source and interface ideas with their original license boundari
     - "MiSTer-VCMI commit 76e1e1c, README.md: Current limitations and sdl-driver/sdl_bench.c"
     - "MiSTer-VCMI commit 76e1e1c, docs/release-notes/0.2.0.md"
   verification: "The user states that this MiSTer port was completed previously; its repository records hardware operation at 800x600."
+
+- record_id: VIDEO-003
+  topic_id: VIDEO
+  title: "TinyVCMI shows 1280x720 at 60 Hz on HDMI from a 32-bit frame buffer in the DDR3"
+  status: VERIFIED
+  verified_date: 2026-11-25
+  statement: "fpga/ae350_ddr3's video unit -- vid_fetch on PCLK reading each line's 160 DDR3 words through ddr3_arb ahead of the CPU, an eight-word flip-flop FIFO to the pixel clock, vid_pix's block-RAM line buffers on the pixel clock alone, and dvi_tx's DVI 1.0 TMDS encoders and four OSER10s -- showed CEA-861 1280x720p60 from 0x00RRGGBB pixels at 0x7f000000, page-flipped through exts_video's BASE at 0xe8010000. On the board, image seed 3 of build/ae350/v6 (.fs SHA-256 f9574b4fd4181f41e0dbe5bee59d493dcbf4da3abf76198ed2c57cd8015e48d7), firmware/apps/video_test flipped a page every frame for 60 s, 3,601 frames and 3,601 flips with LATE 0, and the user saw the colour bars, ramps, one-pixel border and moving box as drawn. A full-frame fill by the A25 with the caches on took 105,197 us. The user chose 1280x720 for VCMI because TinyTang runs everything at that resolution, with an 800x600 VGA output through a Pmod possible later."
+  consequence: "VCMI can draw straight into a 32-bit frame buffer at 1280x720 and flip it at the blank. A whole-screen redraw costs the A25 about 105 ms in memory traffic alone (AE350-004's store cost), so a screen redrawn whole is limited to about 9 frames a second before any drawing work; partial redraws, a write-combining path or a fabric cache are the levers. The video's reads take about 7 per cent of the controller's time and do not hold the CPU off for more than a request slot."
+  sources:
+    - "TinyVCMI fpga/ae350_ddr3/video_ddr3.v, ddr3_arb.v, dvi_tx.v, exts_video.sv; firmware/apps/video_test/main.c"
+    - "TinyVCMI tools/sim_ae350_ddr3.sh (tb_video.v) and tools/sim_ddr3_ctrl.sh (TB_VIDEO)"
+    - "User's observation of the HDMI monitor, 2026-11-25 (core-log entry 18)"
+  verification: "Simulated: every pixel of three frames and two flips, the TMDS symbols decoded, CPU traffic beside it, and 40 lines through the real ddr3_ctl and PHY model, with mutants of the arbiter's tags, the pixel pairs and the TMDS disparity each failing. Measured on the board once, warm, about two hours after a cold start; the heat behaviour TinyNES DEV-018 found in its HDMI path has not been tested on this image."
 
 - record_id: INPUT-001
   topic_id: INPUT
@@ -1217,6 +1236,30 @@ PROV-001: "Reuse source and interface ideas with their original license boundari
     - "TinyVCMI build/ae350/a2/s1/nextpnr.log, bus_clk critical path; build/ae350/a3, a4 and a5 seed logs, not committed"
     - "TinyVCMI fpga/ae350_ddr3/ae350_sys.sv, ahb_ram.sv, ahb_ddr3.v, ahb_boot_rom.sv and exts_uart.sv"
   verification: "Read from nextpnr's own critical-path report, where the CLEAR-to-Q hop is listed as logic. The 1.43 ns figure is the report's, not read from the chipdb, and whether the generator models any recovery check was not looked for in its source. The netlists were counted: under soc, entry 15's second trial held 975 DFFCE and 13 DFFPE, asynchronous clear and preset, beside 638 DFFRE, and the synchronous-reset netlist holds none, 1,638 DFFRE and 16 DFFSE."
+
+- record_id: TOOL-074
+  topic_id: TOOL
+  title: "Only one CLKDIV clock can be global, and the router's error then names the wrong arcs"
+  status: VERIFIED
+  verified_date: 2026-11-25
+  statement: "The aquasock Apicula fork lets the CLKDIV escape wires 105 to 112 enter the centre clock mux only at (54,88) SPINE18, into CBRIDGEOUT_BOTTOM2 (TinyNES DEV-017). The AE350 image's DDR3 PHY clock pclk comes from the CLKDIV at LEFTSIDE[4] (escape wire 105), and a pixel clock from a CLKDIV at RIGHTSIDE[4] (escape 111) made a second: in every one of 49 placements of that netlist, whichever of the two the global router took second got no dedicated route to any sink -- pclk's 25,036 sinks or pix_clk's 632 -- whatever the routing order, NPNR_GOWIN_CLK_FIRST, the placement region or the nextpnr binary (the fork's stock build or tools/nextpnr_arcs.sh's). router1 then reported 'Failed to find a route for arc N of net pclk' (or pix_clk) and stopped, and the fork's final check named the first arc left unrouted, the HDMI serial clock into an OSER10's FCLK or the ground tie into hdmi_pll27's CLKFB, which the image without the second CLKDIV routed every time."
+  consequence: "A design here may have one CLKDIV-derived clock on the global network, and the DDR3 PHY's pclk is it; any other clock must come from a PLL output (TOOL-075). When nextpnr fails with an unrouted arc, count the global router's 'Failed to route net' warnings per net before believing the arc it names: a clock with thousands of them has fallen off the global network, and the named arc is collateral."
+  sources:
+    - "TinyNES .ai/core-reference.md DEV-017 (the fork's single CLKDIV entry)"
+    - "TinyVCMI build/ae350/v1, v1o, v2, v4a, v4b and stock nextpnr logs, not committed"
+  verification: "Counted from the logs of every placement; the unroutable sinks were named by a --pre-route probe as ordinary pclk flip-flops across the die (rd_check, the video FIFO, ddr3_ctl's write data), not cells near the HDMI bank. The fork's Python bindings have no getWireByName, getBelName or getGridDimY, so the probe used locations and users. Not established: whether another centre entry for CLKDIV clocks is safe, which DEV-017 says is unmeasured."
+
+- record_id: TOOL-075
+  topic_id: TOOL
+  title: "Which PLL outputs reach the global network, and a pixel clock on general routing"
+  status: VERIFIED
+  verified_date: 2026-11-25
+  statement: "In the AE350 image, CLKOUT0 of the DDR3 PLL at PLL_L[0] (mclk) and of the CPU PLL at PLL_R[0] (bus_clk) route on global resources only, while the CPU PLL's CLKOUT1 (core_clk to the AE350) has no dedicated route, as in TinyNES. hdmi_pll at PLL_R[3] reached the global network from neither output: the pixel clock on its CLKOUT1 and then on its CLKOUT0 got no dedicated route to any of its 632 sinks on 14 and 13 seeds, and went on general routing. So routed, it timed at 91.86 to 107.15 MHz against 74.25 with no hold violation reported, and seed 3 (.fs f9574b4f...) showed the whole picture right on the board (VIDEO-003)."
+  consequence: "The pixel clock is taken from hdmi_pll's CLKOUT0 (VCO / 20) with the serial clock on CLKOUT1 (VCO / 4), and runs on general routing; tools/ae350_clock_check.py accepts that, an empty bridge set, beside TinyNES's two measured spine sets. A clock on general routing has more skew than a global one, so a seed is still accepted only on nextpnr's full timing, holds included, and a picture fault when hot would point here first."
+  sources:
+    - "TinyVCMI build/ae350/v5 and v6 nextpnr logs, not committed; tools/ddr3_write.py HDMI_PLL"
+    - "TinyNES build/ae350_soc/nextpnr.log (core_clk's dedicated route)"
+  verification: "From the global router's messages in every seed and the routed design of seed 3 (no CBRIDGEOUT pip on pix_clk). Why PLL_R[3]'s CLKOUT0 has no global route when PLL_R[0]'s does was not looked for in the chipdb. Measured on the board once, warm."
 
 - record_id: TOOL-031
   topic_id: TOOL

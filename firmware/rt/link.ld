@@ -3,15 +3,16 @@
  * From TinyNES f0f8501 firmware/rt/link.ld, for the TinyVCMI AE350 system.
  * Runtime programs, loaded into the DDR3 by the boot ROM: code, data, .bss
  * and the heap (from _end to __heap_end) in the DDR3 from 0x40000000 up to
- * the fabric block RAM at 0x7fff0000, which holds the stack (the boot ROM's
- * own data and stack, which a program's start-up overwrites).
+ * the 16 MiB kept for frame buffers at 0x7f000000 (TV_VIDEO_BASE), below the
+ * fabric block RAM at 0x7fff0000, which holds the stack (the boot ROM's own
+ * data and stack, which a program's start-up overwrites).
  */
 OUTPUT_ARCH(riscv)
 ENTRY(_start)
 
 MEMORY
 {
-	ddr3 (rwx)  : ORIGIN = 0x40000000, LENGTH = 1024M - 64K
+	ddr3 (rwx)  : ORIGIN = 0x40000000, LENGTH = 1024M - 16M
 	ram (rw)    : ORIGIN = 0x7fff0000, LENGTH = 64K
 }
 

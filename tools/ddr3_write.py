@@ -362,6 +362,49 @@ CPU_PLL = bringup.PLL.replace("wire mclk, pll_lock;", "wire bus_clk, core_clk, c
     .replace(".ENCLK1(1'b0)", ".ENCLK1(1'b1)") \
     .replace(".LOCK(pll_lock), .CLKOUT0(mclk));", ".LOCK(cpu_lock), .CLKOUT0(bus_clk), .CLKOUT1(core_clk));")
 
+#: The HDMI clocks: 50 MHz to 27 MHz (hdmi_pll27, 1350 MHz VCO / 50), then
+#: 27 MHz to the 74.25 MHz pixel clock on CLKOUT0 (hdmi_pll, 1485 MHz VCO /
+#: 20) and the 371.25 MHz serial clock on CLKOUT1 (VCO / 4), phase-locked to
+#: it.  The pixel clock is on CLKOUT0 because only a PLL's CLKOUT0 reached the
+#: global network here: on CLKOUT1 the global router gave it none of its 632
+#: sinks, as it gives the CPU PLL's CLKOUT1 (core_clk) no dedicated route;
+#: the serial clock goes to the OSER10s' HCLK lane by general routing either
+#: way, as in TinyNES.  TinyNES divides the serial
+#: clock by five in a CLKDIV instead, but this image's DDR3 PHY already has
+#: the one CLKDIV clock the global network can carry: the Apicula fork lets
+#: CLKDIV clocks enter the centre clock mux only at (54,88) SPINE18 (TinyNES
+#: DEV-017), and with two the global router gave the other none of its
+#: sinks.  The serial-clock PLL must sit at PLL_R[3], beside the HDMI bank
+#: (TinyNES DEV-018): from PLL_L[3] the serial clock crossed the die and the
+#: picture failed when warm.
+HDMI_PLL27 = bringup.PLL.replace("wire mclk, pll_lock;", "wire clk27;") \
+    .replace(".MDIV_SEL(16), .ODIV0_SEL(2),", ".MDIV_SEL(27), .ODIV0_SEL(50),") \
+    .replace(") ddr_pll (", ") hdmi_pll27 (") \
+    .replace(".LOCK(pll_lock), .CLKOUT0(mclk));", ".LOCK(), .CLKOUT0(clk27));")
+HDMI_PLL = bringup.PLL.replace("    wire mclk, pll_lock;\n", "    wire hdmi_lock;\n") \
+    .replace('.FCLKIN("50")', '.FCLKIN("27")') \
+    .replace(".MDIV_SEL(16), .ODIV0_SEL(2),", ".MDIV_SEL(55), .ODIV0_SEL(20), .ODIV1_SEL(4),") \
+    .replace('.CLKOUT0_EN("TRUE")', '.CLKOUT0_EN("TRUE"), .CLKOUT1_EN("TRUE")') \
+    .replace(") ddr_pll (", ") hdmi_pll (") \
+    .replace(".CLKIN(sys_clk)", ".CLKIN(clk27)") \
+    .replace(".ENCLK1(1'b0)", ".ENCLK1(1'b1)") \
+    .replace(".LOCK(pll_lock), .CLKOUT0(mclk));",
+             ".LOCK(hdmi_lock), .CLKOUT0(pix_clk), .CLKOUT1(pix_clk5));")
+assert "hdmi_pll27" in HDMI_PLL27 and ".CLKOUT0(pix_clk)" in HDMI_PLL and "ENCLK1(1'b1)" in HDMI_PLL
+assert '.CLKOUT1_EN("TRUE")' in HDMI_PLL and ".ODIV0_SEL(20)" in HDMI_PLL
+HDMI_CLOCKS = """
+    // HDMI clocks.  pix_clk5 and pix_clk are kept by name for the SDC and
+    // for tools/ae350_clock_check.py, which finds the pixel clock's route.
+    (* keep *) wire pix_clk5;
+    (* keep *) wire pix_clk;
+""" + HDMI_PLL27 + HDMI_PLL + """
+    // the pixel side's reset, released three pixel clocks after the PLL
+    // locks, and synchronous (TOOL-073)
+    reg [2:0] pix_rs = 3'b111;
+    always @(posedge pix_clk)
+        pix_rs <= {pix_rs[1:0], !hdmi_lock};
+    wire pix_rst = pix_rs[2];"""
+
 #: The AE350 image's own wiring: the AE350 system as the controller's second
 #: client, and the UART, which is wr_core's until the hand-over (ctrl_glue's
 #: command 0x3C 0x50) raises cpu_run and the AE350's from then on.  Each
@@ -378,6 +421,21 @@ SOC_WIRES = """\
     wire [24:0] x_addr;
     wire [255:0] x_wdata, x_rdata;
     wire [31:0] x_wmask;
+    wire c_valid, c_ready, c_we, c_rvalid;      // the CPU's bridge into ddr3_arb
+    wire [24:0] c_addr;
+    wire [255:0] c_wdata, a_rdata;
+    wire [31:0] c_wmask;
+    wire v_valid, v_ready, v_rvalid;            // the video fetcher into ddr3_arb
+    wire [24:0] v_addr;
+    wire vid_enable, vid_base_tog, vid_base_ack, vid_vbl_tog, vid_in_vbl;
+    wire [24:0] vid_base;
+    wire [15:0] vid_late;
+    wire req_tog;
+    wire [24:0] req_addr;
+    wire [2047:0] f_mem;
+    wire [3:0] f_wg, f_rg;
+    wire [23:0] vid_rgb;
+    wire vid_de, vid_hs, vid_vs;
     assign core_rx = cpu_run ? 1'b1 : uart_rx;
     assign uart_tx = cpu_run ? soc_tx : core_tx;"""
 
@@ -390,13 +448,41 @@ SOC_INST = """
         .bus_clk(bus_clk), .core_clk(core_clk), .pll_locked(cpu_lock), .run(cpu_run),
         .uart_tx(soc_tx), .uart_rx(cpu_run ? uart_rx : 1'b1),
         .x_tog(x_tog), .x_we(x_twe), .x_line(x_line), .x_dw(x_dw), .x_lanes(x_lanes),
-        .x_wd(x_wd), .y_tog(y_tog), .y_line(y_line));
+        .x_wd(x_wd), .y_tog(y_tog), .y_line(y_line),
+        .vid_enable(vid_enable), .vid_base(vid_base), .vid_base_tog(vid_base_tog),
+        .vid_base_ack(vid_base_ack), .vid_vbl_tog(vid_vbl_tog), .vid_in_vbl(vid_in_vbl),
+        .vid_late(vid_late));
     ahb_ddr3_pclk #(.AW(25)) xport (
         .pclk(pclk), .prst(x_rst),
         .x_tog(x_tog), .x_we(x_twe), .x_line(x_line), .x_dw(x_dw), .x_lanes(x_lanes),
         .x_wd(x_wd), .y_tog(y_tog), .y_line(y_line),
-        .cmd_valid(x_valid), .cmd_ready(x_ready), .cmd_we(x_we), .cmd_addr(x_addr),
-        .cmd_wdata(x_wdata), .cmd_wmask(x_wmask), .rdata_valid(x_rvalid), .rdata_line(x_rdata));"""
+        .cmd_valid(c_valid), .cmd_ready(c_ready), .cmd_we(c_we), .cmd_addr(c_addr),
+        .cmd_wdata(c_wdata), .cmd_wmask(c_wmask), .rdata_valid(c_rvalid), .rdata_line(a_rdata));
+    // the video fetcher before the CPU onto ctrl_glue's CPU port
+    ddr3_arb arb (
+        .pclk(pclk), .rst(x_rst),
+        .v_valid(v_valid), .v_ready(v_ready), .v_addr(v_addr), .v_rvalid(v_rvalid),
+        .c_valid(c_valid), .c_ready(c_ready), .c_we(c_we), .c_addr(c_addr),
+        .c_wdata(c_wdata), .c_wmask(c_wmask), .c_rvalid(c_rvalid), .rdata(a_rdata),
+        .x_valid(x_valid), .x_ready(x_ready), .x_we(x_we), .x_addr(x_addr),
+        .x_wdata(x_wdata), .x_wmask(x_wmask), .x_rvalid(x_rvalid), .x_rdata(x_rdata));
+    // 1280x720 from the DDR3: the fetcher on PCLK, the raster on pix_clk
+    vid_fetch vfetch (
+        .pclk(pclk), .rst(x_rst), .req_tog(req_tog), .req_addr(req_addr),
+        .v_valid(v_valid), .v_ready(v_ready), .v_addr(v_addr),
+        .v_rvalid(v_rvalid), .v_rdata(a_rdata),
+        .f_mem(f_mem), .f_wg(f_wg), .f_rg(f_rg));
+    vid_pix vpix (
+        .pix_clk(pix_clk), .pix_rst(pix_rst),
+        .enable(vid_enable), .base_line(vid_base), .base_tog(vid_base_tog),
+        .base_ack(vid_base_ack), .vbl_tog(vid_vbl_tog), .in_vbl(vid_in_vbl), .late(vid_late),
+        .req_tog(req_tog), .req_addr(req_addr), .f_mem(f_mem), .f_wg(f_wg), .f_rg(f_rg),
+        .rgb(vid_rgb), .de(vid_de), .hs(vid_hs), .vs(vid_vs));
+    dvi_tx hdmi (
+        .pix_clk(pix_clk), .pix_clk5(pix_clk5),
+        .rgb(vid_rgb), .de(vid_de), .hs(vid_hs), .vs(vid_vs),
+        .tmds_clk_p(tmds_clk_p), .tmds_clk_n(tmds_clk_n),
+        .tmds_d_p(tmds_d_p), .tmds_d_n(tmds_d_n));"""
 
 
 def render(ctrl: bool = False, soc: bool = False) -> str:
@@ -406,11 +492,13 @@ def render(ctrl: bool = False, soc: bool = False) -> str:
              + [f"inout wire ddr_dqs{l}_p, inout wire ddr_dqs{l}_n" for l in pads.LANES]
              + ["output wire [3:0] ddr_dm", "output wire ddr_ck_p", "output wire ddr_ck_n",
                 "output wire ddr_reset_n"]
-             + [f"output wire {p}" for p, _ in cmd.CMD_BALLS])
+             + [f"output wire {p}" for p, _ in cmd.CMD_BALLS]
+             + (["output wire tmds_clk_p", "output wire tmds_clk_n",
+                 "output wire [2:0] tmds_d_p", "output wire [2:0] tmds_d_n"] if soc else []))
     out = ["// Generated by tools/ddr3_write.py; do not edit.",
            "`default_nettype none",
            "module top (\n    " + ",\n    ".join(ports) + "\n);",
-           PLL] + ([CPU_PLL, SOC_WIRES] if soc else []) + [
+           PLL] + ([CPU_PLL, HDMI_CLOCKS, SOC_WIRES] if soc else []) + [
            CORE.replace("    wire [3:0] dq_tx = {4{!dq_drive}};\n", "")
                .replace("    wire [3:0] dqs_tx = {4{!dqs_drive}};\n", "") if ctrl else CORE]
     if ctrl:
@@ -518,10 +606,22 @@ GENERATED_CTRL = {"top.v": lambda: render(ctrl=True), "top.cst": bringup.cst,
                   "open.sdc": lambda: SDC_OPEN, "vendor.sdc": lambda: bringup.SDC_VENDOR}
 #: the AE350 image: PLL_R[0] for the CPU (TinyNES ae350_soc.cst), and the
 #: bus clock constrained, which TinyNES's build gave nextpnr as --freq 75
+#: and the HDMI port and PLLs where TinyNES has them (DEV-018)
+HDMI_CST = """\
+INS_LOC "hdmi_pll27" PLL_R[1];
+INS_LOC "hdmi_pll" PLL_R[3];
+""" + "".join(f'IO_LOC "{n}" {b};\n' for n, b in (
+    ("tmds_clk_p", "G15"), ("tmds_clk_n", "G16"), ("tmds_d_p[0]", "J14"), ("tmds_d_n[0]", "H14"),
+    ("tmds_d_p[1]", "J15"), ("tmds_d_n[1]", "H15"), ("tmds_d_p[2]", "K17"), ("tmds_d_n[2]", "J17"))) \
+    + "".join(f'IO_PORT "{n}" IO_TYPE=LVCMOS33D PULL_MODE=NONE;\n' for n in (
+        "tmds_clk_p", "tmds_clk_n", "tmds_d_p[0]", "tmds_d_n[0]", "tmds_d_p[1]", "tmds_d_n[1]",
+        "tmds_d_p[2]", "tmds_d_n[2]"))
 GENERATED_SOC = {"top.v": lambda: render(soc=True),
-                 "top.cst": lambda: bringup.cst() + 'INS_LOC "cpu_pll" PLL_R[0];\n',
+                 "top.cst": lambda: bringup.cst() + 'INS_LOC "cpu_pll" PLL_R[0];\n' + HDMI_CST,
                  "open.sdc": lambda: SDC_OPEN
-                 + "create_clock -name bus_clk -period 13.333 [get_nets {bus_clk}]\n"}
+                 + "create_clock -name bus_clk -period 13.333 [get_nets {bus_clk}]\n"
+                 + "create_clock -name pix_clk5 -period 2.694 [get_nets {pix_clk5}]\n"
+                 + "create_clock -name pix_clk -period 13.468 [get_nets {pix_clk}]\n"}
 
 
 TCL_CTRL = bringup.TCL.replace(

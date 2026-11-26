@@ -37,7 +37,11 @@ module top (
     output wire ddr_we,
     output wire ddr_cas,
     output wire ddr_ras,
-    output wire ddr_cs
+    output wire ddr_cs,
+    output wire tmds_clk_p,
+    output wire tmds_clk_n,
+    output wire [2:0] tmds_d_p,
+    output wire [2:0] tmds_d_n
 );
     wire pll_en;
     wire mclk, pll_lock;
@@ -76,6 +80,52 @@ module top (
         .SSCPOL(1'b0), .SSCON(1'b0), .SSCMDSEL(7'b0), .SSCMDSEL_FRAC(3'b0),
         .LOCK(cpu_lock), .CLKOUT0(bus_clk), .CLKOUT1(core_clk));
 
+
+    // HDMI clocks.  pix_clk5 and pix_clk are kept by name for the SDC and
+    // for tools/ae350_clock_check.py, which finds the pixel clock's route.
+    (* keep *) wire pix_clk5;
+    (* keep *) wire pix_clk;
+    wire clk27;
+    PLL #(
+        .FCLKIN("50"), .IDIV_SEL(1), .FBDIV_SEL(1), .MDIV_SEL(27), .ODIV0_SEL(50),
+        .CLKOUT0_EN("TRUE")
+    ) hdmi_pll27 (
+        .CLKIN(sys_clk), .CLKFB(1'b0), .RESET(1'b0), .PLLPWD(1'b0),
+        .RESET_I(1'b0), .RESET_O(1'b0),
+        .FBDSEL(6'b0), .IDSEL(6'b0), .MDSEL(7'b0), .MDSEL_FRAC(3'b0),
+        .ODSEL0(7'b0), .ODSEL0_FRAC(3'b0), .ODSEL1(7'b0), .ODSEL2(7'b0),
+        .ODSEL3(7'b0), .ODSEL4(7'b0), .ODSEL5(7'b0), .ODSEL6(7'b0),
+        .DT0(4'b0), .DT1(4'b0), .DT2(4'b0), .DT3(4'b0),
+        .ICPSEL(6'b0), .LPFRES(3'b0), .LPFCAP(2'b0),
+        .PSSEL(3'b0), .PSDIR(1'b0), .PSPULSE(1'b0),
+        .ENCLK0(1'b1), .ENCLK1(1'b0), .ENCLK2(1'b0), .ENCLK3(1'b0),
+        .ENCLK4(1'b0), .ENCLK5(1'b0), .ENCLK6(1'b0),
+        .SSCPOL(1'b0), .SSCON(1'b0), .SSCMDSEL(7'b0), .SSCMDSEL_FRAC(3'b0),
+        .LOCK(), .CLKOUT0(clk27));
+    wire hdmi_lock;
+    PLL #(
+        .FCLKIN("27"), .IDIV_SEL(1), .FBDIV_SEL(1), .MDIV_SEL(55), .ODIV0_SEL(20), .ODIV1_SEL(4),
+        .CLKOUT0_EN("TRUE"), .CLKOUT1_EN("TRUE")
+    ) hdmi_pll (
+        .CLKIN(clk27), .CLKFB(1'b0), .RESET(1'b0), .PLLPWD(1'b0),
+        .RESET_I(1'b0), .RESET_O(1'b0),
+        .FBDSEL(6'b0), .IDSEL(6'b0), .MDSEL(7'b0), .MDSEL_FRAC(3'b0),
+        .ODSEL0(7'b0), .ODSEL0_FRAC(3'b0), .ODSEL1(7'b0), .ODSEL2(7'b0),
+        .ODSEL3(7'b0), .ODSEL4(7'b0), .ODSEL5(7'b0), .ODSEL6(7'b0),
+        .DT0(4'b0), .DT1(4'b0), .DT2(4'b0), .DT3(4'b0),
+        .ICPSEL(6'b0), .LPFRES(3'b0), .LPFCAP(2'b0),
+        .PSSEL(3'b0), .PSDIR(1'b0), .PSPULSE(1'b0),
+        .ENCLK0(1'b1), .ENCLK1(1'b1), .ENCLK2(1'b0), .ENCLK3(1'b0),
+        .ENCLK4(1'b0), .ENCLK5(1'b0), .ENCLK6(1'b0),
+        .SSCPOL(1'b0), .SSCON(1'b0), .SSCMDSEL(7'b0), .SSCMDSEL_FRAC(3'b0),
+        .LOCK(hdmi_lock), .CLKOUT0(pix_clk), .CLKOUT1(pix_clk5));
+
+    // the pixel side's reset, released three pixel clocks after the PLL
+    // locks, and synchronous (TOOL-073)
+    reg [2:0] pix_rs = 3'b111;
+    always @(posedge pix_clk)
+        pix_rs <= {pix_rs[1:0], !hdmi_lock};
+    wire pix_rst = pix_rs[2];
     wire core_rx, core_tx, soc_tx, cpu_run, x_rst;
     wire x_tog, x_twe, y_tog;                   // ahb_ddr3's crossing
     wire [24:0] x_line;
@@ -87,6 +137,21 @@ module top (
     wire [24:0] x_addr;
     wire [255:0] x_wdata, x_rdata;
     wire [31:0] x_wmask;
+    wire c_valid, c_ready, c_we, c_rvalid;      // the CPU's bridge into ddr3_arb
+    wire [24:0] c_addr;
+    wire [255:0] c_wdata, a_rdata;
+    wire [31:0] c_wmask;
+    wire v_valid, v_ready, v_rvalid;            // the video fetcher into ddr3_arb
+    wire [24:0] v_addr;
+    wire vid_enable, vid_base_tog, vid_base_ack, vid_vbl_tog, vid_in_vbl;
+    wire [24:0] vid_base;
+    wire [15:0] vid_late;
+    wire req_tog;
+    wire [24:0] req_addr;
+    wire [2047:0] f_mem;
+    wire [3:0] f_wg, f_rg;
+    wire [23:0] vid_rgb;
+    wire vid_de, vid_hs, vid_vs;
     assign core_rx = cpu_run ? 1'b1 : uart_rx;
     assign uart_tx = cpu_run ? soc_tx : core_tx;
     // kept, so the open flow's SDC can name the memory-side clock whatever
@@ -1151,13 +1216,41 @@ module top (
         .bus_clk(bus_clk), .core_clk(core_clk), .pll_locked(cpu_lock), .run(cpu_run),
         .uart_tx(soc_tx), .uart_rx(cpu_run ? uart_rx : 1'b1),
         .x_tog(x_tog), .x_we(x_twe), .x_line(x_line), .x_dw(x_dw), .x_lanes(x_lanes),
-        .x_wd(x_wd), .y_tog(y_tog), .y_line(y_line));
+        .x_wd(x_wd), .y_tog(y_tog), .y_line(y_line),
+        .vid_enable(vid_enable), .vid_base(vid_base), .vid_base_tog(vid_base_tog),
+        .vid_base_ack(vid_base_ack), .vid_vbl_tog(vid_vbl_tog), .vid_in_vbl(vid_in_vbl),
+        .vid_late(vid_late));
     ahb_ddr3_pclk #(.AW(25)) xport (
         .pclk(pclk), .prst(x_rst),
         .x_tog(x_tog), .x_we(x_twe), .x_line(x_line), .x_dw(x_dw), .x_lanes(x_lanes),
         .x_wd(x_wd), .y_tog(y_tog), .y_line(y_line),
-        .cmd_valid(x_valid), .cmd_ready(x_ready), .cmd_we(x_we), .cmd_addr(x_addr),
-        .cmd_wdata(x_wdata), .cmd_wmask(x_wmask), .rdata_valid(x_rvalid), .rdata_line(x_rdata));
+        .cmd_valid(c_valid), .cmd_ready(c_ready), .cmd_we(c_we), .cmd_addr(c_addr),
+        .cmd_wdata(c_wdata), .cmd_wmask(c_wmask), .rdata_valid(c_rvalid), .rdata_line(a_rdata));
+    // the video fetcher before the CPU onto ctrl_glue's CPU port
+    ddr3_arb arb (
+        .pclk(pclk), .rst(x_rst),
+        .v_valid(v_valid), .v_ready(v_ready), .v_addr(v_addr), .v_rvalid(v_rvalid),
+        .c_valid(c_valid), .c_ready(c_ready), .c_we(c_we), .c_addr(c_addr),
+        .c_wdata(c_wdata), .c_wmask(c_wmask), .c_rvalid(c_rvalid), .rdata(a_rdata),
+        .x_valid(x_valid), .x_ready(x_ready), .x_we(x_we), .x_addr(x_addr),
+        .x_wdata(x_wdata), .x_wmask(x_wmask), .x_rvalid(x_rvalid), .x_rdata(x_rdata));
+    // 1280x720 from the DDR3: the fetcher on PCLK, the raster on pix_clk
+    vid_fetch vfetch (
+        .pclk(pclk), .rst(x_rst), .req_tog(req_tog), .req_addr(req_addr),
+        .v_valid(v_valid), .v_ready(v_ready), .v_addr(v_addr),
+        .v_rvalid(v_rvalid), .v_rdata(a_rdata),
+        .f_mem(f_mem), .f_wg(f_wg), .f_rg(f_rg));
+    vid_pix vpix (
+        .pix_clk(pix_clk), .pix_rst(pix_rst),
+        .enable(vid_enable), .base_line(vid_base), .base_tog(vid_base_tog),
+        .base_ack(vid_base_ack), .vbl_tog(vid_vbl_tog), .in_vbl(vid_in_vbl), .late(vid_late),
+        .req_tog(req_tog), .req_addr(req_addr), .f_mem(f_mem), .f_wg(f_wg), .f_rg(f_rg),
+        .rgb(vid_rgb), .de(vid_de), .hs(vid_hs), .vs(vid_vs));
+    dvi_tx hdmi (
+        .pix_clk(pix_clk), .pix_clk5(pix_clk5),
+        .rgb(vid_rgb), .de(vid_de), .hs(vid_hs), .vs(vid_vs),
+        .tmds_clk_p(tmds_clk_p), .tmds_clk_n(tmds_clk_n),
+        .tmds_d_p(tmds_d_p), .tmds_d_n(tmds_d_n));
 endmodule
 module bnd_ff #(parameter [0:0] INIT = 1'b0) (input wire CLK, input wire D, output wire Q);
 `ifdef YOSYS

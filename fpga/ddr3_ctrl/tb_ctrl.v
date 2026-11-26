@@ -91,7 +91,14 @@ module tb_ctrl;
     wire [31:0]  dm;
     wire [511:0] ext_status;
 
-    // TB_CPU: the AE350 image's glue, handed to the x_ port after the test
+    // TB_CPU: the AE350 image's glue, handed to the x_ port after the test.
+    // TB_VIDEO (with TB_CPU): the AE350 image's ddr3_arb between that port and
+    // the bench's CPU client, with vid_fetch on its video side (below).
+`ifdef TB_VIDEO
+ `define GX(n) g_``n
+`else
+ `define GX(n) x_``n
+`endif
 `ifdef TB_CPU
     localparam integer CPU = 1;
 `else
@@ -103,6 +110,12 @@ module tb_ctrl;
     reg  [31:0]  x_wmask = 32'd0;
     wire         x_ready, x_rvalid, x_rst, cpu_run;
     wire [255:0] x_rdata;
+`ifdef TB_VIDEO
+    wire         g_valid, g_we, g_ready, g_rvalid;
+    wire [24:0]  g_addr;
+    wire [255:0] g_wdata, g_rdata;
+    wire [31:0]  g_wmask;
+`endif
     ctrl_glue #(.N_LOG2(NL), .R_LOG2(NL), .SNAP_LOG2(4), .CPU(CPU), .HAND_LOG2(4)) dut (
         .sys_clk(sys_clk), .pclk(pclk), .dq_q(dq_q),
         .wc_cs_n(1'b1), .wc_ras_n(1'b1), .wc_cas_n(1'b1), .wc_we_n(1'b1),
@@ -114,8 +127,72 @@ module tb_ctrl;
         .p_ba(p_ba), .p_addr(p_addr), .p_odt(p_odt), .p_dq_drive(p_dq_drive),
         .p_dqs_drive(p_dqs_drive), .wdq(wdq), .dm(dm), .ctrl_rd(ctrl_rd), .ctrl_accept(ctrl_accept),
         .ext_status(ext_status),
-        .x_valid(x_valid), .x_we(x_we), .x_addr(x_addr), .x_wdata(x_wdata), .x_wmask(x_wmask),
-        .x_ready(x_ready), .x_rvalid(x_rvalid), .x_rdata(x_rdata), .x_rst(x_rst), .cpu_run(cpu_run));
+        .x_valid(`GX(valid)), .x_we(`GX(we)), .x_addr(`GX(addr)), .x_wdata(`GX(wdata)),
+        .x_wmask(`GX(wmask)), .x_ready(`GX(ready)), .x_rvalid(`GX(rvalid)), .x_rdata(`GX(rdata)),
+        .x_rst(x_rst), .cpu_run(cpu_run));
+
+`ifdef TB_VIDEO
+    // ---- the video fetcher beside the CPU's client, through ddr3_arb ----
+    // The bench asks vid_fetch for lines as vid_pix does, one at a time once
+    // the last has been taken, alternating between two lines the CPU wrote
+    // after the hand-over, and takes the FIFO's words as vid_pix does, on a
+    // 74.25 MHz clock, a word every four clocks, checking each.
+    wire         v_valid, v_ready, v_rvalid;
+    wire [24:0]  v_addr;
+    wire [255:0] a_rdata;
+    ddr3_arb arb (
+        .pclk(pclk), .rst(x_rst),
+        .v_valid(v_valid), .v_ready(v_ready), .v_addr(v_addr), .v_rvalid(v_rvalid),
+        .c_valid(x_valid), .c_ready(x_ready), .c_we(x_we), .c_addr(x_addr),
+        .c_wdata(x_wdata), .c_wmask(x_wmask), .c_rvalid(x_rvalid), .rdata(a_rdata),
+        .x_valid(g_valid), .x_ready(g_ready), .x_we(g_we), .x_addr(g_addr),
+        .x_wdata(g_wdata), .x_wmask(g_wmask), .x_rvalid(g_rvalid), .x_rdata(g_rdata));
+    assign x_rdata = a_rdata;
+    reg          vreq_tog = 1'b0;
+    reg  [24:0]  vreq_addr = 25'd0;
+    wire [2047:0] f_mem;
+    wire [3:0]   f_wg;
+    reg  [3:0]   f_rg = 4'd0, f_r = 4'd0, wg1 = 4'd0, wg2 = 4'd0;
+    vid_fetch vfetch (
+        .pclk(pclk), .rst(x_rst), .req_tog(vreq_tog), .req_addr(vreq_addr),
+        .v_valid(v_valid), .v_ready(v_ready), .v_addr(v_addr),
+        .v_rvalid(v_rvalid), .v_rdata(a_rdata),
+        .f_mem(f_mem), .f_wg(f_wg), .f_rg(f_rg));
+    localparam [24:0] VBASE = 25'h0000e80;     // in the model's rows 0 to 3, above the CPU's words
+    function [255:0] vpat(input [24:0] a);
+        vpat = {8{a[23:0] ^ 24'h5a3c96, 8'(a[7:0] + 8'd17)}};
+    endfunction
+    reg pix_clk = 1'b0;
+    always #6.734 pix_clk = ~pix_clk;
+    integer v_taken = 0, v_line_words = 0, v_bad = 0, v_div = 0;
+    reg [24:0] v_expect = 25'd0;
+    always @(posedge pix_clk) begin
+        wg1 <= f_wg;
+        wg2 <= wg1;
+        v_div = v_div + 1;
+        if (v_div % 4 == 0 && (f_r ^ {1'b0, f_r[3:1]}) != wg2) begin
+            if (f_mem[256*f_r[2:0] +: 256] !== vpat(v_expect)) v_bad = v_bad + 1;
+            v_expect = v_expect + 1'b1;
+            v_taken = v_taken + 1;
+            v_line_words = v_line_words + 1;
+            f_r = f_r + 1'b1;
+            f_rg <= f_r ^ {1'b0, f_r[3:1]};
+        end
+    end
+    integer vl;
+    task video_client;
+        begin
+            for (vl = 0; vl < 40; vl = vl + 1) begin
+                @(negedge pix_clk);
+                v_line_words = 0;
+                v_expect = VBASE + (vl % 2) * 25'd160;
+                vreq_addr = v_expect;
+                vreq_tog = ~vreq_tog;
+                while (v_line_words < 160) @(negedge pix_clk);
+            end
+        end
+    endtask
+`endif
 
     // a controller a timing short, so the monitor is seen to catch it
 `ifdef CTL_T_RCD
@@ -482,6 +559,15 @@ module tb_ctrl;
             end
         end
     endtask
+    // a write that does not touch x_ref, for the video's lines
+    task x_raw(input [24:0] a, input [255:0] d);
+        begin
+            x_valid = 1'b1; x_we = 1'b1; x_addr = a; x_wdata = d; x_wmask = 32'd0;
+            @(negedge pclk);
+            while (!x_took) @(negedge pclk);
+            x_valid = 1'b0;
+        end
+    endtask
     function [255:0] rnd256(input integer dummy);
         rnd256 = {$random, $random, $random, $random, $random, $random, $random, $random};
     endfunction
@@ -496,6 +582,14 @@ module tb_ctrl;
             repeat (40) @(posedge sys_clk);
             if (!ext_status[0]) fail("the status frame does not show the hand-over");
             @(negedge pclk);
+`ifdef TB_VIDEO
+            // the video's two lines, then the video beside the CPU's traffic
+            for (xi = 0; xi < 320; xi = xi + 1)
+                x_raw(VBASE + xi, vpat(VBASE + xi));
+            fork
+                video_client;
+            join_none
+`endif
             for (xi = 0; xi < XW; xi = xi + 1)
                 x_req(1'b1, 25'h000100 + xi * 25'd13, rnd256(0), 32'd0);
             for (xi = 0; xi < 4 * XW; xi = xi + 1) begin
@@ -506,6 +600,12 @@ module tb_ctrl;
             for (xi = 0; xi < XW; xi = xi + 1)
                 x_req(1'b0, 25'h000100 + xi * 25'd13, 256'd0, 32'd0);
             wait (x_qr == x_qw);
+`ifdef TB_VIDEO
+            wait (vl == 40);
+            if (v_bad != 0) fail("a video word differed from what the CPU wrote");
+            if (v_taken != 40 * 160) fail("the video took other than 160 words a line");
+            $display("      the video beside it: %0d lines, %0d words, %0d wrong", vl, v_taken, v_bad);
+`endif
             repeat (10) @(posedge pclk);
             if (x_bad != 0) fail("a word read on the x_ port differed from what it wrote");
             if (dut.bist.state != 0) fail("the test ran after the hand-over");
