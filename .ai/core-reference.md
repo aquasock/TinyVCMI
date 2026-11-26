@@ -114,6 +114,7 @@ Topic IDs are the `record_id` prefix. An entry reserves a namespace; it does not
 | What does a DDR3 cache miss cost in the proven implementation? | AE350 | AE350-003 |
 | What does a DDR3 cache miss cost through TinyVCMI's own controller? | AE350 | AE350-004 |
 | Can the fabric raise an interrupt in the AE350, and can a program be preempted? | AE350 | AE350-005 |
+| What does the A25's drawing cost per pixel, and is the DDR3 write path the limit? | AE350 | AE350-006 |
 | Which video architecture has already worked in the open flow? | VIDEO | VIDEO-001 |
 | What resolution does the existing VCMI port require? | VIDEO | VIDEO-002 |
 | Does TinyVCMI's own video path work, and what does a redraw cost? | VIDEO | VIDEO-003 |
@@ -225,6 +226,7 @@ AE350-002: "The A25 runs at 750 MHz in the qualified sibling designs, with 32 Ki
 AE350-003: "Tang-PSX measured about 570 core cycles for a DDR3 D-cache miss through its proven path"
 AE350-004: "TinyVCMI's open path measured 503 core cycles for a dependent DDR3 miss (about 670 ns), 477 per streamed line and 663 per stored line with write-back, against Tang-PSX's 570, 552 and 637"
 AE350-005: "The AE350 system drives GP_INT all zero and decodes no PLIC, so no fabric event interrupts the A25; `mtvec` is written only to report traps, and whether the hard macro's machine timer can interrupt is untested"
+AE350-006: "A25 drawing is DDR3-write-bound: 92.3 cycles per 1280x720 pixel for a 32-bit fill (738 per 32-byte line, 32 MB/s), 158.3 copy, 104.3 8-bit expand, 165.9 alpha blend, all against 3.2 for the same fill from L1, so 8.8 fps for a full-screen fill at 1280x720"
 VIDEO-001: "TinyNES and TinyGBC use SDRAM-backed framebuffers and FPGA HDMI scanout in the open flow"
 VIDEO-002: "MiSTer-VCMI supports 800x600 and states that VCMI needs at least 800x600"
 VIDEO-003: "TinyVCMI shows 1280x720p60 on HDMI from a 32-bit DDR3 frame buffer: 3,601 frames and flips in 60 s with LATE 0, a correct picture by the user's eye, and a full-frame fill costing the A25 105 ms"
@@ -487,6 +489,19 @@ PROV-001: "Reuse source and interface ideas with their original license boundari
     - "TinyVCMI firmware/rt/crt0.S:17 and firmware/boot/crt0.S:16 (mtvec written for traps)"
     - "TinyVCMI firmware/rt/syscalls.c, tv_rt_trap"
   verification: "Read from the RTL and start-up code at commit 2679953. Not established: whether the AE350 hard macro's machine timer is reachable at its standard address with GP_INT unused, and whether it can raise an interrupt; a firmware probe would settle it."
+
+- record_id: AE350-006
+  topic_id: AE350
+  title: "Measured A25 drawing cost per pixel: the DDR3 write path is the limit"
+  status: VERIFIED
+  verified_date: 2026-11-25
+  statement: "On the board, caches on, with the video unit scanning out of the same array, firmware/apps/vcmi_bench measured in 750 MHz A25 cycles per 1280x720 pixel, best of three runs and reproducible to 0.1 cycles between runs: a 32-bit fill 92.3 (113 ms a screen, 8.8 fps alone); a 32-bit copy 158.3 (195 ms); an 8-bit indexed expand through a palette 104.3 (128 ms); a 32-bit alpha blend 165.9 (204 ms); a nearest 2x scale 103.6 (127 ms); the same fill served from the 32 KiB L1 data cache 3.2 (4 ms); a page flip's D-cache write-back 298 us and its blank wait 11 to 15 ms. LATE stayed at 1 through every run while the A25 overwrote the buffer the video was scanning out. The measurement restarted the array from a known image: the loaded core was not this project's (it answered core ID 0x00), so the seed-3 AE350 image (SHA-256 f9574b4f...) was loaded and trained error 0, lanes 1111, 422 trials, d 1 b 2, 7 CALIB a lane before the bench was run."
+  consequence: "Drawing on this port is not arithmetic, it is the DDR3 write path: 92.3 cycles per 32-bit word is 738 cycles per 32-byte line, a sustained 32 MB/s of stores, about one per cent of the array's 3.2 GB/s peak. Cache-resident drawing is 29 times cheaper than the same drawing into the frame buffer, while 1280x720 against 800x600 differs only 2.6 times, so the write path outranks canvas size as the lever. At 30 fps the A25 can touch about 271,000 DDR3-bound pixels a frame, 29 per cent of a 1280x720 screen, so a full-screen redraw of any canvas worth showing runs at about 8 fps until the write path improves; incremental redraws are what make the port interactive. AE350-004's suspicion that the bridge makes the next transfer wait for a write to land is consistent with this and is the place to look."
+  sources:
+    - "TinyVCMI firmware/apps/vcmi_bench/main.c, built with firmware/rt/rt.mk and loaded with tools/load_ae350.py"
+    - "TinyVCMI fpga/ae350_ddr3/ahb_ddr3.v, ahb_ram.sv and ddr3_arb.v (the write path and the video's share of it)"
+    - "TinyVCMI .ai/core-log.md entry 23 and docs/vcmi-port-plan.md"
+  verification: "Measured on the board on 2026-11-25 (core-log entry 23), three times in the same session with the two independent runs agreeing to 0.1 cycles per pixel. The figures are this image's and this bridge's, not limits of the DDR3 or the A25. Not established: how much of the 92.3 is the bridge's handshake and how much the controller's own cost, which needs a fabric experiment; nor the cost of VCMI's real per-frame mix of small blits, which the engine must measure itself."
 
 - record_id: PROT-002
   topic_id: PROT

@@ -771,3 +771,35 @@ The asset-delivery choice is still the open decision, boot-time images against a
 - User Test: N/A
 
 ---
+
+## 23 COMMIT Unreleased 2026-11-25T20:19:48-07:00
+
+#### Coming From:
+
+Unreleased f105bfb
+
+#### Purpose:
+
+Run G0, the A25's drawing bench, on the board so the canvas and the frame rate are decided by measured costs rather than by estimate.
+
+#### Outcome:
+
+`firmware/apps/vcmi_bench` was written, built under `-Werror` at 54,106 bytes and run three times on the board, and it found that the DDR3 write path, not the canvas, is what limits this port. The board did not start in the state entry 19 left it: the loaded core answered core ID `0x00` rather than the training fabric's `0x56`, so the seed-3 AE350 image (SHA-256 `f9574b4f...`) was loaded over JTAG with `openFPGALoader -c ft2232`, accepting it only on `DONE` in the unfiltered log, and it trained `error 0`, lanes `1111`, 422 trials, `d 1 b 2`, 7 CALIB a lane, then passed the boot ROM's own tests and was handed over. In 750 MHz cycles per 1280x720 pixel, with the video scanning out of the same array, best of three runs and reproducible to 0.1 cycles between the two independent runs: a 32-bit fill 92.3 (113 ms a screen, 8.81 fps alone), a 32-bit copy 158.3 (195 ms), an 8-bit indexed expand through a palette 104.3 (128 ms), a 32-bit alpha blend 165.9 (204 ms), a nearest 2x scale 103.6 (127 ms), the same fill served from the 32 KiB L1 data cache 3.2 (4 ms), and a page flip's write-back 298 us against a blank wait of 11 to 15 ms. So drawing here is not arithmetic but the store path: 92.3 cycles per 32-bit word is 738 per 32-byte line and a sustained 32 MB/s, about one per cent of the array's 3.2 GB/s peak, and cache-resident drawing is 29 times cheaper than the same drawing into the frame buffer while 1280x720 against 800x600 differs only 2.6 times. `LATE` stayed at 1 through every run while the A25 overwrote the buffer the video was scanning, so `ddr3_arb` holds scanout at maximum CPU write rate. The consequence is a reordering: at 30 fps the A25 can touch about 271,000 DDR3-bound pixels a frame, 29 per cent of a 1280x720 screen, so no canvas worth showing can be redrawn whole above about 8 fps until the write path improves, and the port depends on incremental redraws and on cache-resident work. AE350-004's suspicion that the bridge makes the next transfer wait for a write to land is consistent with this and is now priced. `docs/vcmi-port-plan.md` gained the measured table and a new cycle G for the write path, which now outranks the canvas work it used to follow; `AE350-006` records the figures. The board is left showing the bench's last frame with the AE350 image in SRAM and the boot ROM waiting for a program. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering and the active log's 23 of 100 entries.
+
+#### Next Steps:
+
+The write path is now the first technical question: cost how much of the 738 cycles per line is `ahb_ddr3`'s toggle handshake waiting for each store to land and how much is `ddr3_ctl`'s own, then decide with the user whether a write-combining stage, a pipelined bridge or a small fabric cache for the canvas is worth building, since G0 prices that lever at 29 times against the canvas's 2.6. Cycle B's runtime work still waits on the user: the cooperative pthread shim, the archive-backed file layer, and the link-mode keyboard and mouse receiver, with the asset-delivery choice between boot-time images and a BL616 file service still open. Also waiting: closure robustness led by `wr_core`'s pause bookkeeping, the HDMI heat test, rebuilding the controller-only image with entry 16's `ddr3_ctl`, the STA disagreement on `m_n_r`, the frequency sweep, the nextpnr patch's upstream report and any 0.2.0 release.
+
+#### Files Modified:
+
+- firmware/apps/vcmi_bench/main.c
+- firmware/apps/vcmi_bench/Makefile
+- docs/vcmi-port-plan.md
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: NOT RUN
+
+---

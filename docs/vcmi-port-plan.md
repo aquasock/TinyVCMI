@@ -128,26 +128,68 @@ same-sized window is a page flip rather than a copy.
 
 ## Video and the redraw budget
 
+G0 has run on the board (`firmware/apps/vcmi_bench`, results in
+`core-log.md` entry 23), and it changes what this section should say.
+
+Measured, in 750 MHz A25 cycles per 1280x720 pixel, caches on, best of three
+runs and reproducible to 0.1 cycles between runs:
+
+| operation | cycles/pixel | full screen | so alone |
+| --- | ---: | ---: | ---: |
+| 32-bit fill | 92.3 | 113 ms | 8.8 fps |
+| 32-bit copy | 158.3 | 195 ms | 5.1 fps |
+| 8-bit indexed expand | 104.3 | 128 ms | 7.8 fps |
+| 32-bit alpha blend | 165.9 | 204 ms | 4.9 fps |
+| nearest 2x scale | 103.6 | 127 ms | 7.8 fps |
+| fill from L1 cache | 3.2 | 4 ms | 250 fps |
+
+The last row is the important one. A fill served from the 32 KiB L1 data cache
+costs 3.2 cycles per pixel; the same fill into the DDR3 frame buffer costs
+92.3. The drawing work is not arithmetic, it is the DDR3 write path, and that
+path is worth 29 times more than any choice of canvas.
+
+The arithmetic behind it: 92.3 cycles per 32-bit word is 738 cycles per
+32-byte line, which at 750 MHz is a sustained **32 MB/s** of A25 stores, about
+one per cent of the array's 3.2 GB/s peak. Reads through the same bridge come
+to about 530 cycles per line in this bench against AE350-004's 477, the
+difference being the video reading the same array.
+
+The video held up under it: LATE stayed at 1 across every run while the A25
+hammered the buffer the unit was scanning out, so `ddr3_arb` gives scanout
+service even at maximum CPU write rate.
+
+Consequences for the port, in order of leverage:
+
+1. **The write path is the lever, not the canvas.** 29 times separates
+   cache-resident drawing from DDR3 drawing, while 1280x720 against 800x600
+   separates only 2.6 times. A fabric cache, a write-combining buffer, or a
+   bridge that pipelines stores instead of waiting for each to land is worth
+   far more than rendering at a smaller size. AE350-004 already suspected the
+   bridge blocks the next transfer until a write is in `ddr3_ctl`'s FIFO;
+   G0 prices that suspicion.
+2. **Draw inside the cache where possible.** Tiles, fonts and the regions an
+   incremental redraw touches are nearly free when they fit in L1. VCMI's own
+   dirty-rectangle discipline is what makes this usable, and it should be
+   measured before it is trusted.
+3. **A smaller canvas helps, but only proportionally.** At 30 fps the A25 can
+   touch about 271,000 DDR3-bound pixels per frame, 29 per cent of a 1280x720
+   screen. A full-screen fill at 800x600 is 59 ms and at 640x360 is 28 ms, so
+   even a small canvas cannot be redrawn whole every frame.
+4. **Full-screen redraws above about 8 fps are not available** at any canvas
+   large enough to be worth showing, until the write path improves. Map
+   scrolling that redraws the whole screen will be slow; this is the reason it
+   is slow, and it is a fabric problem rather than an engine one.
+
+So the canvas question is no longer the first question. The first question is
+whether the write path can be improved, because that is what decides whether
+VCMI on this board is interactive or a slideshow.
+
 The video reserve is 16 MiB at `0x7f000000`, which holds four 1280x720
 `XRGB8888` frames of 3,686,400 bytes; a double buffer costs 7.4 MiB and leaves
-room for two more. A whole-screen redraw by the A25 costs about 105 ms, and the
-figure is consistent with AE350-004: 115,200 cache lines of stores at 662.6
-cycles each is about 102 ms at 750 MHz. So a screen drawn whole cannot exceed
-about 9.5 frames a second before any drawing work, and VCMI redraws all active
-objects each frame.
-
-Two levers exist and the plan proposes both be measured before choosing:
-
-- **Double-buffered direct drawing.** Draw into the frame buffer through the
-  aliased surface and flip at the blank. This removes every copy the MiSTer
-  port had to fight; the remaining cost is VCMI's own blitters.
-- **A smaller internal canvas.** VCMI at 800x600 draws 52 per cent of the
-  pixels. MiSTer measured 1024x600 as about 44 per cent more CPU per frame than
-  800x600. If the A25 needs the margin, the engine renders 800x600 or 1024x600
-  and the fabric line buffer duplicates rows to the 1280x720 output, which the
-  existing `vid_pix` line buffers can do without a new memory path.
-
-No conclusion is drawn here: the number that decides is the A25's own.
+room for two more. A page flip is cheap: the D-cache write-back at the flip is
+298 us, because only the still-dirty part of the 32 KiB cache is flushed, and
+the rest of the cost is the blank wait, 11 to 15 ms, which is the display's and
+not the CPU's.
 
 ## Assets
 
@@ -227,10 +269,11 @@ core at 750 MHz, has no vector unit, and executes soft-float. The port should
 not promise a frame rate before measuring one. Three gates keep the effort
 honest:
 
-- **G0, bench before engine.** A firmware app that times a 1280x720 fill, an
-  8-bit-to-32-bit blit with alpha, a scaled blit, and a 32-bit alpha blit of
-  the size VCMI's frame uses, each in cycles per pixel, cached. This decides
-  the canvas size and predicts the frame rate within a small factor.
+- **G0, bench before engine.** Done. `firmware/apps/vcmi_bench` measured fill,
+  copy, 8-bit expand, alpha blend, 2x scale, a cache-resident fill and the
+  flip, on the board, three runs each. The result is in the redraw-budget
+  section above and in `core-log.md` entry 23. It moved the first question
+  from the canvas to the DDR3 write path.
 - **G1, SDL on the board.** SDL2 plus the `tinyvcmi` driver draw and flip a test
   pattern at 60 Hz with the A25 idle, and a second run draws the same pattern
   from the engine's blitter path. This measures the driver, not the engine.
@@ -243,8 +286,12 @@ honest:
 Each cycle ends at a hardware gate and a log entry. None begins until the one
 before it has a result.
 
+0. **A. The A25's drawing cost.** Done: the G0 bench is on the board and its
+   numbers are recorded. It found that the DDR3 write path, not the canvas, is
+   the limit.
 1. **B. Runtime foundation.** Cooperative pthread shim, archive-backed files,
-   link-mode input receiver, and the G0 bench. Hardware: G0 numbers.
+   link-mode input receiver. Hardware: a program that opens the staged data
+   from the card and runs threads that block and yield.
 2. **C. SDL and the video driver.** SDL2, SDL_image, SDL_ttf and the `tinyvcmi`
    driver; a test program that flips pages and takes injected input. Hardware:
    G1.
@@ -257,12 +304,18 @@ before it has a result.
 5. **F. The link at speed.** Programmable UART divisor and, if the user wants
    it, the BL616 file service, so a power cycle does not cost minutes of asset
    load.
+6. **G. The write path.** Cost and, if it is worth it, improve how the A25's
+   stores reach the DDR3: a write-combining stage, a bridge that pipelines a
+   store instead of waiting for it to land, or a small fabric cache for the
+   canvas. G0 says this is the largest single lever, 29 times against the
+   canvas's 2.6, so it now outranks the canvas work it used to follow.
 
 ## Decisions for the user
 
 - Canvas: native 1280x720, or a smaller internal canvas upscaled in the fabric.
-  Recommended: measure G0 first and decide with the numbers; the engine code is
-  identical either way.
+  Recommended: the G0 result makes the write path the first question; the
+  canvas is a proportional 2.6 times, so decide it after the write path is
+  costed, and keep the engine at 1280x720 until then.
 - Assets: the data is staged and verified on the card at
   `root/media/vcmi/data`; what remains open is whether the first milestone loads
   it whole at boot or pages it from the card through a BL616 file service.
