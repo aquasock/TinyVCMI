@@ -113,16 +113,21 @@ Topic IDs are the `record_id` prefix. An entry reserves a namespace; it does not
 | What clocks and caches does the AE350 use? | AE350 | AE350-002 |
 | What does a DDR3 cache miss cost in the proven implementation? | AE350 | AE350-003 |
 | What does a DDR3 cache miss cost through TinyVCMI's own controller? | AE350 | AE350-004 |
+| Can the fabric raise an interrupt in the AE350, and can a program be preempted? | AE350 | AE350-005 |
 | Which video architecture has already worked in the open flow? | VIDEO | VIDEO-001 |
 | What resolution does the existing VCMI port require? | VIDEO | VIDEO-002 |
 | Does TinyVCMI's own video path work, and what does a redraw cost? | VIDEO | VIDEO-003 |
 | What do the Logitech keyboard and mouse report? | INPUT | INPUT-001 |
 | Can TinyTang already send keyboard and mouse input into a core? | INPUT | INPUT-002 |
+| What is the core link's wire format, and at what rates does it run? | PROT | PROT-003 |
 | How do TinyNES and TinyGBC load AE350 programs? | PROT | PROT-001 |
 | Which desktop core does this board's card hold, and which one is restored after a board cycle? | PROT | PROT-002 |
 | Which VCMI revision did the MiSTer port use? | VCMI | VCMI-001 |
 | How much memory did that port consume? | VCMI | VCMI-002 |
 | Why is 64 MiB not yet a qualified VCMI capacity? | VCMI | VCMI-002 |
+| Does a single-player VCMI session need sockets or a TCP stack? | VCMI | VCMI-003 |
+| How does VCMI get a drawn frame to the screen? | VCMI | VCMI-004 |
+| What does VCMI 1.7.5 demand of the AE350 runtime? | VCMI | VCMI-005 |
 | Which open-flow gaps block DDR3 today? | TOOL | TOOL-001 |
 | Which required DDR3 PHY primitives are currently placeable? | TOOL | TOOL-002 |
 | What has been measured for the GW5AST DDRDLL? | TOOL | TOOL-003 |
@@ -219,15 +224,20 @@ AE350-001: "Reset is 0x80000000; cacheable main memory is on the 64-bit RAM AHB 
 AE350-002: "The A25 runs at 750 MHz in the qualified sibling designs, with 32 KiB instruction and data caches and a 75 MHz fabric bus"
 AE350-003: "Tang-PSX measured about 570 core cycles for a DDR3 D-cache miss through its proven path"
 AE350-004: "TinyVCMI's open path measured 503 core cycles for a dependent DDR3 miss (about 670 ns), 477 per streamed line and 663 per stored line with write-back, against Tang-PSX's 570, 552 and 637"
+AE350-005: "The AE350 system drives GP_INT all zero and decodes no PLIC, so no fabric event interrupts the A25; `mtvec` is written only to report traps, and whether the hard macro's machine timer can interrupt is untested"
 VIDEO-001: "TinyNES and TinyGBC use SDRAM-backed framebuffers and FPGA HDMI scanout in the open flow"
 VIDEO-002: "MiSTer-VCMI supports 800x600 and states that VCMI needs at least 800x600"
 VIDEO-003: "TinyVCMI shows 1280x720p60 on HDMI from a 32-bit DDR3 frame buffer: 3,601 frames and flips in 60 s with LATE 0, a correct picture by the user's eye, and a full-frame fill costing the A25 105 ms"
 INPUT-001: "The Logitech K950 supplies an 8-byte boot-keyboard report and the M750 a 4-byte boot-mouse report"
 INPUT-002: "TinyTang sends live mouse frames as command 0x16 and BLE keyboard state as command 0x17"
+PROT-003: "Core-link frames are 0xAA, a big-endian length counting the type byte, then the payload, up to 2047 bytes; 0x16 is six bytes and 0x17 seven, and the link negotiates 10, then 5, then 2 Mbaud"
 PROT-001: "TinyNES/TinyGBC load AE350 ELF-derived images through a checked UART protocol and then enter TinyTang link mode"
 PROT-002: "The card's one desktop core is /root/cores/console138k/tinytang.bin (4,558,518 bytes), answering core ID 0x54; the -lora and -abi16-open builds are gone and the operator reports the LoRa split resolved, so tinytang.bin is the image to restore"
 VCMI-001: "MiSTer-VCMI pins VCMI 1.7.5 at commit 6901839ae9760dfcd1d5ff2c4aa4ef6968fee752"
 VCMI-002: "The MiSTer port measured roughly 100-115 MB resident at 800x600, so 64 MiB is not a qualified full-engine target"
+VCMI-003: "Single-player VCMI 1.7.5 runs the client and local server over an in-memory InternalConnection; TCP exists only for multiplayer, and boost::asio::io_context is the event loop"
+VCMI-004: "VCMI draws into a streaming ARGB8888 texture through a screen surface that aliases its pixels when the renderer calls itself 'software', and presents with RenderCopy and RenderPresent"
+VCMI-005: "VCMI 1.7.5 uses 14 std::thread sites in 13 files, oneTBB in 26, boost::filesystem in 92, 260 distinct SDL_ symbols, and double or float in most of client and lib; Boost.Locale and Boost.DateTime appear in one file each"
 TOOL-001: "The current open flow supports the AE350 and SDR SDRAM design but not the complete Gowin DDR3 PHY/controller netlist"
 TOOL-002: "Yosys declares all required PHY cells; the GW5AST backend places and routes static IODELAY, CLKDIV, the bottom-left DDRDLL with LOCK, and the DQS, OSER8_MEM and IDES8_MEM of all four lanes, and all of them pack to the vendor's fuses, but only in-process because the DDR3-bank guard refuses any image with a bank 6/7 pad"
 TOOL-003: "DDRDLL is a two-cell macro: ports in the column-1 tile, configuration fuses in the corner, LOCK on a dedicated row-99 escape now modelled as a fuse-free node, CLKIN from CLK0 (feature 5) or HCLK lane n (features 21 and 4-n); open flow covers the bottom-left master only"
@@ -465,6 +475,19 @@ PROV-001: "Reuse source and interface ideas with their original license boundari
     - "Tang-PSX commit 8e7eee4, software/programs/memlat/main.c and .ai/core-reference.md AE350-009"
   verification: "Measured on the board on 2026-11-25 (core-log entry 17), twice, with the image of entry 16 warm after a cold start that morning. The comparison with Tang-PSX assumes its counter and cache settings match, which its memlat source and record state."
 
+- record_id: AE350-005
+  topic_id: AE350
+  title: "The AE350 system wires no external interrupt source"
+  status: VERIFIED
+  verified_date: 2026-11-25
+  statement: "fpga/ae350_ddr3/ae350_sys.sv instantiates AE350_SOC with GP_INT(16'b0) and DMA_REQ(8'b0) and gives it no APB slave, so no fabric event can raise an interrupt; the EXTS window it decodes carries only the exts_uart and exts_video registers. Both firmware start-up files write mtvec only to report traps (firmware/rt/crt0.S, firmware/boot/crt0.S), and the runtime's trap handler prints the cause and restarts the boot ROM. The design runs one A25 with 32 KiB L1 caches and no MMU, as AE350-002 records."
+  consequence: "A loaded program cannot be preempted by a fabric event, and a preemptive scheduler would have to come from the hard macro's own machine timer, which is untested here. Any threading on this port must be cooperative unless that timer is shown to raise an interrupt. Threads share one address space with no memory protection, so a fault in one thread traps the program, and a thread that never blocks starves the others."
+  sources:
+    - "TinyVCMI fpga/ae350_ddr3/ae350_sys.sv:228-300 (the AE350_SOC instance, GP_INT, and the EXTS decode)"
+    - "TinyVCMI firmware/rt/crt0.S:17 and firmware/boot/crt0.S:16 (mtvec written for traps)"
+    - "TinyVCMI firmware/rt/syscalls.c, tv_rt_trap"
+  verification: "Read from the RTL and start-up code at commit 2679953. Not established: whether the AE350 hard macro's machine timer is reachable at its standard address with GP_INT unused, and whether it can raise an interrupt; a firmware probe would settle it."
+
 - record_id: PROT-002
   topic_id: PROT
   title: "The card's desktop core is tinytang.bin"
@@ -553,6 +576,19 @@ PROV-001: "Reuse source and interface ideas with their original license boundari
     - "TinyGBC commit 745f1ad, README.md: Building and running"
   verification: "TinyNES records successful TinyTang loading, game execution and desktop overlay operation on hardware."
 
+- record_id: PROT-003
+  topic_id: PROT
+  title: "Core-link wire format, rates and input frame sizes"
+  status: SOURCED
+  verified_date: 2026-11-25
+  statement: "Frames on the BL616-to-FPGA UART are 0xAA, a big-endian 16-bit length that counts the type byte, then the type and payload; a length high byte of 8 or more is treated as noise so a reader resynchronises mid-stream, and FPGA_FRAME_MAX is 2047 bytes. Command 0x16 carries six payload bytes (frame number, buttons, signed dx, dy, wheel), with frame 0xffff meaning apply on arrival, and 0x17 carries seven (modifiers, six HID usage codes) sent only when the report changes. The link opens at 2 Mbaud; tang_fpga_link_fast() asks for 10 Mbaud and then 5, tang_fpga_link_rate() accepts 2, 5 or 10, and a file stream switches between 2 and 5 Mbaud."
+  consequence: "The AE350 needs no protocol change to receive keyboard and mouse input (INPUT-002); it needs a receiver that parses this framing. Asset delivery can use 5 or 10 Mbaud only if the FPGA end's divisor becomes writable, since exts_uart is built with UART_DIV2 = 75 for 2 Mbaud, which is 200 KB/s. The 2047-byte frame ceiling bounds the block size of any file service built on these frames."
+  sources:
+    - "TinyTang commit 8a52baf, ports/bl616/fpga_frames.h (wire format, FPGA_FRAME_MAX)"
+    - "TinyTang commit 8a52baf, ports/bl616/tang_fpga_link.h (FPGA_CMD_INPUT, FPGA_CMD_KEYBOARD, tang_fpga_link_fast, tang_fpga_link_rate, tang_fpga_link_slow)"
+    - "TinyVCMI fpga/ae350_ddr3/ae350_sys.sv (UART_DIV2) and fpga/ae350_ddr3/exts_uart.sv"
+  verification: "Read from the current TinyTang source and this project's UART. The input frames are board-proven on this board family through TinyTang (INPUT-002); the 5 and 10 Mbaud rates and the file-stream switching are the BL616's own contract and have not been exercised from the AE350 side, so this record stays SOURCED."
+
 - record_id: VCMI-001
   topic_id: VCMI
   title: "MiSTer-VCMI source baseline"
@@ -576,6 +612,41 @@ PROV-001: "Reuse source and interface ideas with their original license boundari
     - "MiSTer-VCMI commit 76e1e1c, README.md: Performance"
     - "MiSTer-VCMI commit 76e1e1c, .ai/core.md: Target Environment"
   verification: "The figure was measured by the prior completed project and reported in its user-facing README. TinyVCMI must add its own allocation and high-water measurements once any engine subset runs."
+
+- record_id: VCMI-003
+  topic_id: VCMI
+  title: "Single-player VCMI 1.7.5 keeps the client and server in one process"
+  status: VERIFIED
+  verified_date: 2026-11-25
+  statement: "NetworkHandler::createInternalConnection builds an InternalConnection, which carries packets between the client and the local server in memory and posts the client's connection callback on the io_context (lib/network/NetworkHandler.cpp:99-108, lib/network/NetworkConnection.h:49-64). A local game uses it (client/ServerRunner.cpp:91); TCP is created only by createServerTCP for multiplayer and the lobby. boost::asio::io_context is the event loop and timer type (lib/network/NetworkInterface.h:27)."
+  consequence: "A bare-metal single-player port needs no TCP stack, no sockets and no network device; it needs an io_context replacement that runs posted handlers and timers over the cooperative scheduler. Multiplayer and the lobby stay out of scope, and the Asio-dependent code that only they use need not be ported."
+  sources:
+    - "MiSTer-VCMI commit 76e1e1c, work/vcmi-src at VCMI 1.7.5 commit 6901839e: lib/network/NetworkHandler.cpp, lib/network/NetworkConnection.h, lib/network/NetworkInterface.h, client/ServerRunner.cpp"
+  verification: "Read from the pinned source on 2026-11-25. The in-process path has not been executed on the AE350, and Asio's timer implementation may still need a polling reactor rather than a file descriptor."
+
+- record_id: VCMI-004
+  topic_id: VCMI
+  title: "VCMI draws into the software renderer's texture through an aliased surface"
+  status: VERIFIED
+  verified_date: 2026-11-25
+  statement: "ScreenHandler::setupRenderer creates one ARGB8888 streaming texture and, when SDL_GetRendererInfo names the renderer software, locks it and rebuilds the screen as an SDL_CreateRGBSurfaceFrom over the locked pixels; the surface is then SDL_PREALLOC, so the engine draws directly into the texture's memory and updateScreenTexture skips SDL_UpdateTexture for it. presentScreenTexture takes the interface mutex, does RenderCopy of the whole texture and RenderPresent; CursorSoftware uploads a separate small cursor texture."
+  consequence: "An SDL video driver whose streaming texture is allocated in the DDR3 frame buffer, and whose RenderCopy of a same-sized texture over its own window is a page flip, removes both the per-frame upload and the full-frame copy the MiSTer port had to optimise away. The remaining cost is the engine's own drawing into DDR3, which VIDEO-003 and AE350-004 bound."
+  sources:
+    - "MiSTer-VCMI commit 76e1e1c, work/vcmi-src at VCMI 1.7.5 commit 6901839e: client/renderSDL/ScreenHandler.cpp:443-461 and 675-726, client/renderSDL/CursorSoftware.cpp:72"
+  verification: "Read from the pinned source on 2026-11-25. Not established: whether every screen-size change path preserves the alias, which the port will exercise as soon as the engine runs at a second resolution."
+
+- record_id: VCMI-005
+  topic_id: VCMI
+  title: "VCMI 1.7.5 dependency inventory against the AE350 runtime"
+  status: VERIFIED
+  verified_date: 2026-11-25
+  statement: "In client and lib at VCMI 1.7.5: 14 std::thread construction sites in 13 files, oneTBB in 26 files, and no Boost.Thread or SDL_Thread; boost::filesystem in 92 files and std::filesystem in one; boost::locale in one file and boost::date_time in one; minizip in the archive readers and the zip saver; 260 distinct SDL_ symbols and 49 TTF_, IMG_ or Mix_ symbols; double in 110 files and float in 91, with seven of the 27 renderSDL files using one or the other. The build is C++20, static, with exceptions and RTTI, and MiSTer disables the launcher, editor, lobby, tests, ffmpeg video, translations, MMAI, Discord, InnoExtract, git version, precompiled headers, Lua and ERM."
+  consequence: "The runtime must supply cooperative threads, a read-only file layer with directory enumeration, an event loop, SDL2 with a software renderer, and enough soft-float throughput for the engine's arithmetic; Boost.Locale and Boost.DateTime can be replaced rather than ported because each appears in one file. This answers GAP-004 at the source level; the runtime contract is settled only when the engine links and runs."
+  sources:
+    - "MiSTer-VCMI commit 76e1e1c, work/vcmi-src at VCMI 1.7.5 commit 6901839e: counts by grep over client/ and lib/"
+    - "MiSTer-VCMI commit 76e1e1c, scripts/env.sh (dependency versions) and scripts/build-vcmi.sh (CMake options)"
+    - "MiSTer-VCMI commit 76e1e1c, README.md: Performance (30 fps menus, 43 to 59 fps on the map at 800x600)"
+  verification: "Counted on 2026-11-25 against the pinned tree, whose VCMI commit 6901839e matches VCMI-001. The counts are file and symbol counts, not call-path analysis; the thread sites that a single-player run actually starts were read individually."
 
 - record_id: TOOL-001
   topic_id: TOOL
@@ -1640,7 +1711,7 @@ These are missing facts, not an implementation plan.
 
 - gap_id: GAP-004
   question: "Which VCMI threading and filesystem contracts must the AE350 runtime implement?"
-  close_with: "A source-level dependency inventory pinned to VCMI-001."
+  close_with: "VCMI-005 answers the source level. The runtime level closes when the engine links and runs on the AE350 and its thread, file and event-loop needs are known from a working build."
 ```
 
 ---

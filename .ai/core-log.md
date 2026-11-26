@@ -681,3 +681,33 @@ None.
 - User Test: N/A
 
 ---
+
+## 20 COMMIT Unreleased 2026-11-25T20:02:11-07:00
+
+#### Coming From:
+
+Unreleased 2679953
+
+#### Purpose:
+
+Plan the first VCMI port cycle that the recovery handoff asks for, settling VCMI 1.7.5's dependency, threading and filesystem questions against this project's runtime and fixing the video, asset and input approaches before any engine code is written.
+
+#### Outcome:
+
+No source, firmware or bitstream changed and no hardware ran. The inventory was read from the pinned engine in MiSTer-VCMI's `work/vcmi-src` (VCMI 1.7.5, commit `6901839`) and against `firmware/rt`, and it changes the shape of the port in three places. Single-player needs no network stack: `NetworkHandler::createInternalConnection` carries the client and local server's packets in memory, so TCP exists only for multiplayer and `boost::asio::io_context` is only an event loop. The engine's presentation path cooperates with the frame buffer: when the renderer names itself `software`, VCMI locks its one streaming `ARGB8888` texture and rebuilds the screen surface over that memory, so a driver whose texture lives in the DDR3 page and whose `RenderCopy` of it is a page flip removes both copies the MiSTer port had to fight. The AE350 cannot be preempted: `ae350_sys` drives `GP_INT` all zero and decodes no PLIC, so the 14 `std::thread` sites in 13 files, the oneTBB in 26 files and the `boost::filesystem` in 92 files must run on a cooperative runtime until the hard macro's machine timer is probed. The same read fixes the budget: 260 distinct `SDL_` symbols plus 49 `TTF_`/`IMG_`/`Mix_` symbols, `double` in 110 files and `float` in 91 with soft float on `rv32imac`, `boost::locale` and `boost::date_time` in one file each so they can be replaced rather than ported, and TinyTang's link negotiating 10, then 5, then 2 Mbaud within a 2047-byte frame, which is the only lever on the minutes a power cycle would cost to reload the game data. `docs/vcmi-port-plan.md` records all of it with citations, checks the 105 ms full-screen redraw against AE350-004's 662.6 cycles per stored line (115,200 lines is about 102 ms at 750 MHz), and proposes cycles B to F with three measurement gates: G0 a bench of fill, alpha, scale and 32-bit blits before any engine code, G1 SDL and the `tinyvcmi` driver on the board, G2 the main menu drawn and driven by the real keyboard and mouse. Five questions are left to the user: the canvas size, which data copy and delivery option, whether TinyTang firmware may change, whether audio is deferrable, and a frame-rate acceptance floor. `AE350-005`, `PROT-003`, `VCMI-003`, `VCMI-004` and `VCMI-005` were added, `GAP-004`'s close condition was narrowed to the runtime side, and the reference parses as YAML with 104 unique records. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering and the active log's 20 of 100 entries.
+
+#### Next Steps:
+
+Cycle B starts on the user's approval of the plan and its open questions: the cooperative pthread shim, the archive-backed read-only file layer, the link-mode keyboard and mouse receiver, and the G0 bench app, ending with G0 numbers from the board that choose the canvas and predict the frame rate. Nothing in cycles C to F should begin before G0's result, and the still-waiting hardware items are unchanged: closure robustness led by `wr_core`'s pause bookkeeping, the HDMI heat test, rebuilding the controller-only image with entry 16's `ddr3_ctl`, the STA disagreement on `m_n_r`, the frequency sweep, the nextpnr patch's upstream report and any 0.2.0 release.
+
+#### Files Modified:
+
+- docs/vcmi-port-plan.md
+
+#### Status:
+
+- Build: N/A
+- Deployment: N/A
+- User Test: N/A
+
+---
