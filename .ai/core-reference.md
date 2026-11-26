@@ -116,6 +116,7 @@ Topic IDs are the `record_id` prefix. An entry reserves a namespace; it does not
 | Can the fabric raise an interrupt in the AE350, and can a program be preempted? | AE350 | AE350-005 |
 | What does the A25's drawing cost per pixel, and is the DDR3 write path the limit? | AE350 | AE350-006 |
 | Is the A25's store cost per line or per store, and can it be improved? | AE350 | AE350-007 |
+| Does gathering a line's doublewords into one DDR3 write help, and what does it cost? | AE350 | AE350-008 |
 | Which video architecture has already worked in the open flow? | VIDEO | VIDEO-001 |
 | What resolution does the existing VCMI port require? | VIDEO | VIDEO-002 |
 | Does TinyVCMI's own video path work, and what does a redraw cost? | VIDEO | VIDEO-003 |
@@ -229,6 +230,7 @@ AE350-004: "TinyVCMI's open path measured 503 core cycles for a dependent DDR3 m
 AE350-005: "The AE350 system drives GP_INT all zero and decodes no PLIC, so no fabric event interrupts the A25; `mtvec` is written only to report traps, and whether the hard macro's machine timer can interrupt is untested"
 AE350-006: "A25 drawing is DDR3-write-bound: 92.3 cycles per 1280x720 pixel for a 32-bit fill (738 per 32-byte line, 32 MB/s), 158.3 copy, 104.3 8-bit expand, 165.9 alpha blend, all against 3.2 for the same fill from L1, so 8.8 fps for a full-screen fill at 1280x720"
 AE350-007: "The A25's DDR3 store cost is per line, not per store: 738.0 cycles per 32-byte line for eight stores, 739.5 for four and 739.7 for one, so the write-back cache already combines maximally and the 74 bus clocks are one serialized round trip per line that nothing overlaps; a read is 513.3 cycles per line"
+AE350-008: "Gathering a cache line's four doublewords into one 256-bit masked DDR3 write bought only 11 per cent, 738.0 to 654.8 cycles per line, because a full-line write and a read each cost about one crossing round trip (656 and 512) and command count was never the cost; it also cost about 11 MHz of bus_clk, leaving 1 seed of 16 closing, so it was reverted"
 VIDEO-001: "TinyNES and TinyGBC use SDRAM-backed framebuffers and FPGA HDMI scanout in the open flow"
 VIDEO-002: "MiSTer-VCMI supports 800x600 and states that VCMI needs at least 800x600"
 VIDEO-003: "TinyVCMI shows 1280x720p60 on HDMI from a 32-bit DDR3 frame buffer: 3,601 frames and flips in 60 s with LATE 0, a correct picture by the user's eye, and a full-frame fill costing the A25 105 ms"
@@ -517,6 +519,19 @@ PROV-001: "Reuse source and interface ideas with their original license boundari
     - "TinyVCMI fpga/ae350_ddr3/ahb_ddr3.v (the bus half and its toggle handshake) and ahb_ram.sv"
     - "TinyVCMI .ai/core-log.md entry 24"
   verification: "Measured on the board on 2026-11-25 (core-log entry 24), three runs, each figure stable to about 0.2 cycles. That the cost is per line is direct: only the number of stores inside a line changed and the cost did not. Not established: how many transfers ahb_ddr3 could keep in flight, which needs a fabric experiment, and whether the A25's own write buffer rather than the bridge sets the ceiling."
+
+- record_id: AE350-008
+  topic_id: AE350
+  title: "Gathering a line's doublewords into one DDR3 write bought 11 per cent, and was reverted"
+  status: VERIFIED
+  verified_date: 2026-11-25
+  statement: "A cache-line write gather was built in ahb_ddr3's bus half: the four AHB doublewords of a line are merged into one 256-bit request with a coverage-derived mask and sent as a single DDR3 write, the first three acknowledged from registers, with flushes before a read, before a different line, and after 1024 bus clocks. It passed every simulation gate. On the board (image seed 4 of build/ae350/v7, .fs SHA-256 5a0de338c99ec14cf84e51747b1e72ce19e53b21b300fab659b9d2d8bd6fa2ae, which trained error 0, lanes 1111, 422 trials, d 1 b 2 and passed the boot ROM's array test) a full-line write fell from 738.0 to 654.8 and then 657.4 cycles per line, a read from 513.3 to 501.1 and 512.0, fill32 from 92.3 to 82.2 cycles per pixel and a whole screen from 113 to 101 ms, with LATE still 1. But only 1 seed of 16 closed every clock, bus_clk 75.44 MHz against 75.01 needed, where the entry-18 image closed at 86.28 MHz: the 256-bit request crossing and its tag compares cost about 11 MHz on the clock at the head of every store path. The change was reverted."
+  consequence: "Combining DDR3 commands is not the lever here: a full-line write and a read each cost essentially one crossing round trip, 656 and 512 cycles against 738 and 513 before, so command count was never what the line paid for. The ~83 cycles removed is the marginal cost of three extra commands, not three round trips, which corrects the reading that four doublewords cost four round trips. What remains is round-trip latency with nothing outstanding behind it, so the useful direction is overlapping successive lines across the crossing rather than combining within one, and a fabric change there must be cheaper than 11 MHz of bus_clk or it will not close."
+  sources:
+    - "TinyVCMI fpga/ae350_ddr3/ahb_ddr3.v at the reverted commit's parent, and tools/ddr3_write.py (the widened crossing)"
+    - "TinyVCMI build/ae350/v7/s4 (nextpnr.log, check.log, ctrl.fs) and build/board/v7-sweep.log, not committed"
+    - "TinyVCMI firmware/apps/write_cost and firmware/apps/vcmi_bench on the board, core-log entry 25"
+  verification: "Measured on the board on 2026-11-25 (core-log entry 25): write_cost twice giving 654.8 and 657.4 cycles per line, and vcmi_bench once, all with the video unit present, against entry 24's 738.0 on the unmodified bridge. The timing figures are that netlist's on the seeds built; the 11 MHz comparison is against entry 18's seed 3 and different seeds vary by several MHz, so the loss is about 11 MHz on this sample rather than an exact quantity. Not established: whether an invalidation-only variant (built as build/ae350/v8 and not finished) would have recovered part of the timing."
 
 - record_id: PROT-002
   topic_id: PROT

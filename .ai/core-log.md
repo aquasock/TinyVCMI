@@ -835,3 +835,33 @@ The plan this cycle was approved against has changed: the measured answer says a
 - User Test: NOT RUN
 
 ---
+
+## 25 COMMIT Unreleased 2026-11-25T22:19:02-07:00
+
+#### Coming From:
+
+Unreleased 5d1bb07
+
+#### Purpose:
+
+Build, close, load and measure the cheapest available fix for the A25's DDR3 store cost -- gathering a cache line's four doublewords into one DDR3 write -- to find whether combining commands is the lever.
+
+#### Outcome:
+
+The gather was built, passed every simulation gate, closed on 1 seed of 16, ran on the board and was reverted, and the useful result is why it bought so little. `ahb_ddr3`'s bus half was changed to merge a line's four AHB doublewords into one 256-bit masked request acknowledged from registers, flushed before a read, before a different line and after 1024 bus clocks so the video could never see a held line, with the crossing widened to 256 bits and `tools/ddr3_write.py` regenerated, since `top.v` is generated and the sweep's staleness guard caught a hand edit. Three bugs came out of simulation and none from the board: a deadlock where a partial line could never age out while a request was pending, a mask polarity inversion that broke every byte because `ddr3_ctl` masks a byte it does not write, and the generated-file edit. `tools/sim_ae350_ddr3.sh` then passed in full -- every byte read back correctly across both clocks, both mutants failing, and the video path's 2,764,800 pixels and 11,059,200 TMDS symbols -- and DDR3 write requests fell from 28,259 to 13,421. Of 16 seeds only seed 4 closed every clock, `bus_clk` 75.44 MHz against 75.01 needed, with `pclk` 101.64, `pix_clk` 90.53, `mclk` 798.08 and `core.rx.clk` 64.72, GB10 on all four AE350 taps and all DDR3 tables equal; entry 18's image had `bus_clk` 86.28, so the 256-bit crossing cost about 11 MHz. That image (`.fs` SHA-256 `5a0de338...6fa2ae`) was loaded anyway at the user's direction, and it trained `error 0`, lanes `1111`, 422 trials, `d 1 b 2`, 7 CALIB a lane, passed the boot ROM's array test and ran 425 passes of the memory test with no lane error. On it `firmware/apps/write_cost` gave a full-line write 654.8 and then 657.4 cycles per line against 738.0 before, a read 501.1 and 512.0 against 513.3, and `firmware/apps/vcmi_bench` gave fill32 82.2 cycles per pixel against 92.3, a whole screen 101,030 us against 113,387 and 9.89 fps against 8.81, with LATE still 1. So combining commands bought 11 per cent, not the 4 times four doublewords suggested, because a full-line write and a read each cost about one crossing round trip, 656 and 512, and command count was never what the line paid for. The user chose to revert, the bridge is back to its committed state with its simulation passing and 28,259 writes again, the v8 variant that replaced the second 256-bit merge with a buffer invalidation was cancelled unbuilt in the sweep, and the board was reloaded with entry 18's seed-3 image and confirmed training clean. `AE350-008` records the result. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering and the active log's 25 of 100 entries.
+
+#### Next Steps:
+
+Combining within a line is settled as a dead end, so the write path's remaining option is overlapping successive lines across the crossing or a small fabric cache for the canvas, and the user should choose between them before either starts: any crossing change must cost less than the 11 MHz of `bus_clk` the gather lost, while a cache sidesteps the crossing but needs its own memory and coherence argument with the video. If neither is worth it, the port should proceed to cycle C's SDL driver with whole-screen fills at about 9 fps and rely on incremental redraw. The rest of the queue is unchanged: cycle C's SDL2 and `tinyvcmi` driver, cycle D's engine, the still-open asset delivery choice, closure robustness led by `wr_core`'s pause bookkeeping, the HDMI heat test, rebuilding the controller-only image with entry 16's `ddr3_ctl`, the STA disagreement on `m_n_r`, the frequency sweep, the nextpnr patch's upstream report and any 0.2.0 release.
+
+#### Files Modified:
+
+- None.
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: NOT RUN
+
+---

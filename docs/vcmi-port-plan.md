@@ -180,20 +180,31 @@ full-screen fill at 28 ms and 14 ms instead of 113 ms. Nothing in the
 measurement promises those factors, since DDR3 refresh, bank conflicts and the
 video's own share all take cuts, but the headroom is the largest in this plan.
 
+Entry 25 tried the cheap version of this and it did not pay. A gather that
+merges a line's four doublewords into one 256-bit DDR3 write was built, passed
+every simulation gate, and ran on the board: writes fell 738.0 to 654.8 cycles
+per line and a whole screen went 113 ms to 101 ms, but only 1 seed of 16 closed
+and `bus_clk` lost about 11 MHz against the entry-18 image's 86.28. It was
+reverted (`AE350-008`). The reason it bought so little is now clear and is the
+useful part: a full-line write costs 656 cycles and a read 512, each essentially
+one crossing round trip, so the line was never paying four round trips and
+command count was never the cost. Combining within a line is a dead end;
+overlapping successive lines is the live direction, and any fabric change there
+has to be cheaper than 11 MHz of `bus_clk` or it will not close.
+
 The video held up under it: LATE stayed at 1 across every run while the A25
 hammered the buffer the unit was scanning out, so `ddr3_arb` gives scanout
 service even at maximum CPU write rate.
 
 Consequences for the port, in order of leverage:
 
-1. **The write path is the lever, not the canvas, and it is a pipelining
-   problem.** 29 times separates cache-resident drawing from DDR3 drawing,
-   while 1280x720 against 800x600 separates only 2.6 times. Because one store
-   per line costs what eight cost, the fix is not combining but letting
-   successive line writes overlap: `ahb_ddr3`'s bus half currently takes one
-   transfer at a time and waits for the toggle to return. AE350-004 suspected
-   the bridge blocks the next transfer until a write lands; entries 23 and 24
-   confirm it and price it.
+1. **The write path is the lever, not the canvas, and combining is a dead end.**
+   29 times separates cache-resident drawing from DDR3 drawing, while 1280x720
+   against 800x600 separates only 2.6 times. One store per line costs what eight
+   cost, and gathering a line's four doublewords into one DDR3 write bought only
+   11 per cent for 11 MHz of timing, so the cost is per-line round-trip latency
+   with nothing outstanding behind it. Overlapping successive lines is the one
+   direction left with real headroom, and it must be cheap enough to close.
 2. **Draw inside the cache where possible.** Tiles, fonts and the regions an
    incremental redraw touches are nearly free when they fit in L1. VCMI's own
    dirty-rectangle discipline is what makes this usable, and it should be
@@ -317,11 +328,11 @@ before it has a result.
    the board, and the follow-up found the store cost is per line and serialized
    rather than per store. The DDR3 write path, not the canvas, is the limit,
    and overlapping line writes is the fix.
-1. **B. The write path.** Let successive stores overlap in `ahb_ddr3`'s bus
-   half instead of waiting for each toggle, then re-run `firmware/apps/write_cost`
-   and `vcmi_bench` to see what the factor really is. Small, well scoped, and
-   the largest single win available; it precedes the engine work because it
-   changes every frame-rate estimate the engine would be built against.
+1. **B. The write path.** Costed and tried: combining within a line gave 11 per
+   cent for 11 MHz of `bus_clk` and was reverted (entry 25). What is left is
+   overlapping successive lines across the crossing, which needs its own cycle
+   and a closure budget of about 11 MHz, or a small fabric cache for the canvas.
+   Neither should start before the user chooses between them.
 2. **C. SDL and the video driver.** SDL2, SDL_image, SDL_ttf and the `tinyvcmi`
    driver; a test program that flips pages and takes injected input. Hardware:
    G1.
@@ -334,9 +345,10 @@ before it has a result.
 5. **F. The link at speed.** Programmable UART divisor and, if the user wants
    it, the BL616 file service, so a power cycle does not cost minutes of asset
    load.
-6. **G. The write path's remaining cost.** After the overlap work, find what
-   of the leftover is the controller's own and what is DDR3's share, and
-   whether a small fabric cache for the canvas is worth adding on top.
+6. **G. The write path's remaining cost.** Find what of the leftover is the
+   controller's own and what is DDR3's share, and whether a small fabric cache
+   for the canvas is worth adding on top. A fabric cache is now the more
+   promising of the two, since it sidesteps the crossing entirely.
 
 ## Decisions for the user
 
