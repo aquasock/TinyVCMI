@@ -115,6 +115,7 @@ Topic IDs are the `record_id` prefix. An entry reserves a namespace; it does not
 | What does a DDR3 cache miss cost through TinyVCMI's own controller? | AE350 | AE350-004 |
 | Can the fabric raise an interrupt in the AE350, and can a program be preempted? | AE350 | AE350-005 |
 | What does the A25's drawing cost per pixel, and is the DDR3 write path the limit? | AE350 | AE350-006 |
+| Is the A25's store cost per line or per store, and can it be improved? | AE350 | AE350-007 |
 | Which video architecture has already worked in the open flow? | VIDEO | VIDEO-001 |
 | What resolution does the existing VCMI port require? | VIDEO | VIDEO-002 |
 | Does TinyVCMI's own video path work, and what does a redraw cost? | VIDEO | VIDEO-003 |
@@ -227,6 +228,7 @@ AE350-003: "Tang-PSX measured about 570 core cycles for a DDR3 D-cache miss thro
 AE350-004: "TinyVCMI's open path measured 503 core cycles for a dependent DDR3 miss (about 670 ns), 477 per streamed line and 663 per stored line with write-back, against Tang-PSX's 570, 552 and 637"
 AE350-005: "The AE350 system drives GP_INT all zero and decodes no PLIC, so no fabric event interrupts the A25; `mtvec` is written only to report traps, and whether the hard macro's machine timer can interrupt is untested"
 AE350-006: "A25 drawing is DDR3-write-bound: 92.3 cycles per 1280x720 pixel for a 32-bit fill (738 per 32-byte line, 32 MB/s), 158.3 copy, 104.3 8-bit expand, 165.9 alpha blend, all against 3.2 for the same fill from L1, so 8.8 fps for a full-screen fill at 1280x720"
+AE350-007: "The A25's DDR3 store cost is per line, not per store: 738.0 cycles per 32-byte line for eight stores, 739.5 for four and 739.7 for one, so the write-back cache already combines maximally and the 74 bus clocks are one serialized round trip per line that nothing overlaps; a read is 513.3 cycles per line"
 VIDEO-001: "TinyNES and TinyGBC use SDRAM-backed framebuffers and FPGA HDMI scanout in the open flow"
 VIDEO-002: "MiSTer-VCMI supports 800x600 and states that VCMI needs at least 800x600"
 VIDEO-003: "TinyVCMI shows 1280x720p60 on HDMI from a 32-bit DDR3 frame buffer: 3,601 frames and flips in 60 s with LATE 0, a correct picture by the user's eye, and a full-frame fill costing the A25 105 ms"
@@ -502,6 +504,19 @@ PROV-001: "Reuse source and interface ideas with their original license boundari
     - "TinyVCMI fpga/ae350_ddr3/ahb_ddr3.v, ahb_ram.sv and ddr3_arb.v (the write path and the video's share of it)"
     - "TinyVCMI .ai/core-log.md entry 23 and docs/vcmi-port-plan.md"
   verification: "Measured on the board on 2026-11-25 (core-log entry 23), three times in the same session with the two independent runs agreeing to 0.1 cycles per pixel. The figures are this image's and this bridge's, not limits of the DDR3 or the A25. Not established: how much of the 92.3 is the bridge's handshake and how much the controller's own cost, which needs a fabric experiment; nor the cost of VCMI's real per-frame mix of small blits, which the engine must measure itself."
+
+- record_id: AE350-007
+  topic_id: AE350
+  title: "The A25's store cost is per cache line and serialized, not per store"
+  status: VERIFIED
+  verified_date: 2026-11-25
+  statement: "firmware/apps/write_cost wrote 115,200 lines of 32 bytes over a 3.6 MiB span with the video unit off, and measured in 750 MHz cycles per line: 738.0 when storing all eight words of every line, 739.5 when storing four (words 0, 2, 4 and 6), 739.7 when storing only word 0, and 739.7 when storing only word 7, with readings stable to 0.1 cycles over three runs. A read of all eight words of each line cost 513.3 cycles per line. The full-line store figure equals AE350-006's 92.3 cycles per pixel with the video on, so the video's reads do not measurably slow the CPU's stores."
+  consequence: "The price of a store to the DDR3 is one round trip per dirty line, 74 bus clocks at the 75 MHz bus, and the A25's write-back cache already combines a line's eight stores into that one transfer, so a write-combining stage inside a line cannot help. The lever is overlap: successive line writes are serialized today, so allowing several in flight divides the cost by the depth reached, subject to DDR3 refresh, bank conflicts and the video's share. That makes the write path a bridge pipelining problem in ahb_ddr3's bus half, and it is the largest headroom measured in this project: 738 cycles per 32-byte line is 32 MB/s, one per cent of the array's peak."
+  sources:
+    - "TinyVCMI firmware/apps/write_cost/main.c, built with firmware/rt/rt.mk and loaded with tools/load_ae350.py"
+    - "TinyVCMI fpga/ae350_ddr3/ahb_ddr3.v (the bus half and its toggle handshake) and ahb_ram.sv"
+    - "TinyVCMI .ai/core-log.md entry 24"
+  verification: "Measured on the board on 2026-11-25 (core-log entry 24), three runs, each figure stable to about 0.2 cycles. That the cost is per line is direct: only the number of stores inside a line changed and the cost did not. Not established: how many transfers ahb_ddr3 could keep in flight, which needs a fabric experiment, and whether the A25's own write buffer rather than the bridge sets the ceiling."
 
 - record_id: PROT-002
   topic_id: PROT

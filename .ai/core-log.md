@@ -803,3 +803,35 @@ The write path is now the first technical question: cost how much of the 738 cyc
 - User Test: NOT RUN
 
 ---
+
+## 24 COMMIT Unreleased 2026-11-25T20:24:10-07:00
+
+#### Coming From:
+
+Unreleased 7fec9c9
+
+#### Purpose:
+
+Find whether the A25's 738-cycle store cost is paid per cache line or per store, so the next change is aimed at the real cause.
+
+#### Outcome:
+
+`firmware/apps/write_cost` was written, built under `-Werror` at 50,052 bytes, and run on the board, and it answers the question directly: the cost is per line, not per store. Writing 115,200 lines of 32 bytes over a 3.6 MiB span with the video off cost 738.0 cycles per line when storing all eight words, 739.5 when storing four (words 0, 2, 4 and 6), 739.7 when storing only word 0, and 739.7 when storing only word 7, each stable to about 0.2 cycles over three runs. A read of all eight words of a line cost 513.3 cycles. So the A25's write-back cache already combines a line's eight stores into one transfer and the price is that one round trip, 74 bus clocks at the 75 MHz bus: a write-combining stage inside a line would buy nothing, and a sequential fill is already the best case. The lever is overlap, and there is none today, since successive line writes are serialized waiting for each toggle to return. The cross-check is worth recording too: the full-line store cost equals G0's 92.3 cycles per pixel, which G0 measured with the video on and this bench with it off, so scanout's reads do not measurably slow the CPU's stores. `docs/vcmi-port-plan.md` now carries the stores-per-line table, states that the write path is a pipelining problem in `ahb_ddr3`'s bus half rather than a combining problem, and moves the write path to cycle B ahead of the engine work, because a factor there rescales every frame-rate estimate. `AE350-007` records the measurement. The board is left with the AE350 image in SRAM and the boot ROM waiting for a program. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering and the active log's 24 of 100 entries.
+
+#### Next Steps:
+
+The plan this cycle was approved against has changed: the measured answer says a bridge change that overlaps line writes is small, well scoped and worth up to the overlap depth, so it should go ahead of cycle C rather than after it, and the user is to decide that. When it is approved the work is to let `ahb_ddr3`'s bus half accept a second transfer before the first toggle returns, re-run `firmware/apps/write_cost` and `firmware/apps/vcmi_bench` to measure the factor actually reached, and check that training and the whole-array test still pass and that closure still holds, since the bridge is on every path the image times. Cycle C's SDL work and cycle D's engine work stand next in the plan, along with the still-open asset delivery choice, and the hardware items also wait: closure robustness led by `wr_core`'s pause bookkeeping, the HDMI heat test, rebuilding the controller-only image with entry 16's `ddr3_ctl`, the STA disagreement on `m_n_r`, the frequency sweep, the nextpnr patch's upstream report and any 0.2.0 release.
+
+#### Files Modified:
+
+- firmware/apps/write_cost/main.c
+- firmware/apps/write_cost/Makefile
+- docs/vcmi-port-plan.md
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: NOT RUN
+
+---

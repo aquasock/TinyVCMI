@@ -151,8 +151,34 @@ path is worth 29 times more than any choice of canvas.
 The arithmetic behind it: 92.3 cycles per 32-bit word is 738 cycles per
 32-byte line, which at 750 MHz is a sustained **32 MB/s** of A25 stores, about
 one per cent of the array's 3.2 GB/s peak. Reads through the same bridge come
-to about 530 cycles per line in this bench against AE350-004's 477, the
-difference being the video reading the same array.
+to 513 cycles per line in the write-path bench, matching AE350-004's 477
+closely enough that the video's reads are not measurably slowing the CPU's
+stores: with the video on, a full line of stores cost 738.0 cycles and with it
+off 738.0.
+
+The follow-up bench (`firmware/apps/write_cost`, entry 24) found where that 738
+goes, and the answer is not what a write-combining buffer would fix:
+
+| stores per line | cycles per line |
+| ---: | ---: |
+| 8 (sequential fill) | 738.0 |
+| 4 (every other word) | 739.5 |
+| 1 (word 0 only) | 739.7 |
+| 1 (word 7 only) | 739.7 |
+
+Writing one word of a line costs exactly what writing all eight costs, so the
+price is the line, not the store: each dirty line pays one round trip, 74 bus
+clocks at 75 MHz, and the CPU's eight stores are already combined maximally by
+the write-back cache. A write-combining stage inside a line therefore cannot
+help. What can help is letting successive lines overlap, because today they do
+not: the 738 cycles is one full round trip per line with nothing outstanding
+behind it.
+
+That makes the write path a pipelining problem, and prices it: two transfers
+in flight would halve the cost and eight would divide it by eight, which is a
+full-screen fill at 28 ms and 14 ms instead of 113 ms. Nothing in the
+measurement promises those factors, since DDR3 refresh, bank conflicts and the
+video's own share all take cuts, but the headroom is the largest in this plan.
 
 The video held up under it: LATE stayed at 1 across every run while the A25
 hammered the buffer the unit was scanning out, so `ddr3_arb` gives scanout
@@ -160,13 +186,14 @@ service even at maximum CPU write rate.
 
 Consequences for the port, in order of leverage:
 
-1. **The write path is the lever, not the canvas.** 29 times separates
-   cache-resident drawing from DDR3 drawing, while 1280x720 against 800x600
-   separates only 2.6 times. A fabric cache, a write-combining buffer, or a
-   bridge that pipelines stores instead of waiting for each to land is worth
-   far more than rendering at a smaller size. AE350-004 already suspected the
-   bridge blocks the next transfer until a write is in `ddr3_ctl`'s FIFO;
-   G0 prices that suspicion.
+1. **The write path is the lever, not the canvas, and it is a pipelining
+   problem.** 29 times separates cache-resident drawing from DDR3 drawing,
+   while 1280x720 against 800x600 separates only 2.6 times. Because one store
+   per line costs what eight cost, the fix is not combining but letting
+   successive line writes overlap: `ahb_ddr3`'s bus half currently takes one
+   transfer at a time and waits for the toggle to return. AE350-004 suspected
+   the bridge blocks the next transfer until a write lands; entries 23 and 24
+   confirm it and price it.
 2. **Draw inside the cache where possible.** Tiles, fonts and the regions an
    incremental redraw touches are nearly free when they fit in L1. VCMI's own
    dirty-rectangle discipline is what makes this usable, and it should be
@@ -286,12 +313,15 @@ honest:
 Each cycle ends at a hardware gate and a log entry. None begins until the one
 before it has a result.
 
-0. **A. The A25's drawing cost.** Done: the G0 bench is on the board and its
-   numbers are recorded. It found that the DDR3 write path, not the canvas, is
-   the limit.
-1. **B. Runtime foundation.** Cooperative pthread shim, archive-backed files,
-   link-mode input receiver. Hardware: a program that opens the staged data
-   from the card and runs threads that block and yield.
+0. **A. The A25's drawing cost.** Done (entries 23 and 24): the G0 bench is on
+   the board, and the follow-up found the store cost is per line and serialized
+   rather than per store. The DDR3 write path, not the canvas, is the limit,
+   and overlapping line writes is the fix.
+1. **B. The write path.** Let successive stores overlap in `ahb_ddr3`'s bus
+   half instead of waiting for each toggle, then re-run `firmware/apps/write_cost`
+   and `vcmi_bench` to see what the factor really is. Small, well scoped, and
+   the largest single win available; it precedes the engine work because it
+   changes every frame-rate estimate the engine would be built against.
 2. **C. SDL and the video driver.** SDL2, SDL_image, SDL_ttf and the `tinyvcmi`
    driver; a test program that flips pages and takes injected input. Hardware:
    G1.
@@ -304,11 +334,9 @@ before it has a result.
 5. **F. The link at speed.** Programmable UART divisor and, if the user wants
    it, the BL616 file service, so a power cycle does not cost minutes of asset
    load.
-6. **G. The write path.** Cost and, if it is worth it, improve how the A25's
-   stores reach the DDR3: a write-combining stage, a bridge that pipelines a
-   store instead of waiting for it to land, or a small fabric cache for the
-   canvas. G0 says this is the largest single lever, 29 times against the
-   canvas's 2.6, so it now outranks the canvas work it used to follow.
+6. **G. The write path's remaining cost.** After the overlap work, find what
+   of the leftover is the controller's own and what is DDR3's share, and
+   whether a small fabric cache for the canvas is worth adding on top.
 
 ## Decisions for the user
 
