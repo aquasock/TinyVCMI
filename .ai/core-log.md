@@ -926,3 +926,36 @@ The write path is now a choice for the user: a crossing that accepts more than o
 - User Test: N/A
 
 ---
+## 28 COMMIT Unreleased 2026-11-26T08:27:30-07:00
+
+#### Coming From:
+
+Unreleased 69f75ff
+
+#### Purpose:
+
+Make a write-only pass stop paying the 501.7-cycle read-allocate fill that entry 27 measured, which the plan expected to be a matter of marking the frame buffer's window non-cacheable.
+
+#### Outcome:
+
+The memory-attribute route does not exist and the win was taken another way, so the plan's recommendation is replaced with something measured. `firmware/apps/pma_probe` was written, built under `-Werror` and run on entry 18's seed-3 image (`.fs` SHA-256 `f9574b4fd4181f41e0dbe5bee59d493dcbf4da3abf76198ed2c57cd8015e48d7`), powered from the host's 5 V over USB-C OTG and warm, with `mtvec` repointed to a handler in `probe.S` that skips an illegal-instruction trap so an unimplemented CSR can be read safely. The machine-custom window holds `mxstatus` 0xa0000001, `mhcr` 0xa0200001, 0x7c2 0x00020000, 0x7c3 0x80000000, 0x7c7 and 0x7c8 0xffffffff, `mcache_ctl` 3, `mcctlbgnaddr` 0, `mcctlcommand` 6, `mmisc_ctl` 0x48, `micm_cfg` and `mdcm_cfg` 0x00439ada, `mmsc_cfg` 0x2007f039, `mvendorid` 0x31e, `marchid` 0x80000a25, `mimpid` 0x160 and `misa` 0x4094312d, while 0xfc3, 0xfc4 and 0xfc5 read as absent, which is what proves the trap path works; none of the present registers is a memory-region or attribute control, and `cbo.zero`, `cbo.clean`, `cbo.flush` and `cbo.inval` are all illegal instructions, so neither Zicboz nor Zicbom exists. The frame buffer is cached exactly as ordinary DDR3 is, 661.8 cycles a line to store and 523.4 to read against 661.7 and 523.4 at `0x40400000`, so no window of the array is already uncached, the AE350 hard macro exposes no attribute or region port, and neither U-Boot's AX25 cache driver nor its Andes CSR header defines such a register. What does work is switching the D-cache off around the pass: write back and invalidate, clear the enable bit, fill 115,200 lines of one screen, re-enable, which cost 480.0 and then 479.9 cycles a line against 683.1 cached, 104 ms a screen to 73, and read back 0 bad words over the whole screen on both builds. The boundary is sharp: a 32-byte copy under the same switch cost 1,614.9 cycles a line against 1,210.9 cached, 33 per cent worse, and the same fill with the video scanning the buffer being filled cost 563.2 cycles a line with `LATE` unchanged. Because a mis-ordered sequence writes stale lines back over fresh data, the procedure is now `tv_dcache_save_off` and `tv_dcache_restore` in `firmware/include/tinyvcmi.h`, with the invalidation, the leaf-loop rule and the read boundary written in the comment, and the probe calls them so the tested sequence is the shipped one. `AE350-010` records it and `docs/vcmi-port-plan.md` replaces the attribute plan with the cache-off window and moves the next write-path cycle to the crossing. The board is left with the seed-3 image in SRAM at its boot ROM prompt, desktop not restored. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, validated the new record and its routing and index lines against the reference schema, and checked this entry's six sections, ordering, prose, Status values, numbering and the active log's 28 of 100 entries.
+
+#### Next Steps:
+
+The write path's remaining lever is the crossing, which accepts one 8-byte transfer at a time at 59.9 cycles: a design that keeps more than one outstanding would change that charge, with a whole-screen fill at 73 ms today and about 18 ms if four were in flight, and it must close inside the 11 MHz of `bus_clk` the gather lost. A small fabric cache for the canvas is the fallback. Otherwise cycle C's SDL2 and `tinyvcmi` driver goes ahead, using `tv_dcache_save_off` for fills, clears and opaque blits and leaving copies, alpha blends and 8-bit expands cached, then cycle D's engine. Also waiting: closure robustness led by `wr_core`'s pause bookkeeping, the HDMI heat test, rebuilding the controller-only image with entry 16's `ddr3_ctl`, the STA disagreement on `m_n_r`, the frequency sweep, the nextpnr patch's upstream report and any 0.2.0 release. Every load is confirmed by `DONE` in the loader's raw output saved to a file.
+
+#### Files Modified:
+
+- docs/vcmi-port-plan.md
+- firmware/apps/pma_probe/Makefile
+- firmware/apps/pma_probe/main.c
+- firmware/apps/pma_probe/probe.S
+- firmware/include/tinyvcmi.h
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: N/A
+
+---

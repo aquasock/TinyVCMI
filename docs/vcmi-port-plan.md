@@ -248,6 +248,40 @@ leave it alone and the only lever is to stop paying the fill, worth 1.42 times
 on its own. Compute can already hide 261 cycles of a miss (`E3`), so the
 remaining cost is bandwidth-shaped and a deeper crossing is the way at it.
 
+### The write-around path, and why it is a cache-off window (entry 28)
+
+Stopping the fill looked like a memory-map question: mark the 16 MiB video
+window non-cacheable and the fill disappears. It is not, and
+`firmware/apps/pma_probe` settled that on the board (AE350-010). The A25's
+machine-custom CSR window was dumped under a trap-catching handler: it holds
+`mxstatus`, `mhcr`, `mhint`, `mcache_ctl`, `mcctlbgnaddr`, `mcctlcommand`,
+`mcctldata`, `mmisc_ctl` and the geometry registers, and not one of them is a
+memory-region or attribute control. The Zicboz and Zicbom instructions
+`cbo.zero`, `cbo.clean`, `cbo.flush` and `cbo.inval` are all illegal
+instructions, so a line cannot be zeroed without a fill either. The frame
+buffer's range is cached exactly as ordinary DDR3 is, 661.8 and 523.4 cycles a
+line to store and read against 661.7 and 523.4 at `0x40400000`, so no window of
+the array is already uncached. The AE350 hard macro exposes no attribute or
+region port, and neither U-Boot's AX25 cache driver nor its Andes CSR header
+defines one.
+
+What does work is turning the D-cache off around the pass. Write back and
+invalidate the cache, clear its enable bit, fill a whole screen, re-enable: 480.0
+and then 479.9 cycles a line against 683.1 cached, 0 bad words on every read-back,
+104 ms to 73 ms a screen. The boundary is as sharp as AE350-009 predicted: a
+32-byte copy under the same switch costs 1,614.9 cycles a line against 1,210.9
+cached, 33 per cent worse, because an uncached read is 375 cycles a line. With
+the video scanning the buffer being filled, the same pass costs 563.2 cycles a
+line and `LATE` did not move, so the arbiter stays ahead of it.
+
+That makes the lever a driver discipline rather than a memory-map choice, and a
+dangerous one if done casually: the invalidation before the disable is
+mandatory, since a dirty line of the buffer left in the cache would be written
+back over the new data, and the pass has to be a leaf loop holding its state in
+registers, because every stack access becomes a DDR3 transfer. `tinyvcmi.h`
+now carries `tv_dcache_save_off` and `tv_dcache_restore` with those rules
+written down.
+
 Consequences for the port, in order of leverage:
 
 1. **The write path is the lever, not the canvas, and combining is a dead end.**
@@ -259,11 +293,13 @@ Consequences for the port, in order of leverage:
    doublewords bought only 11 per cent. Allowing more than one transfer
    outstanding is the one direction with real headroom, and it must be cheap
    enough to close against the 11 MHz the last crossing change cost.
-2. **A write-only pass should bypass the cache.** A full line stored with the
-   D-cache off costs 479.9 cycles against 683.3 with it on, because a
-   write-allocate cache reads a line it is about to overwrite. Fills, page
-   clears and opaque blits are the shapes that benefit, and they need no fabric
-   change at all.
+2. **A write-only pass should bypass the cache, by turning it off.** A full line
+   stored with the D-cache off costs 479.9 cycles against 683.3 with it on,
+   because a write-allocate cache reads a line it is about to overwrite, and
+   nothing in the A25 lets that be set per window (AE350-010). The sequence is
+   write-back-and-invalidate, disable, run a leaf loop, re-enable; it is worth
+   104 ms to 73 ms a screen and it is 33 per cent worse the moment the pass
+   reads. Fills, page clears and opaque blits are the shapes that benefit.
 3. **Draw inside the cache where possible.** Tiles, fonts and the regions an
    incremental redraw touches are nearly free when they fit in L1. VCMI's own
    dirty-rectangle discipline is what makes this usable, and it should be
@@ -387,14 +423,15 @@ before it has a result.
    the board, and the follow-up found the store cost is per line and serialized
    rather than per store. The DDR3 write path, not the canvas, is the limit,
    and overlapping line writes is the fix.
-1. **B. The write path.** Costed and tried: combining within a line gave 11 per
-   cent for 11 MHz of `bus_clk` and was reverted (entry 25). The crossing was
-   then measured (entry 27): one 8-byte transfer costs 59.9 cycles, only one is
-   ever outstanding, and a cached line adds a 501.7-cycle fill. What is left is
-   a crossing that accepts more than one transfer at a time, which needs its
-   own cycle and a closure budget of about 11 MHz, and a write-around path for
-   write-only passes, which needs no fabric change. Neither starts before the
-   user chooses.
+1. **B. The write path.** Costed, tried and measured. Combining within a line
+   gave 11 per cent for 11 MHz of `bus_clk` and was reverted (entry 25); the
+   crossing is one 8-byte transfer at 59.9 cycles with only one outstanding, so
+   a cached line is a 501.7-cycle fill plus 239.2 of write-back (entry 27);
+   and the fill cannot be avoided by memory attributes, only by turning the
+   D-cache off around a store-only pass, which is measured and shipped as
+   `tv_dcache_save_off` (entry 28, 104 ms to 73 ms a screen). What remains is
+   the crossing itself: accepting more than one transfer at a time would change
+   the 59.9-cycle charge, at a closure cost of about 11 MHz to stay inside.
 2. **C. SDL and the video driver.** SDL2, SDL_image, SDL_ttf and the `tinyvcmi`
    driver; a test program that flips pages and takes injected input. Hardware:
    G1.
@@ -414,14 +451,13 @@ before it has a result.
 
 ## Decisions for the user
 
-- The write path, now that the crossing is measured: a deeper crossing that
-  lets more than one 8-byte transfer be outstanding, a firmware write-around
-  path for write-only passes that needs no fabric change, or a small fabric
-  cache for the canvas. Recommended: the write-around path first, because it is
-  firmware alone, it is already worth 1.42 times, and its result tells whether
-  the deeper crossing's headroom is reachable at the bandwidth the array can
-  take; then the crossing, which is the only lever that changes the 59.9-cycle
-  transfer cost itself.
+- The write path, now that the crossing and the cache are both measured: build
+  the deeper crossing that lets more than one 8-byte transfer be outstanding,
+  add a small fabric cache for the canvas, or leave the fabric alone now that
+  the write-around window is available. Recommended: the deeper crossing, since
+  it is the only lever that changes the 59.9-cycle charge and the write-around
+  window has already taken the cheaper 1.42 times; the fabric cache stays the
+  fallback if the crossing will not close inside 11 MHz.
 - Canvas: native 1280x720, or a smaller internal canvas upscaled in the fabric.
   Recommended: the G0 result makes the write path the first question; the
   canvas is a proportional 2.6 times, so decide it after the write path is

@@ -104,6 +104,42 @@ static inline void tv_dcache_wbinval(void)
 	CSR_WRITE(CSR_MCCTLCOMMAND, MCCTL_L1D_WBINVAL_ALL);
 }
 
+/* Run a store-only pass without the D-cache, so its stores go straight to the
+ * DDR3 instead of allocating lines first. AE350-009 measured a cached 32-byte
+ * line at 683.3 cycles against 479.9 uncached, the difference being the
+ * read-allocate fill a write-only pass does not need; AE350-010 confirms the
+ * A25 offers no memory-attribute register and no cache-block operations, so
+ * this pair is the only way to reach that 1.42 times.
+ *
+ * The sequence is not optional. tv_dcache_save_off writes back and invalidates
+ * the whole cache first, because a dirty line of the buffer left behind would
+ * be written back over the new data later; and it must be called with the
+ * buffer already in the DDR3, so the invalidation discards nothing wanted.
+ * With the cache off every data access costs a DDR3 transfer, so the pass
+ * belongs in a leaf loop that keeps its state in registers, must not call
+ * anything, and must not touch data it needs quickly. A pass that reads gets
+ * slower rather than faster: a 32-byte copy measured 1,210.9 cycles a line
+ * cached and 1,614.9 uncached. Nothing else may run between the two calls.
+ *
+ * tv_dcache_restore needs no write-back afterwards: the cache holds nothing
+ * valid from the window, so later reads refill from the DDR3. */
+static inline uint32_t tv_dcache_save_off(void)
+{
+	uint32_t saved;
+
+	__asm__ volatile("csrr %0, 0x7ca" : "=r"(saved));
+	tv_dcache_wbinval();
+	__asm__ volatile("csrw 0x7ca, %0" :: "r"(saved & ~0x2u) : "memory");
+	__asm__ volatile("fence" ::: "memory");
+	return saved;
+}
+
+static inline void tv_dcache_restore(uint32_t saved)
+{
+	__asm__ volatile("csrw 0x7ca, %0" :: "r"(saved) : "memory");
+	__asm__ volatile("fence" ::: "memory");
+}
+
 static inline uint32_t tv_cycles(void)
 {
 	uint32_t value;
