@@ -865,3 +865,33 @@ Combining within a line is settled as a dead end, so the write path's remaining 
 - User Test: NOT RUN
 
 ---
+
+## 26 COMMIT Unreleased 2026-11-25T22:27:31-07:00
+
+#### Coming From:
+
+Unreleased ed1e47c
+
+#### Purpose:
+
+Hand the project to the next agent at the user's direction, with the live state after tonight's write-path work and the measurements behind it in one place.
+
+#### Outcome:
+
+No source changed this cycle; this entry records the state `ed1e47c` leaves and the two findings that follow it. TinyVCMI at `ed1e47c` runs the AE350 from the 1 GiB DDR3 through this project's own open-flow controller and shows 1280x720 at 60 Hz on HDMI from a 32-bit frame buffer at `0x7f000000`. The board is in one-wire mode with entry 18's known-good seed-3 image in SRAM (`.fs` SHA-256 `f9574b4fd4181f41e0dbe5bee59d493dcbf4da3abf76198ed2c57cd8015e48d7`, in the untracked `build/ae350/v6/s3`), re-confirmed after tonight's experiments at `error 0`, lanes `1111`, 422 trials, `d 1 b 2`, and it holds the boot ROM waiting for a program with the test screen up. The DDR3 itself is healthy and fast: v0.1.0's own measurement was 734 passes of the whole array in 600 s with no lane error, which is 1,491 GiB at 2.67 GB/s, about 83 per cent of DDR3-800 x32's 3.20 GB/s peak. The A25's path to that array is the whole problem and is now measured twice: `firmware/apps/write_cost` and `firmware/apps/vcmi_bench` show a 32-byte line costing 738 cycles to write (32.5 MB/s) and 513 to read (46.8 MB/s), about 1.2 per cent of what the array sustains, with one store to a line costing what eight cost, so the cost is per-line round-trip latency of about 984 ns with nothing ever in flight behind it, and cache-resident drawing at 3.2 cycles per pixel against 92.3 into the frame buffer. Entry 25 then built the obvious fix and refuted it: gathering a line's four doublewords into one 256-bit DDR3 write passed every simulation gate and ran on the board, buying 11 per cent (738.0 to 654.8 cycles per line, 113 to 101 ms a screen, 8.81 to 9.89 fps) at a cost of about 11 MHz of `bus_clk`, which left 1 seed of 16 closing, so it was reverted at the user's direction and the bridge is back to its committed state with its simulation passing. The reason it bought so little is the finding that matters: a full-line write costs 656 cycles and a read 512, each essentially one crossing round trip, so command count was never what a line paid for, and AE350-004's near-equal streamed and dependent load costs show the A25 is not pipelining its own misses either. So the remaining lever is decoupling acceptance from completion behind a buffered drain rather than combining commands, and whether the A25 can have more than one dirty-line writeback in flight is the unmeasured question that caps it. `AE350-006`, `AE350-007` and `AE350-008` carry these figures, and `docs/vcmi-port-plan.md` carries them with the costs and the proposed cycles. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering and the active log's 26 of 100 entries.
+
+#### Next Steps:
+
+Measure whether the A25 can keep more than one dirty-line writeback outstanding, which decides whether a buffered drain in `ahb_ddr3` can pay or whether the buffer belongs in the CPU's path, then put the buffered-drain design and a fabric cache for the canvas to the user and let them choose before either is built, since the one crossing change already tried cost 11 MHz of `bus_clk`. If the write path is left alone, cycle C's SDL2 and `tinyvcmi` driver goes ahead against whole-screen fills at about 9 fps and relies on incremental redraw, then cycle D's engine, with the asset delivery choice between boot-time images and a BL616 file service still open and the staged data at `root/media/vcmi/data`. Also waiting: closure robustness led by `wr_core`'s pause bookkeeping, now the top timing item at 1 seed of 14 on the entry-18 netlist, the HDMI heat test, rebuilding the controller-only image with entry 16's `ddr3_ctl`, the STA disagreement on `m_n_r`, the frequency sweep, the nextpnr patch's upstream report and any 0.2.0 release. Every load should be confirmed by `DONE` in the loader's raw output saved to a file, and the bench binaries are `firmware/apps/vcmi_bench` and `firmware/apps/write_cost`, run with `tools/load_ae350.py` after `handover`.
+
+#### Files Modified:
+
+- None.
+
+#### Status:
+
+- Build: N/A
+- Deployment: N/A
+- User Test: N/A
+
+---
