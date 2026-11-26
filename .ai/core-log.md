@@ -711,3 +711,33 @@ Cycle B starts on the user's approval of the plan and its open questions: the co
 - User Test: N/A
 
 ---
+
+## 21 COMMIT Unreleased 2026-11-25T20:09:37-07:00
+
+#### Coming From:
+
+Unreleased 33cf706
+
+#### Purpose:
+
+Stage the Heroes III game data the VCMI port will read onto the Tang's SD card and settle where it lives.
+
+#### Outcome:
+
+No source, firmware or bitstream changed and no hardware ran. `/run/media/vash/USB_HDD/homm3` held only the GOG "Heroes of Might and Magic 3 - Complete" 4.0 (3.2) installer, a `setup` executable, its 1.0 GB `.bin` and a redundant 4.0 (28739) to 4.0 (3.2) patch, so the game data was extracted with `innoextract 1.9` rather than copied. The card is now `/run/media/vash/TINYTANG/root/vcmi/data` holding `Data`, `Maps` and `Mp3`, the shape MiSTer's `/media/fat/vcmi/data` uses so the file layer's paths carry over: seven `Data` files (260 MiB: `H3bitmap.lod`, `H3sprite.lod`, `H3ab_bmp.lod`, `H3ab_spr.lod`, `H3ab_ahd.snd`, `H3ab_ahd.vid`, `Heroes3.snd`), 160 maps and 57 music tracks, 224 files and 345 MiB in all. Every one of the 224 was checked with `md5sum` against the installer's own MD5 with no mismatch. `VIDEO.VID`, 599 MiB, was deliberately left out as MiSTer leaves it out, since video playback is not built, and the `Mp3` tracks are staged but unused until audio lands, audio having been deferred. The card is vfat, so the port's file layer must not depend on case-sensitive names, which matters because the archives mix cases such as `AITHEME1.MP3` and `AITheme0.mp3`. The installers stay on the HDD and the data is not in the repository. `docs/vcmi-port-plan.md`'s Assets section now records the staged path, the counts and the verification, and its delivery options are reduced to two, boot-time images or a BL616 file service, with the arithmetic redone: 345 MiB is 30 minutes at 2 Mbaud, 9.6 at 5 and 4.8 at 10, and the 260 MiB of `Data` alone is 23 minutes at 2 Mbaud, which makes the file service the more attractive of the two. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering and the active log's 21 of 100 entries.
+
+#### Next Steps:
+
+The asset-delivery question is the one still open, now narrowed to boot-time send against a BL616 file service, and cycle B should settle it before the file layer's shape is fixed. Cycle B's remaining work is unchanged and awaits the user: the cooperative pthread shim, the archive-backed read-only file layer, the link-mode keyboard and mouse receiver, and the G0 bench, whose result chooses the canvas and predicts the frame rate. The hardware items still waiting are also unchanged: closure robustness led by `wr_core`'s pause bookkeeping, the HDMI heat test, rebuilding the controller-only image with entry 16's `ddr3_ctl`, the STA disagreement on `m_n_r`, the frequency sweep, the nextpnr patch's upstream report and any 0.2.0 release.
+
+#### Files Modified:
+
+- docs/vcmi-port-plan.md
+
+#### Status:
+
+- Build: N/A
+- Deployment: N/A
+- User Test: N/A
+
+---

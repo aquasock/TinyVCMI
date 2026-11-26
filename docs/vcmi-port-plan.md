@@ -151,28 +151,40 @@ No conclusion is drawn here: the number that decides is the A25's own.
 
 ## Assets
 
-The Heroes III data is the user's own copy and must be measured, not assumed.
+The Heroes III data now sits on the Tang's SD card, extracted from the GOG
+"Heroes of Might and Magic 3 - Complete" 4.0 (3.2) installer with
+`innoextract` at `/run/media/vash/TINYTANG/root/vcmi/data`, holding `Data`,
+`Maps` and `Mp3` in the same shape MiSTer's `/media/fat/vcmi/data` uses, so the
+file layer's paths carry over. It is 224 files and 345 MiB: seven `Data` files
+(260 MiB, the two `.lod` bitmap and sprite archives, the two adventure-map
+`.lod`s, and the three sound archives), 160 maps and 57 music tracks. Every one
+of the 224 files was checked against the installer's own MD5, with no mismatch.
+`VIDEO.VID` (599 MiB) was deliberately left out, as MiSTer leaves it out,
+because video playback is not built. The `Mp3` tracks are staged but unused
+until audio lands. Nothing here is committed to the repository.
+
 The delivery rates available today are: 200 KB/s at 2 Mbaud (the rate
 `exts_uart` is built for, `UART_DIV2 = 75`), and 625 KB/s or 1.25 MB/s at the
 5 and 10 Mbaud TinyTang negotiates (`tang_fpga_link.h`, `tang_fpga_link_fast`).
-A 300 MB data set is therefore 25 minutes at 2 Mbaud, 8 minutes at 5 Mbaud and
-4 minutes at 10 Mbaud. The FPGA-side divisor is a build parameter today and
-would have to become writable for the two faster rates, which is a fabric
-change plus a firmware handshake, not a host-side tweak.
+A 345 MiB staged set is therefore 30 minutes at 2 Mbaud, 9.6 at 5 Mbaud and
+4.8 at 10 Mbaud. The FPGA-side divisor is a build parameter today and would
+have to become writable for the two faster rates, which is a fabric change plus
+a firmware handshake, not a host-side tweak.
 
-Options, to be decided by the user:
+Two delivery options remain:
 
 1. **Load-time images.** The existing boot protocol carries the program and any
    number of data images; the loader sends them at one rate. Simplest, needs no
    new protocol, and the board is normally powered continuously, so the DDR3
    keeps its contents between program loads and only a power cycle costs the
-   reload.
-2. **A subset first.** One map, its defs, menus and fonts. Directly measures
-   GAP-003 and keeps the first milestone's load in the tens of megabytes.
-3. **A BL616 file service.** A new frame command by which the AE350 asks the
+   reload. At 2 Mbaud the staged 260 MiB of `Data` alone is 23 minutes, which
+   makes this the slowest option per power cycle but the fastest to build. Sending
+   a subset of `Maps` shortens the tail without changing the mechanism.
+2. **A BL616 file service.** A new frame command by which the AE350 asks the
    card for a named block and caches it in the DDR3. Best long-term behaviour,
-   but it is a TinyTang change, so it needs the user's approval and a second
-   repository in scope.
+   and it pages the data that is already staged on the card, but it is a
+   TinyTang change, so it needs the user's approval and a second repository in
+   scope.
 
 ## Input
 
@@ -241,8 +253,13 @@ before it has a result.
 - Canvas: native 1280x720, or a smaller internal canvas upscaled in the fabric.
   Recommended: measure G0 first and decide with the numbers; the engine code is
   identical either way.
-- Assets: which copy of the data is authoritative, and which of the three
-  delivery options above is wanted for the first milestone.
+- Assets: the data is staged and verified on the card at
+  `root/vcmi/data`; what remains open is whether the first milestone loads it
+  whole at boot or pages it from the card through a BL616 file service.
+  Recommended: load `Data` and the chosen maps at boot first, and add the file
+  service when the load time starts to cost real cycles. At the current 2 Mbaud
+  a full boot-time send is about 30 minutes, which is the argument for the file
+  service sooner rather than later.
 - Whether TinyTang firmware changes are in scope, which only the link-at-speed
   cycle needs.
 - Audio: deferred in this plan; say now if it is not deferrable.
