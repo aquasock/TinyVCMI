@@ -651,3 +651,33 @@ Start the VCMI port itself: inventory VCMI 1.7.5's dependencies and its threadin
 - User Test: PASS
 
 ---
+
+## 19 COMMIT Unreleased 2026-11-25T19:48:24-07:00
+
+#### Coming From:
+
+v0.1.0 59573a7
+
+#### Purpose:
+
+Hand the project to the next agent at the user's direction, with the live state after entry 18 in one place.
+
+#### Outcome:
+
+No source changed; this entry records the state entry 18 left. TinyVCMI at `59573a7` is an open-flow port of VCMI to the Tang Console 138K whose AE350 runs from the 1 GiB DDR3 through this project's own controller (entries 11 to 17) and now shows 1280x720 at 60 Hz on HDMI from a 32-bit frame buffer at `0x7f000000`, drawn by the A25 and confirmed by the user (VIDEO-003). The image to use is seed 3 of the entry-18 netlist (`.fs` SHA-256 `f9574b4fd4181f41e0dbe5bee59d493dcbf4da3abf76198ed2c57cd8015e48d7`, in the untracked `build/ae350/v6/s3`), rebuilt with `TINYVCMI_PIX_TRIAL` unset and `NEXTPNR_HIMBAECHEL=/home/vash/tools/nextpnr-tinyvcmi-arcs/nextpnr-himbaechel tools/ae350_ddr3_sweep.sh OUT SEED...`, which synthesises, places each seed with `tools/ae350_place.py`'s regions and runs `tools/ae350_clock_check.py`; the last seed of that sweep, 8, finished after entry 18 at `pclk` 99.28 MHz, failing, so one seed of fourteen closes every clock. The board path is one-wire mode: load the `.fs` with `openFPGALoader -c ft2232`, saving its output unfiltered to a file and accepting the load only on `DONE`, check training and soak with `tools/ddr3_write_probe.py --port /dev/serial/by-id/usb-SIPEED_USB_Debugger_2025041420-if01-port0 --baud 2000000 ctrl`, hand over with `handover --soak 60 --listen 5`, then load programs with `tools/load_ae350.py`, of which `firmware/apps/ddr3_test` and `video_test` exist on the runtime in `firmware/rt`. The relay script power-cycles the Tang into one-wire mode, but from fully off the user must switch it on by hand first. The board is in one-wire mode with seed 3 in SRAM, the test screen up and the boot ROM waiting for a program, the desktop not restored. The user judges the port by VCMI running on HDMI and takes the agent's board evidence for intermediate steps. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering and active-log capacity.
+
+#### Next Steps:
+
+Entry 18's next steps stand: propose, for the user's approval, the first VCMI port cycle, covering VCMI 1.7.5's dependency, threading and filesystem inventory against `firmware/rt` (GAP-004), an SDL video driver whose screen surface is the frame buffer, how the Heroes III data files reach the DDR3, and how TinyTang's keyboard and mouse frames (INPUT-002) reach the AE350 through a link mode this image does not yet have, keeping in mind that a whole-screen redraw costs the A25 105 ms. Closure robustness, led by `wr_core`'s pause bookkeeping, a heat test of the HDMI picture, rebuilding the controller-only image with entry 16's `ddr3_ctl`, the STA disagreement on `m_n_r`, the frequency sweep, the nextpnr patch's upstream report and any 0.2.0 release wait for the user.
+
+#### Files Modified:
+
+None.
+
+#### Status:
+
+- Build: N/A
+- Deployment: N/A
+- User Test: N/A
+
+---
