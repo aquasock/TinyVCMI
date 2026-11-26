@@ -196,24 +196,83 @@ The video held up under it: LATE stayed at 1 across every run while the A25
 hammered the buffer the unit was scanning out, so `ddr3_arb` gives scanout
 service even at maximum CPU write rate.
 
+### What the write path actually charges (entry 27)
+
+`firmware/apps/write_depth` timed the crossing itself rather than the loop
+around it. Every figure below is cycles per 32-byte line at 750 MHz, best of
+three, and the whole table reproduced to a tenth over four runs on the same
+image:
+
+| measurement | cycles/line |
+| --- | ---: |
+| full line stored, D-cache on (E1) | 683.3 |
+| full line read, D-cache on (E1) | 501.7 |
+| one dirty line written back, no fill, no CPU stall (E2) | 239.2 |
+| one store then a dependent chain of 256 cycles (E3) | 394.4 |
+| K = 2, 4, 8 fresh-line stores back to back (E4) | 684.3, 684.5, 684.5 |
+| one uncached word, 4 bytes (E5) | 59.9 |
+| second word of the buffered line, uncached (E5) | 113.3 |
+| one uncached line read (E5) | 374.9 |
+| full line stored, D-cache off (E6) | 479.9 |
+| half a line, D-cache off (E6) | 239.9 |
+
+The unit is the transfer, not the line and not the byte. One uncached 32-bit
+store costs 59.9 cycles, half a line costs 4 x 60, a full line costs 8 x 60,
+and a dirty line's write-back costs 4 x 60 even though the CPU never touched
+the bus for it. The same 60 appears whether the request comes from an uncached
+CPU store or from the cache's write-back, so the charge is on the bridge side
+of the boundary and not in the A25's store pipeline. RV32 has no 64-bit store,
+so a line cannot be written in fewer than eight transfers from firmware, and
+`E7` confirmed it: four `uint64_t` stores compiled to eight 32-bit ones and
+cost exactly what eight 32-bit stores cost.
+
+Nothing is ever in flight. A line's four write-backs cost 239.2 cycles, which
+is 4 x 59.8 -- the bare transfer cost, not a pipelined fraction of it -- so the
+answer to the question entry 26 left open is that the A25 keeps no write-back
+outstanding at all, and successive lines do not amortise either (`E4`, flat
+from K = 2 to K = 8). Each transfer waits for the toggle to come back before
+the next is accepted, which is what `ahb_ddr3`'s one-outstanding-request
+handshake does by construction.
+
+The cached path pays one more thing: a fill. A line's stores miss, so the
+cache reads the line from the DDR3 first, and that read costs 501.7 cycles of
+stall. That is why entry 25's gather bought only 11 per cent -- it halved the
+transfers in the write-back half of a 738-cycle line and left the 500-cycle
+fill untouched. A full line stored with the cache bypassed costs 479.9 cycles
+and no fill at all, which makes the cache itself a 203.4-cycle tax on a
+write-only pass like a fill or a page clear.
+
+What the numbers do buy is a ceiling and a target. Draw the crossing right and
+a full-screen fill goes from 105 ms to 18 ms, which is 54 fps rather than 9.5;
+leave it alone and the only lever is to stop paying the fill, worth 1.42 times
+on its own. Compute can already hide 261 cycles of a miss (`E3`), so the
+remaining cost is bandwidth-shaped and a deeper crossing is the way at it.
+
 Consequences for the port, in order of leverage:
 
 1. **The write path is the lever, not the canvas, and combining is a dead end.**
    29 times separates cache-resident drawing from DDR3 drawing, while 1280x720
-   against 800x600 separates only 2.6 times. One store per line costs what eight
-   cost, and gathering a line's four doublewords into one DDR3 write bought only
-   11 per cent for 11 MHz of timing, so the cost is per-line round-trip latency
-   with nothing outstanding behind it. Overlapping successive lines is the one
-   direction left with real headroom, and it must be cheap enough to close.
-2. **Draw inside the cache where possible.** Tiles, fonts and the regions an
+   against 800x600 separates only 2.6 times. The unit of cost is one 8-byte AHB
+   transfer, 59.9 cycles, and `ahb_ddr3` allows exactly one outstanding, so a
+   line costs four transfers on a write-back and eight stores uncached. The
+   cached path adds a 501.7-cycle fill, which is why combining a line's
+   doublewords bought only 11 per cent. Allowing more than one transfer
+   outstanding is the one direction with real headroom, and it must be cheap
+   enough to close against the 11 MHz the last crossing change cost.
+2. **A write-only pass should bypass the cache.** A full line stored with the
+   D-cache off costs 479.9 cycles against 683.3 with it on, because a
+   write-allocate cache reads a line it is about to overwrite. Fills, page
+   clears and opaque blits are the shapes that benefit, and they need no fabric
+   change at all.
+3. **Draw inside the cache where possible.** Tiles, fonts and the regions an
    incremental redraw touches are nearly free when they fit in L1. VCMI's own
    dirty-rectangle discipline is what makes this usable, and it should be
    measured before it is trusted.
-3. **A smaller canvas helps, but only proportionally.** At 30 fps the A25 can
+4. **A smaller canvas helps, but only proportionally.** At 30 fps the A25 can
    touch about 271,000 DDR3-bound pixels per frame, 29 per cent of a 1280x720
    screen. A full-screen fill at 800x600 is 59 ms and at 640x360 is 28 ms, so
    even a small canvas cannot be redrawn whole every frame.
-4. **Full-screen redraws above about 8 fps are not available** at any canvas
+5. **Full-screen redraws above about 9 fps are not available** at any canvas
    large enough to be worth showing, until the write path improves. Map
    scrolling that redraws the whole screen will be slow; this is the reason it
    is slow, and it is a fabric problem rather than an engine one.
@@ -329,10 +388,13 @@ before it has a result.
    rather than per store. The DDR3 write path, not the canvas, is the limit,
    and overlapping line writes is the fix.
 1. **B. The write path.** Costed and tried: combining within a line gave 11 per
-   cent for 11 MHz of `bus_clk` and was reverted (entry 25). What is left is
-   overlapping successive lines across the crossing, which needs its own cycle
-   and a closure budget of about 11 MHz, or a small fabric cache for the canvas.
-   Neither should start before the user chooses between them.
+   cent for 11 MHz of `bus_clk` and was reverted (entry 25). The crossing was
+   then measured (entry 27): one 8-byte transfer costs 59.9 cycles, only one is
+   ever outstanding, and a cached line adds a 501.7-cycle fill. What is left is
+   a crossing that accepts more than one transfer at a time, which needs its
+   own cycle and a closure budget of about 11 MHz, and a write-around path for
+   write-only passes, which needs no fabric change. Neither starts before the
+   user chooses.
 2. **C. SDL and the video driver.** SDL2, SDL_image, SDL_ttf and the `tinyvcmi`
    driver; a test program that flips pages and takes injected input. Hardware:
    G1.
@@ -352,6 +414,14 @@ before it has a result.
 
 ## Decisions for the user
 
+- The write path, now that the crossing is measured: a deeper crossing that
+  lets more than one 8-byte transfer be outstanding, a firmware write-around
+  path for write-only passes that needs no fabric change, or a small fabric
+  cache for the canvas. Recommended: the write-around path first, because it is
+  firmware alone, it is already worth 1.42 times, and its result tells whether
+  the deeper crossing's headroom is reachable at the bandwidth the array can
+  take; then the crossing, which is the only lever that changes the 59.9-cycle
+  transfer cost itself.
 - Canvas: native 1280x720, or a smaller internal canvas upscaled in the fabric.
   Recommended: the G0 result makes the write path the first question; the
   canvas is a proportional 2.6 times, so decide it after the write path is

@@ -895,3 +895,34 @@ Measure whether the A25 can keep more than one dirty-line writeback outstanding,
 - User Test: N/A
 
 ---
+## 27 COMMIT Unreleased 2026-11-26T08:01:30-07:00
+
+#### Coming From:
+
+Unreleased fe0ab0c
+
+#### Purpose:
+
+Measure how many dirty-line writebacks the A25 can keep in flight, to settle whether a buffered drain in `ahb_ddr3` can pay or whether the write buffer belongs on the CPU side.
+
+#### Outcome:
+
+`firmware/apps/write_depth` was written, built under `-Werror` and loaded over the boot ROM's loader in 0.36 s, and run four times on the board, and it replaces entry 26's reading with a finer one: nothing is ever in flight, and the unit of cost is one 8-byte AHB transfer at 59.9 cycles rather than a line. On entry 18's seed-3 image (`.fs` SHA-256 `f9574b4fd4181f41e0dbe5bee59d493dcbf4da3abf76198ed2c57cd8015e48d7`), loaded with `openFPGALoader -c ft2232` and accepted only on `DONE` in its raw output saved to `build/board/load-write-depth.log`, and re-confirmed at `error 0`, lanes `1111`, 422 trials, `d 1 b 2` and 7 CALIB pulses a lane before the bench ran, with the video unit off and `write_cost`'s 3.6 MiB span: a full line stored cost 683.3 cycles and read 501.7; one dirty line written back by a whole-cache write-back-and-invalidate, with no fill and no CPU store inside the timed window, cost 239.2, which is exactly four bare transfers of 59.8; one uncached 4-byte store cost 59.9, a second word of the same line answered from the bridge's one-line buffer 113.3, and an uncached line read 374.9; a full line with the D-cache off cost 479.9 and half a line 239.9, both exactly the transfer count times 60; K = 2, 4 and 8 fresh-line stores back to back cost 684.3, 684.5 and 684.5, so successive lines do not amortise; and a store followed by a dependent chain of 32, 64, 128, 256 and 1024 cycles cost 582.5, 486.5, 417.2, 394.4 and 421.9 against 683.0 with no chain, so compute hides up to 261 cycles of a miss and the rest is throughput. The same 60 cycles a transfer is charged to an uncached CPU store and to a cache write-back, which puts it in the crossing rather than in the A25's store pipeline, and RV32 has no 64-bit store, so a line cannot be written from firmware in fewer than eight transfers: `E7`'s four `uint64_t` stores compiled to eight 32-bit ones and cost what eight 32-bit stores cost. Two consequences matter. A cached store also pays a 501.7-cycle read-allocate fill that no write-side change touches, which is why entry 25's gather bought only 11 per cent. And bypassing the D-cache on a write-only pass costs 479.9 against 683.3, 1.42 times better with no fabric change at all. The four runs reproduced to within 0.1 cycles on every best-of figure except this session's full-line store at 683.3 against entry 24's 738.0, a 7.4 per cent difference the read's 501.7 against 513.3 does not explain, so the ratios rather than the absolute figures are the durable result; `AE350-009` records the measurement, `AE350-007` and `AE350-008` are revised in place for the mechanism they had read as one round trip per line, and `docs/vcmi-port-plan.md` carries the table and the revised consequences. Every load was powered from the host's 5 V over USB-C OTG and warm, no cooldown having been taken. The board is left in one-wire mode with the seed-3 AE350 image in SRAM, its boot ROM printing `TinyVCMI LOAD` and waiting for a program, and the desktop not restored. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was unchanged, validated both revised records and the new one against the reference schema, and checked this entry's six sections, ordering, prose, Status values, numbering and the active log's 27 of 100 entries.
+
+#### Next Steps:
+
+The write path is now a choice for the user: a crossing that accepts more than one transfer at a time, the only lever that changes the 59.9-cycle charge and worth a ceiling of about 18 ms a screen; a write-around path for write-only passes in the SDL driver, firmware alone and worth 1.42 times now; or a small fabric cache for the canvas, which sidesteps both but needs its own memory and a coherence argument with the video. The recommended order is the write-around path first, because it is firmware, its result tells how much bandwidth the array can actually take, and it costs no closure. If the user leaves the write path alone, cycle C's SDL2 and `tinyvcmi` driver goes ahead against whole-screen fills at about 9.5 fps and relies on incremental redraw, then cycle D's engine. Also waiting: closure robustness led by `wr_core`'s pause bookkeeping, the HDMI heat test, rebuilding the controller-only image with entry 16's `ddr3_ctl`, the STA disagreement on `m_n_r`, the frequency sweep, the nextpnr patch's upstream report and any 0.2.0 release. Every load is confirmed by `DONE` in the loader's raw output saved to a file.
+
+#### Files Modified:
+
+- docs/vcmi-port-plan.md
+- firmware/apps/write_depth/Makefile
+- firmware/apps/write_depth/main.c
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: N/A
+
+---
