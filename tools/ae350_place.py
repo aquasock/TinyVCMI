@@ -7,13 +7,17 @@
 # to EXTS_HSEL).  Unconstrained, the placer pulled ahb_ram, the UART registers
 # and the bridge's bus half to the far left beside ddr3_ctl, and those paths
 # spent 23 ns of a 13.3 ns bus clock crossing the chip and back.  The bus half
-# only meets the PCLK half through the handshake's registers, whose paths are
-# asynchronous and untimed, so it can sit by the macro at no cost.
+# meets the PCLK half through the queue's Gray pointers and the line return,
+# whose paths are asynchronous and untimed, and through the queue RAM's write
+# port, one register-to-RAM hop, so it can sit by the macro.
 #
 # Constrained to the region: every cell under the soc instance, every cell
 # clocked by bus_clk (the flattened names of a few soc registers come from
 # top-level nets), and then any logic cell all of whose loads are already
-# constrained.  The region holds 69 or so block RAMs on rows y 9, 27 and 45,
+# constrained.  The bridge's queue RAM, xport.fr.mem, is written on bus_clk
+# but read asynchronously on PCLK into the command registers beside it, so
+# it is left out and the placer puts it with the PCLK half: the one long
+# path is then the bus side's staging registers to the RAM's write port.  The region holds 69 or so block RAMs on rows y 9, 27 and 45,
 # against the 48 the boot ROM and the block RAM need.
 #
 # No logic goes in the rightmost column, x 181, which holds the HDMI clocks'
@@ -59,12 +63,14 @@ fixed_types = ("AE350_SOC", "PLL", "IOB", "IBUF", "OBUF", "TBUF", "IOBUF")
 logic = ("LUT1", "LUT2", "LUT3", "LUT4", "MUX2_LUT5", "MUX2_LUT6", "MUX2_LUT7", "MUX2_LUT8")
 
 
-def gather(prefixes, clock, taken):
-    """Cells under the prefixes or clocked by clock, then logic all of whose
-    loads are among them."""
+def gather(prefixes, clock, taken, exclude=()):
+    """Cells under the prefixes or clocked by clock, but not under exclude,
+    then logic all of whose loads are among them."""
     got = set()
     for name, cell in ctx.cells:
         if name in taken or cell.type in fixed_types or cell.bel is not None:
+            continue
+        if name.startswith(exclude) and not name.startswith(prefixes):
             continue
         if name.startswith(prefixes) or clock_net(cell) == clock:
             got.add(name)
@@ -85,7 +91,7 @@ def gather(prefixes, clock, taken):
     return got
 
 
-inside = gather(("soc.",), CLOCK, set())
+inside = gather(("soc.",), CLOCK, set(), exclude=("xport.",))
 pixel = gather(("vpix.", "hdmi."), PIX_CLOCK, inside)
 for name in inside:
     ctx.constrainCellToRegion(name, REGION)

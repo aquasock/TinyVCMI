@@ -1,6 +1,10 @@
 # The AE350-to-DDR3 bridge: from 100 MB/s to the port's 600
 
 Status: proposed, stages 0 and 1 approved 2026-11-26 (core-log entry 29).
+Superseded in part by core-log entry 30: the bridge now built is an ordered
+16-entry asynchronous queue carrying reads and writes in program order, with
+`ahb_ram` posting writes at zero wait, not the gather buffer described below.
+This document has not yet been rewritten to match it.
 
 This document is the reference the bridge rewrite is built against. It records
 why the A25 reaches its own memory at a sixth of what the port allows, what

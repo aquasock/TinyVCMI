@@ -3,8 +3,10 @@
 `default_nettype none
 
 // ahb_ram and ahb_ddr3 under a pipelined AHB master, against a behavioural
-// ddr3_ctl request port: random ready, reads returned in order after a
-// random delay, writes merged by their mask (1 keeps the byte).
+// ddr3_ctl request port: random ready with stalls of up to 400 PCLK, so
+// the bridge's queue fills and posted writes wait for room, reads returned
+// in order after a random delay, writes merged by their mask (1 keeps the
+// byte).
 //
 // The master runs single transfers of every size to random lanes and
 // WRAP4 doubleword bursts, reads and writes, as the A25's cache-line fills
@@ -34,7 +36,7 @@ module tb_ahb_ddr3;
     wire [63:0] hrdata;
     wire        hready, hresp, stray;
 
-    wire        sd_req, sd_write, sd_ack;
+    wire        sd_req, sd_post, sd_post_ok, sd_ack;
     wire [29:3] sd_addr;
     wire [7:0]  sd_lanes;
     wire [63:0] sd_wdata, sd_rdata;
@@ -43,8 +45,8 @@ module tb_ahb_ddr3;
         .clk(clk), .resetn(resetn), .haddr(haddr), .htrans(htrans), .hwrite(hwrite),
         .hsize(hsize), .hprot0(hprot0), .hwdata(hwdata), .hrdata(hrdata), .hready(hready),
         .hresp(hresp), .stray(stray),
-        .sd_req(sd_req), .sd_write(sd_write), .sd_addr(sd_addr), .sd_lanes(sd_lanes),
-        .sd_wdata(sd_wdata), .sd_ack(sd_ack), .sd_rdata(sd_rdata));
+        .sd_req(sd_req), .sd_post(sd_post), .sd_post_ok(sd_post_ok), .sd_addr(sd_addr),
+        .sd_lanes(sd_lanes), .sd_wdata(sd_wdata), .sd_ack(sd_ack), .sd_rdata(sd_rdata));
 
     wire         cmd_valid, cmd_we;
     reg          cmd_ready = 1'b0;
@@ -55,7 +57,7 @@ module tb_ahb_ddr3;
     reg  [255:0] rdata_line = 256'd0;
 
     ahb_ddr3 #(.AW(25)) dut (
-        .clk(clk), .resetn(resetn), .req(sd_req), .write(sd_write), .addr(sd_addr),
+        .clk(clk), .resetn(resetn), .req(sd_req), .post(sd_post), .post_ok(sd_post_ok), .addr(sd_addr),
         .lanes(sd_lanes), .wdata(sd_wdata), .ack(sd_ack), .rdata(sd_rdata),
         .pclk(pclk), .prst(prst), .cmd_valid(cmd_valid), .cmd_ready(cmd_ready),
         .cmd_we(cmd_we), .cmd_addr(cmd_addr), .cmd_wdata(cmd_wdata), .cmd_wmask(cmd_wmask),
@@ -91,6 +93,7 @@ module tb_ahb_ddr3;
     integer    rq_w = 0, rq_r = 0, n_cmd_wr = 0, n_cmd_rd = 0, n_masked = 0;
     integer    pcyc = 0, k2, ln;
     reg [31:0] seed_p = 32'h1234567;
+    integer    stall = 0;
     always @(posedge pclk) begin
         pcyc = pcyc + 1;
         seed_p = seed_p ^ (seed_p << 13); seed_p = seed_p ^ (seed_p >> 17); seed_p = seed_p ^ (seed_p << 5);
@@ -115,8 +118,19 @@ module tb_ahb_ddr3;
             rdata_line <= dmem[line_of(rq_a[rq_r % 64])];
             rq_r = rq_r + 1;
         end
-        cmd_ready <= seed_p[9:8] != 2'b00;
+        if (stall > 0) stall = stall - 1;
+        else if (seed_p[17:12] == 6'd0) stall = seed_p[26:18] % 400;
+        cmd_ready <= seed_p[9:8] != 2'b00 && stall == 0;
     end
+
+    // the bus clocks a posted write waited for room, and the writes posted
+    // with none
+    integer n_wait = 0, n_post = 0;
+    always @(posedge clk)
+        if (resetn) begin
+            if (ram.stage[4]) n_wait = n_wait + 1;
+            if (sd_post) n_post = n_post + 1;
+        end
 
     // ---- the AHB master --------------------------------------------------
     // A transfer is queued as {write, size, address, data}; the queue holds
@@ -289,9 +303,12 @@ module tb_ahb_ddr3;
                  n_rd, n_wr, n_bursts, n_errs, n_bram);
         $display("      DDR3: %0d reads and %0d writes requested, %0d bytes masked; %0d of %0d reads from the line buffer",
                  n_cmd_rd, n_cmd_wr, n_masked, n_rd_ddr - n_cmd_rd, n_rd_ddr);
+        $display("      %0d writes posted, %0d bus clocks spent waiting for room in the queue",
+                 n_post, n_wait);
         // each read burst's last three beats at least come from the buffer
         if (n_rd_ddr - n_cmd_rd < 3 * n_rburst) fail("the line buffer served too few reads");
         if (n_errs < 50 || n_bursts < 5000) fail("too few refusals or bursts");
+        if (n_wait < 1000) fail("the queue was too seldom full");
         if (errs == 0)
             $display("PASS  ahb_ddr3: every byte read back as last written, across both clocks");
         else

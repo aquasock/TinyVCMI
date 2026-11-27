@@ -411,11 +411,10 @@ HDMI_CLOCKS = """
 #: side's receiver sees an idle line while the UART is the other's.
 SOC_WIRES = """\
     wire core_rx, core_tx, soc_tx, cpu_run, x_rst;
-    wire x_tog, x_twe, y_tog;                   // ahb_ddr3's crossing
-    wire [24:0] x_line;
-    wire [1:0] x_dw;
-    wire [7:0] x_lanes;
-    wire [63:0] x_wd;
+    wire q_we, y_tog;                           // ahb_ddr3's crossing
+    wire [3:0] q_waddr;
+    wire [99:0] q_wdata;
+    wire [4:0] q_wgray, q_rgray;
     wire [255:0] y_line;
     wire x_valid, x_ready, x_we, x_rvalid;
     wire [24:0] x_addr;
@@ -443,19 +442,20 @@ SOC_INST = """
     // The instance's name sorts after bus_clk, which the flattened net keeps
     // for nextpnr's NPNR_GOWIN_CLK_FIRST (TinyNES DEV-016).  Everything
     // under soc is on the bus clock and is placed beside the AE350 macro
-    // (tools/ae350_place.py); the bridge's PCLK half, xport, is not under it.
+    // (tools/ae350_place.py); the bridge's PCLK half, xport, is not under it,
+    // nor is its queue RAM, though written on bus_clk.
     ae350_sys soc (
         .bus_clk(bus_clk), .core_clk(core_clk), .pll_locked(cpu_lock), .run(cpu_run),
         .uart_tx(soc_tx), .uart_rx(cpu_run ? uart_rx : 1'b1),
-        .x_tog(x_tog), .x_we(x_twe), .x_line(x_line), .x_dw(x_dw), .x_lanes(x_lanes),
-        .x_wd(x_wd), .y_tog(y_tog), .y_line(y_line),
+        .q_we(q_we), .q_waddr(q_waddr), .q_wdata(q_wdata), .q_wgray(q_wgray),
+        .q_rgray(q_rgray), .y_tog(y_tog), .y_line(y_line),
         .vid_enable(vid_enable), .vid_base(vid_base), .vid_base_tog(vid_base_tog),
         .vid_base_ack(vid_base_ack), .vid_vbl_tog(vid_vbl_tog), .vid_in_vbl(vid_in_vbl),
         .vid_late(vid_late));
     ahb_ddr3_pclk #(.AW(25)) xport (
-        .pclk(pclk), .prst(x_rst),
-        .x_tog(x_tog), .x_we(x_twe), .x_line(x_line), .x_dw(x_dw), .x_lanes(x_lanes),
-        .x_wd(x_wd), .y_tog(y_tog), .y_line(y_line),
+        .bus_clk(bus_clk), .pclk(pclk), .prst(x_rst),
+        .q_we(q_we), .q_waddr(q_waddr), .q_wdata(q_wdata), .q_wgray(q_wgray),
+        .q_rgray(q_rgray), .y_tog(y_tog), .y_line(y_line),
         .cmd_valid(c_valid), .cmd_ready(c_ready), .cmd_we(c_we), .cmd_addr(c_addr),
         .cmd_wdata(c_wdata), .cmd_wmask(c_wmask), .rdata_valid(c_rvalid), .rdata_line(a_rdata));
     // the video fetcher before the CPU onto ctrl_glue's CPU port

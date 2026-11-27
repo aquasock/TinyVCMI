@@ -991,3 +991,43 @@ Attack the posted-write FIFO with a directed unit test of its full flag and a wr
 - User Test: N/A
 
 ---
+## 30 COMMIT Unreleased 2026-11-26T22:00:55-07:00
+
+#### Coming From:
+
+Unreleased 241d716
+
+#### Purpose:
+
+Replace the serialised AE350-to-DDR3 bridge, which held the A25 near 100 MB/s, with an ordered asynchronous queue and zero-wait posted writes, as the user approved after entry 29's attempt was withdrawn.
+
+#### Outcome:
+
+The bridge is rewritten and roughly a quarter to four times faster on the board, but an intermittent hang in `video_test` is unexplained, so this is handed over unfinished and must not be released. `fpga/ae350_ddr3/ahb_ddr3.v` now carries every DDR3 access, reads and writes alike, in program order through one 16-entry Gray-pointer queue (`xfifo_w` on `bus_clk`, `xfifo_r` and the LUT-RAM queue on `pclk`, entries of 100 bits holding the write flag, line, doubleword, lanes and data), with a one-line read buffer in the bus half that merges posted writes; ordering through a single queue removes entry 29's read-overtakes-write hazard and its read-settle delay. `ahb_ram.sv` posts a write with zero wait states whenever the queue reports room, and `ae350_sys.sv`, `tools/ddr3_write.py` (regenerating `top.v`, `--check` current on all three images) and `tools/ae350_place.py` (keeping `xport.` out of the AE350 region gather so the queue RAM sits with the `pclk` half) carry the new ports. A new directed bench, `fpga/ae350_ddr3/tb_xfifo.v`, checks the queue alone at both clock ratios and with a reader at 40 MHz, and must fail its `MUT_FULL` and `MUT_BYPASS` mutants; `tb_ahb_ddr3.v` stalls the controller for up to 400 PCLK and counts posted and waiting writes; `tools/sim_ae350_ddr3.sh` runs all of it with the bridge mutants mask, nomerge, full and bypass, and it, `tools/sim_ddr3_ctrl.sh` and `tools/sim_ddr3_lockstep.sh` all pass. The first twelve-seed sweep closed one seed (q1 seed 1: `pclk` 103.75 MHz, `bus_clk` 79.34 MHz) and lost the rest on `bus_clk` through the queue's full and room logic, which now precomputes both outcomes so that the push only selects; the second sweep, `build/ae350/q2`, was still routing at this commit but seeds 2 (`pclk` 102.39, `bus_clk` 83.46 MHz) and 8 (100.21, 83.86) had closed every clock with all tables equal, and every finished seed held `bus_clk` at 81 to 84 MHz. On the board, q1 seed 1, warm and powered over USB-C OTG, trained `error 0`, lanes `1111`, 422 trials, `d 1 b 2`, soaked 50 passes clean and measured, against the old image, a write-back of 51.5 cycles a line where it was 239.2 (about 466 MB/s), a cached line store of 524.6 cycles where it was 683.3, a cached read of 477.2 where it was 501.7, an uncached full line of 319.9 where it was 479.9, an uncached word read unchanged at 374.9, and a full-frame fill of 80.6 ms where it was 105.2 ms; `write_depth` verified 0 bad words and `ddr3_test` wrote and read 1022 MiB twice per seed with 0 failures. The new `firmware/apps/vid_stress` ran ten minutes of video page flips beside 2.3 GB of checked writes and reads with 0 bad words, 0 stuck flips and LATE 0. The defect is that `video_test` prints `VIDEO on` and then nothing: it hung in two of three runs that followed `write_depth`, `write_cost` and `ddr3_test` on one load, yet passed in three runs that did not follow that sequence, and passed once in that sequence with extra prints added, so it is timing-sensitive. Ruled out so far: a reset desync between the halves, since an app's exit jumps back to the boot ROM without a hardware reset; a controller read-after-write hazard, since `ddr3_ctl` is strictly in order with tWTR; and `ddr3_arb` and the `pclk` half, which read correctly. Not ruled out: a bus deadlock in the queue or `ahb_ram`, a corrupted word in the program, or the q1 image's untimed crossings. Two other things are unexplained: the first load of q1 seed 1 answered no `ctrl` command until after a load of the known-good image, and a one-side reset desync, already present before this work, remains if the halves are ever reset apart. `docs/ahb-bridge-design.md` still describes the gather proposal, and its status line now says so; it was not rewritten. Entry 29's staging, a stage-0 prerequisite before any posting, was superseded by the approved plan rather than followed. AE350-009 and AE350-010 in `.ai/core-reference.md` were not revised because the new figures are not yet released. The board was left on q1 seed 1 after a passing run. `.ai/core.md` was not changed. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering and the active log's 30 of 100 entries.
+
+#### Next Steps:
+
+Find the `video_test` hang before anything else: add a fabric watchdog to `ae350_sys.sv` that forces the existing NOBOOT report out of the UART when any AHB port holds HREADY low for about a second, adding the bridge's `b_read`, full flag, `stage[4]`, queue pointers and the `pclk` half's `cmd_valid` and `p_read`, so a hang shows whether the bus is stuck or the program is spinning; reproduce it with `write_depth`, `write_cost`, `ddr3_test` and then `video_test` on one load. In parallel, load q2 seed 2 or 8 from `build/ae350/q2` and repeat the same sequence, since q1 seed 1 predates the flag fix, and extend `tb_video.v` so the CPU drives `ddr3_arb` through `ahb_ddr3_pclk` back to back. After a fix, add a regression or mutant to the gates, rerun them and a twelve-seed sweep, repeat the board measurements cold, and then rewrite `docs/ahb-bridge-design.md`, revise AE350-009 and AE350-010, and ask the user to test. Entry 29's waiting items stand.
+
+#### Files Modified:
+
+- docs/ahb-bridge-design.md
+- firmware/apps/vid_stress/Makefile
+- firmware/apps/vid_stress/main.c
+- fpga/ae350_ddr3/ae350_sys.sv
+- fpga/ae350_ddr3/ahb_ddr3.v
+- fpga/ae350_ddr3/ahb_ram.sv
+- fpga/ae350_ddr3/tb_ahb_ddr3.v
+- fpga/ae350_ddr3/tb_xfifo.v
+- fpga/ae350_ddr3/top.v
+- tools/ae350_place.py
+- tools/ddr3_write.py
+- tools/sim_ae350_ddr3.sh
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: NOT RUN
+
+---

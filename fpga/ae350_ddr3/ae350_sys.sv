@@ -42,13 +42,13 @@ module ae350_sys #(
     input  wire          uart_rx,
 
     // the DDR3 bridge's crossing to its PCLK half (ahb_ddr3_pclk), which
-    // the top level places beside ddr3_ctl: registers on each side's clock
-    output wire          x_tog,
-    output wire          x_we,
-    output wire [24:0]   x_line,
-    output wire [1:0]    x_dw,
-    output wire [7:0]    x_lanes,
-    output wire [63:0]   x_wd,
+    // the top level places beside ddr3_ctl: registers on each side's clock,
+    // the queue RAM's write port (q_we, q_waddr, q_wdata) on the bus clock
+    output wire          q_we,
+    output wire [3:0]    q_waddr,
+    output wire [99:0]   q_wdata,
+    output wire [4:0]    q_wgray,
+    input  wire [4:0]    q_rgray,
     input  wire          y_tog,
     input  wire [255:0]  y_line,
 
@@ -93,7 +93,8 @@ module ae350_sys #(
     wire [3:0] ram_prot;
 
     wire sd_req;
-    wire sd_write;
+    wire sd_post;
+    wire sd_post_ok;
     wire [29:3] sd_addr;
     wire [7:0] sd_lanes;
     wire [63:0] sd_wdata;
@@ -133,7 +134,8 @@ module ae350_sys #(
         .hresp(ram_resp),
         .stray(ram_stray),
         .sd_req(sd_req),
-        .sd_write(sd_write),
+        .sd_post(sd_post),
+        .sd_post_ok(sd_post_ok),
         .sd_addr(sd_addr),
         .sd_lanes(sd_lanes),
         .sd_wdata(sd_wdata),
@@ -143,10 +145,10 @@ module ae350_sys #(
 
     ahb_ddr3_bus #(.AW(25)) ddr (
         .clk(bus_clk), .resetn(resetn),
-        .req(sd_req), .write(sd_write), .addr(sd_addr), .lanes(sd_lanes),
+        .req(sd_req), .post(sd_post), .post_ok(sd_post_ok), .addr(sd_addr), .lanes(sd_lanes),
         .wdata(sd_wdata), .ack(sd_ack), .rdata(sd_rdata),
-        .x_tog(x_tog), .x_we(x_we), .x_line(x_line), .x_dw(x_dw), .x_lanes(x_lanes),
-        .x_wd(x_wd), .y_tog(y_tog), .y_line(y_line)
+        .q_we(q_we), .q_waddr(q_waddr), .q_wdata(q_wdata), .q_wgray(q_wgray),
+        .q_rgray(q_rgray), .y_tog(y_tog), .y_line(y_line)
     );
 
     // The EXTS window holds the UART's registers at 0xe8000000 and the
