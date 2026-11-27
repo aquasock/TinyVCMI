@@ -29,10 +29,18 @@
 // addresses of the first and last RAM transfers outside the RAM window:
 //   NOBOOT ROM=<count> LAST=<address> RAM=<count> EXT=<count>
 //          RAML=<address> ST=<state> S1=<address> SL=<address>   (one line)
+//
+// A diagnostic for a stopped CPU: if no port accepts a transfer for
+// 2^STALL_BITS bus clocks (about 1.8 s), the same report is forced out even
+// after the CPU owns the UART, headed STALL instead of NOBOOT and with S1
+// and SL replaced: S1 holds the DDR3 path's live state (see stall_state
+// below) and SL the address of the last EXTS transfer. It repeats about once
+// a second while nothing moves.
 module ae350_sys #(
     parameter INIT_FILE = "build/firmware/boot/boot.hex",
     parameter integer UART_DIV2 = 75, // 2 * 75 MHz / 2,000,000 baud
-    parameter integer NOBOOT_BITS = 27
+    parameter integer NOBOOT_BITS = 27,
+    parameter integer STALL_BITS = 27
 ) (
     input  wire          bus_clk,
     input  wire          core_clk,
@@ -92,6 +100,7 @@ module ae350_sys #(
     wire [2:0] ram_burst;
     wire [3:0] ram_prot;
 
+    wire [1:0] ddr_dbg;
     wire sd_req;
     wire sd_post;
     wire sd_post_ok;
@@ -148,7 +157,7 @@ module ae350_sys #(
         .req(sd_req), .post(sd_post), .post_ok(sd_post_ok), .addr(sd_addr), .lanes(sd_lanes),
         .wdata(sd_wdata), .ack(sd_ack), .rdata(sd_rdata),
         .q_we(q_we), .q_waddr(q_waddr), .q_wdata(q_wdata), .q_wgray(q_wgray),
-        .q_rgray(q_rgray), .y_tog(y_tog), .y_line(y_line)
+        .q_rgray(q_rgray), .y_tog(y_tog), .y_line(y_line), .dbg(ddr_dbg)
     );
 
     // The EXTS window holds the UART's registers at 0xe8000000 and the
@@ -193,6 +202,7 @@ module ae350_sys #(
     wire fb_valid;
     wire [7:0] fb_data;
     wire fb_ready;
+    wire fb_force;
     wire cpu_owns;
     exts_uart #(.UART_DIV2(UART_DIV2), .ID_VALUE(32'h54563031)) regs (   // "TV01"
         .clk(bus_clk),
@@ -209,6 +219,7 @@ module ae350_sys #(
         .fb_valid(fb_valid),
         .fb_data(fb_data),
         .fb_ready(fb_ready),
+        .fb_force(fb_force),
         .cpu_owns(cpu_owns),
         .link(),
         .rx_link_valid(),
@@ -334,6 +345,11 @@ module ae350_sys #(
     reg [31:0] stray_first = 32'd0;
     reg [31:0] stray_last = 32'd0;
     reg [15:0] stray_count = 16'd0;
+    reg [31:0] ext_last = 32'd0;
+    reg [STALL_BITS:0] stall_count = 0;
+    wire stalled = stall_count[STALL_BITS];
+    wire moved = (rom_ready && rom_trans[1]) || (ram_ready && ram_trans[1])
+                 || (exts_ready && exts_sel && exts_trans[1]);
     always @(posedge bus_clk) begin
         if (!resetn) begin
             rom_count <= 32'd0;
@@ -346,7 +362,15 @@ module ae350_sys #(
             stray_first <= 32'd0;
             stray_last <= 32'd0;
             stray_count <= 16'd0;
+            ext_last <= 32'd0;
+            stall_count <= 0;
         end else begin
+            if (moved)
+                stall_count <= 0;
+            else if (!stalled)
+                stall_count <= stall_count + 1'b1;
+            if (exts_ready && exts_sel && exts_trans[1])
+                ext_last <= exts_addr;
             if (rom_ready && rom_trans[1]) begin
                 rom_count <= rom_count + 1'b1;
                 rom_last <= rom_addr;
@@ -377,11 +401,22 @@ module ae350_sys #(
                                 rom_ready, ram_ready, ram_resp, exts_ready,
                                 ram_trans, rom_trans, stray_count};
 
+    // S1 in a STALL report: {a zero, RAM sd_req, sd_post, sd_post_ok, sd_ack, the
+    // bridge's b_read and lb_valid, y_tog, video base_tog, base_ack, in_vbl,
+    // enable, EXTS HSEL, HTRANS, HWRITE, the queue's write and read Gray
+    // pointers (5 bits each), RAM HWRITE, RAM HSIZE, the read-back's y_line
+    // bits 1 and 0}.
+    wire [31:0] stall_state = {1'b0, sd_req, sd_post, sd_post_ok, sd_ack, ddr_dbg,
+                               y_tog, vid_base_tog, vid_base_ack, vid_in_vbl,
+                               vid_enable, exts_sel, exts_trans, exts_write,
+                               q_wgray, q_rgray, ram_write, ram_size, y_line[1:0]};
+
     // Hex fields at characters 11, 25, 38, 51, 65, 77, 89 and 101; CR at 109
     // and LF at 110.
     localparam [8*109-1:0] NOBOOT_TEXT =
         {"NOBOOT ROM=........ LAST=........ RAM=........ EXT=........ ",
          "RAML=........ ST=........ S1=........ SL=........"};
+    localparam [8*6-1:0] STALL_TEXT = "STALL:";
     reg [NOBOOT_BITS-1:0] noboot_wait = 0;
     reg noboot_armed = 1'b0;
     reg [6:0] noboot_index = 7'd0;
@@ -393,6 +428,7 @@ module ae350_sys #(
     reg [31:0] line_state = 32'd0;
     reg [31:0] line_e1 = 32'd0;
     reg [31:0] line_el = 32'd0;
+    reg line_stall = 1'b0;
 
     function [7:0] hex_char(input [3:0] value);
         hex_char = (value < 4'd10) ? ("0" + value) : ("a" + value - 4'd10);
@@ -403,7 +439,7 @@ module ae350_sys #(
         hex_field = hex_char(value >> (4 * (first + 7'd7 - index)));
     endfunction
 
-    function [7:0] noboot_char(input [6:0] index);
+    function [7:0] noboot_char(input [6:0] index, input stall);
         if (index >= 7'd11 && index <= 7'd18)
             noboot_char = hex_field(index, 7'd11, line_rom);
         else if (index >= 7'd25 && index <= 7'd32)
@@ -424,12 +460,16 @@ module ae350_sys #(
             noboot_char = 8'h0d;
         else if (index == 7'd110)
             noboot_char = 8'h0a;
+        else if (stall && index <= 7'd5)
+            noboot_char = STALL_TEXT[8 * (7'd5 - index) +: 8];
         else
             noboot_char = NOBOOT_TEXT[8 * (7'd108 - index) +: 8];
     endfunction
 
-    assign fb_valid = noboot_armed && noboot_wait == 0 && !cpu_owns;
-    assign fb_data = noboot_char(noboot_index);
+    // A line once begun is finished; a STALL line begins only while stalled.
+    assign fb_force = stalled || noboot_index != 7'd0;
+    assign fb_valid = noboot_armed && noboot_wait == 0 && (!cpu_owns || fb_force);
+    assign fb_data = noboot_char(noboot_index, noboot_index == 7'd0 ? cpu_owns : line_stall);
 
     always @(posedge bus_clk) begin
         if (!resetn) begin
@@ -444,6 +484,7 @@ module ae350_sys #(
             line_state <= 32'd0;
             line_e1 <= 32'd0;
             line_el <= 32'd0;
+            line_stall <= 1'b0;
         end else if (!noboot_armed) begin
             noboot_wait <= noboot_wait - 1'b1;
             if (noboot_wait == 1)
@@ -458,8 +499,9 @@ module ae350_sys #(
                 line_ext <= ext_count;
                 line_raml <= ram_last;
                 line_state <= noboot_state;
-                line_e1 <= stray_first;
-                line_el <= stray_last;
+                line_e1 <= cpu_owns ? stall_state : stray_first;
+                line_el <= cpu_owns ? ext_last : stray_last;
+                line_stall <= cpu_owns;
             end
             if (noboot_index == 7'd110) begin
                 noboot_index <= 7'd0;

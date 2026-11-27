@@ -299,7 +299,8 @@ module ahb_ddr3_bus #(
     // from it, each a register on PCLK
     input  wire [4:0]    q_rgray,
     input  wire          y_tog,
-    input  wire [255:0]  y_line
+    input  wire [255:0]  y_line,
+    output wire [1:0]    dbg                // {b_read, lb_valid}, for ae350_sys's STALL report
 );
     reg          lb_valid = 1'b0;           // the line buffer
     reg [AW-1:0] lb_tag = {AW{1'b0}};
@@ -319,6 +320,7 @@ module ahb_ddr3_bus #(
     wire [7:0]    s_lanes = q_wdata[71:64];
     wire [63:0]   s_wd = q_wdata[63:0];
 
+    assign dbg = {b_read, lb_valid};
     wire rd_go = req && !ack && !b_read && !q_we;
     wire full;
     wire rd_push = rd_go && !hit && !full;

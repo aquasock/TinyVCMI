@@ -31,7 +31,8 @@
 //
 // Until the CPU writes its first byte or CTRL, fabric may transmit through
 // the fallback input instead (fb_valid, fb_data, fb_ready); after it, only
-// the CPU does. cpu_owns reports which.
+// the CPU does. cpu_owns reports which. fb_force lets the fallback in
+// after that too, for a diagnostic report when the CPU has stopped.
 //
 // In loader mode, the mode after reset, the CPU's bytes go to the pin and
 // received bytes to the receive buffer. In link mode (desk_link.sv) the
@@ -62,6 +63,7 @@ module exts_uart #(
     input  wire        fb_valid,
     input  wire [7:0]  fb_data,
     output wire        fb_ready,
+    input  wire        fb_force,
     output reg         cpu_owns,
     output reg         link,
     output reg         rx_link_valid,
@@ -144,7 +146,7 @@ module exts_uart #(
     end
 
     assign tx = tx_idle ? 1'b1 : tx_shift[0];
-    assign fb_ready = !cpu_owns && !hold_full;
+    assign fb_ready = (!cpu_owns || fb_force) && !hold_full;
     // A CPU byte waiting in its data phase: to the link in link mode, else
     // to the holding register, which the link's frames then wait for.
     wire cpu_tx = pending && target == REG_TX && DROP_CPU_TX == 0;

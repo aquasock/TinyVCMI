@@ -1031,3 +1031,37 @@ Find the `video_test` hang before anything else: add a fabric watchdog to `ae350
 - User Test: NOT RUN
 
 ---
+
+## 31 COMMIT Unreleased 2026-11-27T09:41:57-07:00
+
+#### Coming From:
+
+Unreleased 270f3b8
+
+#### Purpose:
+
+Find where entry 30's `video_test` hang stops the A25 by adding a fabric stall watchdog, and record the hang as a known issue that the user chose to defer.
+
+#### Outcome:
+
+The watchdog works and has located the hang, which remains unfixed and is deferred by the user's decision, so the bridge must still not be released. `fpga/ae350_ddr3/ae350_sys.sv` now counts `bus_clk` cycles in which any AHB port holds HREADY low with a transfer open (`STALL_BITS` 27, 2^27 cycles, about 1.6 s at 82 MHz) and, when one is stuck, forces the existing NOBOOT report out of the UART under a `STALL:` header (`noboot_char` takes the stall flag so the header no longer garbles), with S1 replaced by a 32-bit `stall_state` (a zero, the RAM handshake `sd_req`, `sd_post`, `sd_post_ok` and `sd_ack`, the bridge's `b_read` and `lb_valid`, `y_tog`, the video flip handshake, the EXTS port, both queue Gray pointers, RAM HWRITE and HSIZE and two `y_line` bits) and SL by the last address the RAM port took; `exts_uart.sv` gains `fb_force` so the report can leave while the CPU owns the UART, and `ahb_ddr3.v` exports `{b_read, lb_valid}` as `dbg`. A stub bench confirmed the report appears only after the stub stops, `tools/sim_ae350_ddr3.sh` passed with every mutant failing as required, and `tools/ddr3_write.py --check` was current. The twelve-seed sweep `build/ae350/w1` closed every clock on seeds 10 (`pclk` 104.62, `bus_clk` 81.81 MHz) and 3 (102.08, 78.99) with all tables equal; w1 seed 10 (`ctrl.fs` sha256 `dc9fba10907a6a65...`) and q2 seed 2 were run on the board, both training `error 0`, `d 1 b 2`. The new reproducer `firmware/apps/vid_probe` is `video_test` with a 100 ms flip timeout, and the session script that power-cycles the Tang through the user's relay, loads an image and runs it showed the earlier link to `write_depth`, `write_cost` and `ddr3_test` was false: hangs followed a bare load too. Every hang this cycle stopped after `VIDEO on`, in the first `restore()` of page 1 at `0x7f400000`, on a box-area address (`0x7f498b60` three times, `0x7f493a00` once), and the STALL report showed the RAM port mid-burst on a 64-bit SEQ read with `sd_req` set and `sd_ack` clear, `b_read` and `lb_valid` set, the queue drained (write and read pointers equal) and the flip acknowledged, so the read was handed to the `pclk` half and its reply never came back through `ahb_ddr3_pclk`, `ddr3_arb` and `ddr3_ctl`. The working hypothesis, untested because the `pclk` side is not tapped, is a dropped or extra `rdata_valid` that desynchronises `ddr3_arb`'s read tag FIFO, which would also explain what the user saw on HDMI: on hung runs a white screen with yellow vertical lines that differ between hangs instead of the test screen, and after a cold start columns of corrupt pixels raining down in the first run, static in the second and gone afterwards. The hang clusters in roughly the first hour after the board has been off a long time: in the q2 seed 2 power-cycle runs four of the first five hung and the next eleven passed, and after a 30-minute cool-down by the user two runs passed, then four of the next nine hung and the last five passed, with the same ELFs, bitstreams and training throughout, so warming is suspected but not proven. The USB capture device on `/dev/video0` shows the TangCore splash but not our 720p output, so it gave no evidence. The user reported the hang and screen corruption and, considering that the Tang is a heavily used development unit, decided to log the issue and carry on, expecting it to recur where it can be addressed. The board was left on w1 seed 10 after a passing run. `.ai/core.md` was not changed. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering and the active log's 31 of 100 entries.
+
+#### Next Steps:
+
+Carry on with the user's next work on w1 seed 10, treating the lost DDR3 read as a known issue: a hang or corrupt video after a cold start is this fault, not a new one, and should be noted against it. When it is taken up, extend the STALL report with `pclk`-side taps (`p_read`, `ddr3_arb`'s tag pointers, `x_valid` and `x_ready`, `v_slot`, `vid_fetch`'s `flight`, and sticky flags for a read word returned with no read open on either the CPU or the video side), sweep, reproduce with `vid_probe` after a long power-off, and stress the CPU and video read overlap in simulation with a randomised refresh phase; after a fix, add a regression to the gates, repeat entry 30's board measurements cold, rewrite `docs/ahb-bridge-design.md`, revise AE350-009 and AE350-010, and ask the user to test. Entry 29's waiting items stand.
+
+#### Files Modified:
+
+- firmware/apps/vid_probe/Makefile
+- firmware/apps/vid_probe/main.c
+- fpga/ae350_ddr3/ae350_sys.sv
+- fpga/ae350_ddr3/ahb_ddr3.v
+- fpga/ae350_ddr3/exts_uart.sv
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: FAIL
+
+---
