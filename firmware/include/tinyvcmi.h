@@ -52,19 +52,25 @@
 #define TV_VIDEO_BASE  0x7f000000u /* 16 MiB below the block RAM */
 
 /* Read-latency counters (fpga/ae350_ddr3/exts_perf.sv, ddr3_perf.v), read
- * only, counting from reset and wrapping; see exts_perf.sv for each word.
- * TV_PERF_SNAP(0..7) is ddr3_perf's PCLK snapshot, renewed about every
- * 10 us; it is one snapshot while TV_PERF_NSNAP holds still. */
+ * only but for TV_PERF_PF_DEPTH, counting from reset and wrapping; see
+ * exts_perf.sv for each word.  TV_PERF_SNAP(0..7) and TV_PERF_SNAP_HI(8..11)
+ * are ddr3_perf's PCLK snapshot, renewed about every 10 us; it is one
+ * snapshot while TV_PERF_NSNAP holds still. */
 #define TV_PERF_REG(offset) (*(volatile uint32_t *)(0xe8020000u + (offset)))
 #define TV_PERF_ID      TV_PERF_REG(0x00) /* TV_PERF_ID_VALUE */
 #define TV_PERF_BUSCLK  TV_PERF_REG(0x04) /* bus clocks */
 #define TV_PERF_BEATS   TV_PERF_REG(0x08) /* DDR3 read beats ahb_ram took */
 #define TV_PERF_BEAT_T  TV_PERF_REG(0x0c) /* bus clocks those beats waited */
-#define TV_PERF_MISSES  TV_PERF_REG(0x10) /* beats the line buffer missed */
-#define TV_PERF_MISS_T  TV_PERF_REG(0x14) /* bus clocks those misses took */
+#define TV_PERF_MISSES  TV_PERF_REG(0x10) /* demand reads the bridge queued */
+#define TV_PERF_MISS_T  TV_PERF_REG(0x14) /* bus clocks it waited on DDR3 for a beat */
 #define TV_PERF_STALL_T TV_PERF_REG(0x18) /* bus clocks the RAM port held HREADY low */
 #define TV_PERF_NSNAP   TV_PERF_REG(0x1c) /* PCLK snapshots taken */
 #define TV_PERF_SNAP(n) TV_PERF_REG(0x20 + 4 * (n))
+#define TV_PERF_PF_DEPTH TV_PERF_REG(0x40) /* read/write: lines read ahead, 0 to 3 */
+#define TV_PERF_PF      TV_PERF_REG(0x44) /* prefetches the bridge queued */
+#define TV_PERF_PFHIT   TV_PERF_REG(0x48) /* lookups a prefetched line served */
+#define TV_PERF_IDLE_T  TV_PERF_REG(0x4c) /* bus clocks the RAM port was idle */
+#define TV_PERF_SNAP_HI(n) TV_PERF_REG(0x50 + 4 * ((n) - 8)) /* words 8 to 11 */
 #define TV_PERF_ID_VALUE 0x54565031u /* "TVP1" */
 
 #define TV_UART_BAUD 2000000u

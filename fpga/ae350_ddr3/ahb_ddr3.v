@@ -11,14 +11,12 @@
 //
 //   A read raises req in its data phase, with addr steady, until ack; rdata
 //   is valid while ack is high, and ahb_ram registers it into HRDATA at
-//   that edge.  ack and rdata come from registers through logic, so a line
-//   reaches HRDATA in the clock it arrives.  Nothing is posted while a read
-//   is open.
+//   that edge.  Nothing is posted while a read is open.
 //
 //   A read that continues a burst in the line of the read before it is
-//   answered in its address phase with no wait state: l_hit says the line
-//   buffer holds the line of addr, the read before it, and l_data is the
-//   doubleword l_dw of the buffer, registered into HRDATA at the edge the
+//   answered in its address phase with no wait state: l_hit says the
+//   current line register holds the line of addr, the read before it, and
+//   l_data is its doubleword l_dw, registered into HRDATA at the edge the
 //   read is accepted.  ahb_ram decides from HTRANS, HBURST, HSIZE and
 //   HADDR[4:0] whether a read is in its predecessor's line, so no address
 //   compare sits on the AE350's HADDR.
@@ -38,40 +36,68 @@
 // other byte of the line masked; up to 16 can be queued, so the A25 stores
 // at the bus clock's pace while PCLK drains them.
 //
-// The last line read is held in a one-line buffer, so a cache-line fill's
-// four doublewords cost one DDR3 read: the first misses and waits for the
-// line, the other three are answered from the buffer with no wait state.
-// A write is merged into the buffer as it leaves the queue's staging
-// register, if it hits the buffered line, so the buffer never holds stale
-// data: the A25 is the RAM port's only master.  A read in its data phase
-// waits while the staging register holds anything, so it never sees the
-// buffer before a write ahead of it is merged; a read answered in its
-// address phase follows a read of its own burst, so no write is in the
-// queue's staging register or in its data phase then (checked in
-// simulation).
+// Reads land in four line ways, so up to four can be in flight.  Each way
+// has a tag and is valid (its line is here), pending (its read is queued or
+// in flight) or neither; a pending way may also be poisoned.  The ways'
+// data lives on the PCLK side, one 256-bit slot each in a LUT RAM: reads
+// are queued in way order (rr, round robin) and come back in queue order, so
+// the PCLK side fills the slots in the same order (p_way) and toggles the
+// way's r_tog, which the bus side sees through two flops.  A way is taken
+// again only once its line is back, so a slot holds still from its toggle
+// until its way is next queued.  The bus side reads the RAM asynchronously
+// at r_way, its register d_way, so the way select is the RAM's own read
+// mux rather than a 4:1 mux of 1024 flops.
+//
+// A read in its data phase is looked up in the clock after its req rises
+// (or once no write is in the queue's staging register): if the current
+// line register (cl) holds its line, it is answered then, as stage 1's
+// line buffer did; if a way holds the line or has it pending, it waits on
+// that way (WAIT), and is answered from the way's slot in the clock its
+// line is there; otherwise it queues a read into way rr in the clock after
+// (MISS), once that way's own read is back and the queue has room, and
+// waits on it.  Answering from a way copies the line into cl, so the
+// burst's further beats are answered with no wait state.
+//
+// Every lookup also starts a prefetch of the next pf_depth lines (0 to 3, a
+// register in exts_perf): in clocks with no lookup, no demand read to queue
+// and no post, while post_ok promises room, each next line not already in a
+// way, valid or pending, is queued into way rr, one every two clocks, never
+// into the way a read waits on.  post_ok's promise holds: a prefetch takes
+// a slot only in a clock no write is posted, and post_ok is renewed from
+// the pointers after it.
+//
+// A write leaves every way and cl right as it reaches the queue's staging
+// register: cl, and any valid way with its line, become invalid; a pending
+// way with its line is poisoned, since its read was queued ahead of the
+// write and will bring the old data, and becomes invalid, not valid, when
+// that line comes back.  No way is queued in a clock a write is in the
+// staging register, and a lookup waits while one is, so a read never sees
+// a line older than a write ahead of it.  The A25 is the RAM port's only
+// master.
 //
 // The bus clock and PCLK come from different PLLs.  The queue is an
 // asynchronous FIFO with Gray-coded pointers (xfifo_w, xfifo_r); its LUT
 // RAM is written on the bus clock from registers and read asynchronously on
 // PCLK, which reads an entry only after its write pointer has come through
-// two flops.  A read's line comes back the old way: the PCLK side copies it
-// into y_line and toggles y_tog, the bus side sees y_tog through two flops,
-// and y_line then holds still until the next read is answered.
+// two flops.  A read's line comes back the old way, by toggle and steady
+// data (r_tog and the slots, above).
 //
 // The two halves are modules of their own, ahb_ddr3_bus and ahb_ddr3_pclk,
 // so the AE350 image can place each beside its own side: the bus half near
 // the AE350 macro, the PCLK half and the queue's RAM near ddr3_ctl, with
 // only registers between them.  ahb_ddr3 joins them, for the bench.
 //
-// A reset of one side alone desynchronises the pointers; both sides are
-// reset together at the hand-over and neither is reset after it.
+// A reset of one side alone desynchronises the pointers and the ways; both
+// sides are reset together at the hand-over and neither is reset after it.
 //
 // Simulation-only: MUT_MASK masks the lanes of the doubleword after the
-// written one, MUT_NOMERGE leaves the buffer unmerged on a write hit,
-// MUT_FULL lets xfifo_w promise room one entry late, and MUT_BYPASS lets
-// xfifo_r hand a read out ahead of the write before it; the benches must
-// fail each.  XFIFO_NOCHECK, and SYNTHESIS, leave out the queue's own
-// checks, so tb_xfifo.v must catch its mutants by the data alone.
+// written one, MUT_NOINVAL leaves a valid way valid on a write to its line,
+// MUT_NOPOISON leaves a pending way unpoisoned, MUT_CLKEEP leaves cl valid
+// on a write, MUT_FULL lets xfifo_w promise room one entry late, and
+// MUT_BYPASS lets xfifo_r hand a read out ahead of the write before it; the
+// benches must fail each.  XFIFO_NOCHECK, and SYNTHESIS, leave out the
+// queue's own checks, so tb_xfifo.v must catch its mutants by the data
+// alone.
 module ahb_ddr3 #(
     parameter integer AW = 25           // line address bits: 1 GiB
 ) (
@@ -89,6 +115,7 @@ module ahb_ddr3 #(
     input  wire [63:0]   wdata,
     output wire          ack,
     output wire [63:0]   rdata,
+    input  wire [1:0]    pf_depth,
 
     // the PCLK side, to ddr3_ctl's request port
     input  wire          pclk,
@@ -103,21 +130,23 @@ module ahb_ddr3 #(
     input  wire [255:0]  rdata_line
 );
     localparam integer W = AW + 75;
-    wire          q_we, y_tog;
-    wire [3:0]    q_waddr;
+    wire          q_we;
+    wire [3:0]    q_waddr, r_tog;
     wire [W-1:0]  q_wdata;
     wire [4:0]    q_wgray, q_rgray;
-    wire [255:0]  y_line;
+    wire [1:0]    r_way;
+    wire [255:0]  r_slot;
     ahb_ddr3_bus #(.AW(AW)) bus (
         .clk(clk), .resetn(resetn), .l_dw(l_dw), .l_hit(l_hit), .l_data(l_data),
         .req(req), .post(post), .post_ok(post_ok), .addr(addr),
-        .lanes(lanes), .wdata(wdata), .ack(ack), .rdata(rdata),
+        .lanes(lanes), .wdata(wdata), .ack(ack), .rdata(rdata), .pf_depth(pf_depth),
         .q_we(q_we), .q_waddr(q_waddr), .q_wdata(q_wdata), .q_wgray(q_wgray),
-        .q_rgray(q_rgray), .y_tog(y_tog), .y_line(y_line));
+        .q_rgray(q_rgray), .r_tog(r_tog), .r_way(r_way), .r_slot(r_slot),
+        .dbg(), .p_miss(), .p_wait(), .p_pf(), .p_pfhit());
     ahb_ddr3_pclk #(.AW(AW)) pside (
         .bus_clk(clk), .pclk(pclk), .prst(prst),
         .q_we(q_we), .q_waddr(q_waddr), .q_wdata(q_wdata), .q_wgray(q_wgray),
-        .q_rgray(q_rgray), .y_tog(y_tog), .y_line(y_line),
+        .q_rgray(q_rgray), .r_tog(r_tog), .r_way(r_way), .r_slot(r_slot), .p_open(),
         .cmd_valid(cmd_valid), .cmd_ready(cmd_ready), .cmd_we(cmd_we), .cmd_addr(cmd_addr),
         .cmd_wdata(cmd_wdata), .cmd_wmask(cmd_wmask), .rdata_valid(rdata_valid),
         .rdata_line(rdata_line));
@@ -160,7 +189,7 @@ module xfifo_w #(
     wire [LOG2:0] rbin_seen = gray2bin(rq2);
     wire [LOG2:0] used_now = wbin - rbin_seen;
     // the flags both ways, before push is known, so push only selects:
-    // it comes late, from ahb_ddr3_bus's line buffer compare
+    // it comes late, from ahb_ddr3_bus's prefetch and room logic
     wire          full_hold = used_now >= DEPTH + SLACK;
     wire          full_push = used_now >= DEPTH + SLACK - 1;
     wire          room_hold = used_now <= DEPTH - LEAD + SLACK;
@@ -294,14 +323,14 @@ module xfifo_r #(
 `endif
 endmodule
 
-// the bus clock half: the line buffer and the queue's write side
+// the bus clock half: the ways' state, cl, prefetch and the queue's write side
 module ahb_ddr3_bus #(
     parameter integer AW = 25
 ) (
     input  wire          clk,
     input  wire          resetn,
     // a read in its address phase in the line of addr: its doubleword, and
-    // whether the buffer holds that line
+    // whether cl holds that line
     input  wire [1:0]    l_dw,
     output wire          l_hit,
     output wire [63:0]   l_data,
@@ -314,102 +343,214 @@ module ahb_ddr3_bus #(
     input  wire [63:0]   wdata,
     output wire          ack,
     output wire [63:0]   rdata,
+    input  wire [1:0]    pf_depth,          // lines to prefetch past each lookup
     // to the PCLK half, each a register on the bus clock
     output wire          q_we,
     output wire [3:0]    q_waddr,
     output wire [AW+74:0] q_wdata,
     output wire [4:0]    q_wgray,
-    // from it, each a register on PCLK
+    output wire [1:0]    r_way,             // the slot to read: d_way
+    // from it, each a register on PCLK but r_slot, its RAM read at r_way
     input  wire [4:0]    q_rgray,
-    input  wire          y_tog,
-    input  wire [255:0]  y_line,
-    output wire [1:0]    dbg                // {b_read, lb_valid}, for ae350_sys's STALL report
+    input  wire [3:0]    r_tog,
+    input  wire [255:0]  r_slot,
+    output wire [1:0]    dbg,               // {a read waits, a way is pending}, for the STALL report
+    // one-clock pulses and levels for exts_perf, registered
+    output reg           p_miss = 1'b0,     // a demand read queued
+    output reg           p_wait = 1'b0,     // a read waits on a way (MISS or WAIT)
+    output reg           p_pf = 1'b0,       // a prefetch queued
+    output reg           p_pfhit = 1'b0     // a lookup found a prefetched line
 );
-    reg          lb_valid = 1'b0;           // the line buffer
-    reg [AW-1:0] lb_tag = {AW{1'b0}};
-    reg [255:0]  lb_data = 256'd0;
+    localparam [1:0] IDLE = 2'd0, MISS = 2'd1, WAIT = 2'd2;
+    reg  [1:0]    st = IDLE;
+    reg  [1:0]    d_way = 2'd0;             // the way a read waits on
+    reg  [1:0]    rr = 2'd0;                // the way queued next
 
-    reg          b_read = 1'b0;             // a read is queued, awaiting its line
-    reg [2:0]    y_s = 3'd0;                // y_tog through two flops, and the last
-    wire         y_edge = y_s[2] ^ y_s[1];
+    reg  [3:0]    w_valid = 4'd0, w_pend = 4'd0, w_poison = 4'd0, w_pfb = 4'd0;
+    reg  [4*AW-1:0] w_tag = {(4*AW){1'b0}};   // way k's at [AW*k +: AW]
+    reg  [3:0]    r_s0 = 4'd0, r_s1 = 4'd0, r_s2 = 4'd0;   // r_tog through two flops, and the last
+    wire [3:0]    ret = r_s2 ^ r_s1;        // a way's line is back
+
+    reg           cl_valid = 1'b0;          // the current line
+    reg  [AW-1:0] cl_tag = {AW{1'b0}};
+    reg  [255:0]  cl_data = 256'd0;
+
+    reg  [AW-1:0] pf_line = {AW{1'b0}};     // the next line to prefetch
+    reg  [1:0]    pf_left = 2'd0;           // lines left to prefetch
+    reg           pf_go = 1'b0;             // pf_line is in no way: queue it
 
     wire [AW-1:0] line = addr[AW+4:5];
-    wire          hit = lb_valid && lb_tag == line;
 
     // the staging register, as written to the RAM: {write, line, dw, lanes, data}
     wire          s_we = q_wdata[AW+74];
     wire [AW-1:0] s_line = q_wdata[AW+73:74];
-    wire [1:0]    s_dw = q_wdata[73:72];
-    wire [7:0]    s_lanes = q_wdata[71:64];
-    wire [63:0]   s_wd = q_wdata[63:0];
+    wire          ws = q_we && s_we;
 
-    assign l_hit = hit;
-    assign l_data = lb_data[64*l_dw +: 64];
+    integer k;
+    wire [3:0] t_eq, pf_eq, s_eq;
+    genvar g;
+    generate
+        for (g = 0; g < 4; g = g + 1) begin : way
+            assign t_eq[g] = w_tag[AW*g +: AW] == line;
+            assign pf_eq[g] = w_tag[AW*g +: AW] == pf_line;
+            assign s_eq[g] = w_tag[AW*g +: AW] == s_line;
+        end
+    endgenerate
+    wire [3:0] have = w_valid | (w_pend & ~w_poison);   // the line is here or on its way
+    wire [3:0] m_have = have & t_eq;
+    wire [1:0] m_way = m_have[0] ? 2'd0 : m_have[1] ? 2'd1 : m_have[2] ? 2'd2 : 2'd3;
+    wire       pf_have = |(have & pf_eq);
 
-    assign dbg = {b_read, lb_valid};
+    wire cl_hit = cl_valid && cl_tag == line;
+    assign l_hit = cl_hit;
+    assign l_data = cl_data[64*l_dw +: 64];
+
+    wire look = req && st == IDLE && !ws;
+    wire w_ready = w_valid[d_way] || (ret[d_way] && !w_poison[d_way]);
+    assign ack = (look && cl_hit) || (st == WAIT && w_ready);
+    assign r_way = d_way;
+    assign rdata = st == WAIT ? r_slot[64*addr[4:3] +: 64] : cl_data[64*addr[4:3] +: 64];
+
+    // one push a clock: a post, else a demand read, else a prefetch
     wire full;
-    wire rd_go = req && !b_read && !q_we;
-    wire rd_push = rd_go && !hit && !full;
-    wire push = post || rd_push;
+    wire dm_push = st == MISS && !w_pend[rr] && !full;
+    wire pf_push = pf_go && !look && st != MISS && !ws && !post && post_ok && !w_pend[rr] &&
+                   !(st == WAIT && rr == d_way);
+    wire alloc = dm_push || pf_push;
+    wire [AW-1:0] a_line = pf_push ? pf_line : line;
+    wire push = post || alloc;
     xfifo_w #(.W(AW + 75), .LOG2(4), .LEAD(2)) fw (
         .clk(clk), .rst(!resetn), .push(push),
-        .din({post, line, addr[4:3], lanes, wdata}),
+        .din({post, a_line, addr[4:3], lanes, wdata}),
         .full(full), .room(post_ok),
         .q_we(q_we), .q_waddr(q_waddr), .q_wdata(q_wdata), .q_wgray(q_wgray),
         .q_rgray(q_rgray));
 
-    // the data phase ends in the clock its line arrives, or its buffer hit
-    // is seen; the staging register still holds the read, since nothing is
-    // pushed while it is open
-    assign ack = (b_read && y_edge) || (rd_go && hit);
-    assign rdata = b_read ? y_line[64*s_dw +: 64] : lb_data[64*addr[4:3] +: 64];
-
-    function [255:0] merge(input [255:0] old, input [1:0] dw, input [7:0] ln, input [63:0] wd);
-        integer k;
-        begin
-            merge = old;
-            for (k = 0; k < 8; k = k + 1)
-`ifdef MUT_MASK
-                if (ln[k]) merge[64*((dw + 2'd1) & 2'd3) + 8*k +: 8] = wd[8*k +: 8];
-`else
-                if (ln[k]) merge[64*dw + 8*k +: 8] = wd[8*k +: 8];
-`endif
-        end
-    endfunction
+    assign dbg = {st != IDLE, |w_pend};
 
     always @(posedge clk) begin
         if (!resetn) begin
-            lb_valid <= 1'b0;
-            b_read <= 1'b0;
-            y_s <= 3'd0;
+            st <= IDLE;
+            rr <= 2'd0;
+            w_valid <= 4'd0;
+            w_pend <= 4'd0;
+            w_poison <= 4'd0;
+            w_pfb <= 4'd0;
+            r_s0 <= 4'd0;
+            r_s1 <= 4'd0;
+            r_s2 <= 4'd0;
+            cl_valid <= 1'b0;
+            pf_left <= 2'd0;
+            pf_go <= 1'b0;
+            {p_miss, p_wait, p_pf, p_pfhit} <= 4'd0;
         end else begin
-            y_s <= {y_s[1:0], y_tog};
-            if (b_read && y_edge) begin
-                b_read <= 1'b0;
-                lb_valid <= 1'b1;
-                lb_tag <= s_line;
-                lb_data <= y_line;
-            end
-            if (rd_push)
-                b_read <= 1'b1;
-`ifndef MUT_NOMERGE
-            if (q_we && s_we && lb_valid && lb_tag == s_line)
-                lb_data <= merge(lb_data, s_dw, s_lanes, s_wd);
+            r_s0 <= r_tog;
+            r_s1 <= r_s0;
+            r_s2 <= r_s1;
+            p_miss <= dm_push;
+            p_wait <= st != IDLE;
+            p_pf <= pf_push;
+            p_pfhit <= 1'b0;
+
+            // the ways: a line back, then a write in staging, then a way queued
+            for (k = 0; k < 4; k = k + 1) begin
+                if (ret[k]) begin
+                    w_pend[k] <= 1'b0;
+                    w_valid[k] <= !w_poison[k];
+                    w_poison[k] <= 1'b0;
+                end
+                if (ws && s_eq[k]) begin
+`ifndef MUT_NOINVAL
+                    w_valid[k] <= 1'b0;
 `endif
+`ifndef MUT_NOPOISON
+                    if (w_pend[k] && !ret[k])
+                        w_poison[k] <= 1'b1;
+`endif
+                end
+                if (alloc && rr == k) begin
+                    w_valid[k] <= 1'b0;
+                    w_pend[k] <= 1'b1;
+                    w_poison[k] <= 1'b0;
+                    w_pfb[k] <= pf_push;
+                    w_tag[AW*k +: AW] <= a_line;
+                end
+            end
+            if (alloc)
+                rr <= rr + 1'b1;
+`ifndef MUT_CLKEEP
+            if (ws)
+                cl_valid <= 1'b0;
+`endif
+
+            // the read in its data phase
+            case (st)
+                IDLE:
+                    if (look && !cl_hit) begin
+                        if (|m_have) begin
+                            st <= WAIT;
+                            d_way <= m_way;
+                            if (w_pfb[m_way]) begin
+                                p_pfhit <= 1'b1;
+                                w_pfb[m_way] <= 1'b0;
+                            end
+                        end else
+                            st <= MISS;
+                    end
+                MISS:
+                    if (dm_push) begin
+                        st <= WAIT;
+                        d_way <= rr;
+                    end
+                default:
+                    if (w_ready) begin
+                        st <= IDLE;
+                        cl_valid <= 1'b1;
+                        cl_tag <= line;
+                        cl_data <= r_slot;
+                    end
+            endcase
+
+            // the prefetch: each lookup restarts it past its line
+            if (look) begin
+                pf_line <= line + 1'b1;
+                pf_left <= pf_depth;
+                pf_go <= 1'b0;
+            end else if (pf_push) begin
+                pf_line <= pf_line + 1'b1;
+                pf_left <= pf_left - 1'b1;
+                pf_go <= 1'b0;
+            end else if (!pf_go && pf_left != 2'd0) begin
+                if (pf_have) begin
+                    pf_line <= pf_line + 1'b1;
+                    pf_left <= pf_left - 1'b1;
+                end else
+                    pf_go <= 1'b1;
+            end
         end
     end
 
 `ifndef SYNTHESIS
     always @(posedge clk)
-        if (resetn && post && (req || b_read)) begin
-            $display("FAIL  ahb_ddr3: a write posted while a read was open at t=%0t", $time);
-            $finish;
+        if (resetn) begin
+            if (post && (req || st != IDLE)) begin
+                $display("FAIL  ahb_ddr3: a write posted while a read was open at t=%0t", $time);
+                $finish;
+            end
+            if (|(ret & ~w_pend)) begin
+                $display("FAIL  ahb_ddr3: a line came back to a way with no read open at t=%0t", $time);
+                $finish;
+            end
+            if (st == WAIT && w_poison[d_way]) begin
+                $display("FAIL  ahb_ddr3: a read waits on a poisoned way at t=%0t", $time);
+                $finish;
+            end
         end
 `endif
 endmodule
 
 // the PCLK half: the queue's read side, the request into ddr3_ctl, and the
-// answer back
+// lines back into the ways' slots
 module ahb_ddr3_pclk #(
     parameter integer AW = 25
 ) (
@@ -421,8 +562,10 @@ module ahb_ddr3_pclk #(
     input  wire [AW+74:0] q_wdata,
     input  wire [4:0]    q_wgray,
     output wire [4:0]    q_rgray,
-    output reg           y_tog = 1'b0,
-    output reg  [255:0]  y_line = 256'd0,   // still from y_tog's move until the next read
+    output reg  [3:0]    r_tog = 4'd0,
+    input  wire [1:0]    r_way,             // a bus clock register
+    output wire [255:0]  r_slot,            // slot r_way, still from r_tog[r_way]'s move until that way is queued again
+    output reg  [2:0]    p_open = 3'd0,     // reads taken and not back, for ddr3_perf's tap
     output reg           cmd_valid = 1'b0,
     input  wire          cmd_ready,
     output reg           cmd_we = 1'b0,
@@ -441,36 +584,54 @@ module ahb_ddr3_pclk #(
 
     reg [63:0] cmd_wd = 64'd0;
     assign cmd_wdata = {4{cmd_wd}};
-    reg        p_read = 1'b0;               // a read's line is due
+`ifdef MUT_MASK
+    wire [1:0] m_dw = head[73:72] + 2'd1;
+`else
+    wire [1:0] m_dw = head[73:72];
+`endif
+    reg  [1:0] p_way = 2'd0;                // the slot the next line goes to
+    (* ram_style = "distributed" *) reg [255:0] slot [0:3];
+    always @(posedge pclk)
+        if (!prst && rdata_valid)
+            slot[p_way] <= rdata_line;
+    assign r_slot = slot[r_way];
+
+    // p_open counts from registered strobes, a PCLK late, so this tap adds
+    // nothing to cmd_ready's path
+    wire       rd_take = cmd_valid && cmd_ready && !cmd_we;
+    reg        o_take = 1'b0, o_back = 1'b0;
+    integer k;
     always @(posedge pclk) begin
+        o_take <= !prst && rd_take;
+        o_back <= !prst && rdata_valid;
         if (prst) begin
-            y_tog <= 1'b0;
-            p_read <= 1'b0;
+            r_tog <= 4'd0;
+            p_way <= 2'd0;
+            p_open <= 3'd0;
             cmd_valid <= 1'b0;
         end else begin
-            if (cmd_valid && cmd_ready) begin
+            if (cmd_valid && cmd_ready)
                 cmd_valid <= 1'b0;
-                if (!cmd_we)
-                    p_read <= 1'b1;
-            end
             if (pop) begin
                 cmd_valid <= 1'b1;
                 cmd_we <= head[AW+74];
                 cmd_addr <= head[AW+73:74];
                 cmd_wd <= head[63:0];
-                cmd_wmask <= ~({24'd0, head[71:64]} << (8 * head[73:72]));
+                cmd_wmask <= ~({24'd0, head[71:64]} << (8 * m_dw));
             end
-            if (p_read && rdata_valid) begin
-                p_read <= 1'b0;
-                y_line <= rdata_line;
-                y_tog <= ~y_tog;
+            p_open <= p_open + o_take - o_back;
+            if (rdata_valid) begin
+                for (k = 0; k < 4; k = k + 1)
+                    if (p_way == k)
+                        r_tog[k] <= ~r_tog[k];
+                p_way <= p_way + 1'b1;
             end
         end
     end
 
 `ifndef SYNTHESIS
     always @(posedge pclk)
-        if (!prst && rdata_valid && !p_read)
+        if (!prst && o_back && p_open == 3'd0)
             $fatal(1, "ahb_ddr3: read data arrived with no read open");
 `endif
 endmodule

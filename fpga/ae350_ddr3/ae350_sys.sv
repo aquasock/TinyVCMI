@@ -32,8 +32,10 @@
 //
 // A diagnostic for a stopped CPU: if no port accepts a transfer for
 // 2^STALL_BITS bus clocks (about 1.8 s), the same report is forced out even
-// after the CPU owns the UART, headed STALL instead of NOBOOT and with S1
-// and SL replaced: S1 holds the DDR3 path's live state (see stall_state
+// after the CPU owns the UART, headed STALL instead of NOBOOT and with ST,
+// S1 and SL replaced: ST holds ddr3_perf's snapshot word 11, ddr3_arb's
+// state and the bridge's reads in flight on PCLK as of its last copy (about
+// every 10 us), S1 the DDR3 path's live bus-clock state (see stall_state
 // below) and SL the address of the last EXTS transfer. It repeats about once
 // a second while nothing moves.
 module ae350_sys #(
@@ -51,14 +53,16 @@ module ae350_sys #(
 
     // the DDR3 bridge's crossing to its PCLK half (ahb_ddr3_pclk), which
     // the top level places beside ddr3_ctl: registers on each side's clock,
-    // the queue RAM's write port (q_we, q_waddr, q_wdata) on the bus clock
+    // the queue RAM's write port (q_we, q_waddr, q_wdata) on the bus clock,
+    // and the line slots' LUT RAM read asynchronously at r_way (r_slot)
     output wire          q_we,
     output wire [3:0]    q_waddr,
     output wire [99:0]   q_wdata,
     output wire [4:0]    q_wgray,
     input  wire [4:0]    q_rgray,
-    input  wire          y_tog,
-    input  wire [255:0]  y_line,
+    input  wire [3:0]    r_tog,
+    output wire [1:0]    r_way,
+    input  wire [255:0]  r_slot,
 
     // the video unit's registers (exts_video), to and from its pixel side
     output wire          vid_enable,
@@ -70,7 +74,7 @@ module ae350_sys #(
     input  wire [15:0]   vid_late,
 
     // ddr3_perf's PCLK snapshot, for exts_perf
-    input  wire [255:0]  perf_snap,
+    input  wire [383:0]  perf_snap,
     input  wire          perf_snap_tog
 );
     wire arst_n = pll_locked && run;
@@ -105,6 +109,9 @@ module ae350_sys #(
     wire [3:0] ram_prot;
 
     wire [1:0] ddr_dbg;
+    wire [1:0] pf_depth;
+    wire p_miss, p_wait, p_pf, p_pfhit;
+    wire [31:0] perf_tap;
     wire [1:0] sd_ldw;
     wire sd_lhit;
     wire [63:0] sd_ldata;
@@ -169,12 +176,13 @@ module ae350_sys #(
         .req(sd_req), .post(sd_post), .post_ok(sd_post_ok), .addr(sd_addr), .lanes(sd_lanes),
         .wdata(sd_wdata), .ack(sd_ack), .rdata(sd_rdata),
         .q_we(q_we), .q_waddr(q_waddr), .q_wdata(q_wdata), .q_wgray(q_wgray),
-        .q_rgray(q_rgray), .y_tog(y_tog), .y_line(y_line), .dbg(ddr_dbg)
+        .q_rgray(q_rgray), .r_tog(r_tog), .r_way(r_way), .r_slot(r_slot), .pf_depth(pf_depth), .dbg(ddr_dbg),
+        .p_miss(p_miss), .p_wait(p_wait), .p_pf(p_pf), .p_pfhit(p_pfhit)
     );
 
     // The EXTS window holds the UART's registers at 0xe8000000, the video
-    // unit's at 0xe8010000 (exts_video) and the read-latency counters at
-    // 0xe8020000 (exts_perf); TinyNES's link, pads and
+    // unit's at 0xe8010000 (exts_video) and the read-latency counters and
+    // the bridge's prefetch depth at 0xe8020000 (exts_perf); TinyNES's link, pads and
     // audio are not here, so the link's inputs are idle.  Each slave drives
     // its own hready and hresp, which are combined, and the read data is
     // that of the slave the last transfer went to, as TinyNES chooses it.
@@ -203,15 +211,22 @@ module ae350_sys #(
         .htrans(exts_trans),
         .hsel(exts_sel && perf_hit),
         .hwrite(exts_write),
+        .hwdata(exts_wdata),
         .hready_in(exts_ready),
         .hrdata(perf_rdata),
         .hready(perf_ready),
         .hresp(perf_resp),
         .sd_req(sd_req),
-        .b_read(ddr_dbg[1]),
+        .p_miss(p_miss),
+        .p_wait(p_wait),
+        .p_pf(p_pf),
+        .p_pfhit(p_pfhit),
         .ram_ready(ram_ready),
+        .ram_trans(ram_trans),
         .snap(perf_snap),
-        .snap_tog(perf_snap_tog)
+        .snap_tog(perf_snap_tog),
+        .pf_depth(pf_depth),
+        .tap(perf_tap)
     );
 
     exts_video video_regs (
@@ -429,23 +444,27 @@ module ae350_sys #(
         end
     end
 
-    // ST: the last stray transfer's {HPROT[0], HBURST} (HPROT[0] is 0 for an
-    // instruction fetch) and {HWRITE, HSIZE}, then the live
-    // {ROM HREADY, RAM HREADY, RAM HRESP, EXTS HREADY} and {RAM HTRANS,
-    // ROM HTRANS}, then the number of stray transfers (16 bits).
+    // ST in a NOBOOT report: the last stray transfer's {HPROT[0], HBURST}
+    // (HPROT[0] is 0 for an instruction fetch) and {HWRITE, HSIZE}, then the
+    // live {ROM HREADY, RAM HREADY, RAM HRESP, EXTS HREADY} and {RAM HTRANS,
+    // ROM HTRANS}, then the number of stray transfers (16 bits).  In a STALL
+    // report, exts_perf's tap: {ddr3_arb's c_err, v_err, x_vid, v_slot,
+    // x_valid, x_ready, CPU and video reads in flight (6 bits each), tag
+    // write and read pointers (5 bits each), the bridge's PCLK reads in
+    // flight (3 bits), a zero}.
     wire [31:0] noboot_state = {stray_info,
                                 rom_ready, ram_ready, ram_resp, exts_ready,
                                 ram_trans, rom_trans, stray_count};
 
-    // S1 in a STALL report: {a zero, RAM sd_req, sd_post, sd_post_ok, sd_ack, the
-    // bridge's b_read and lb_valid, y_tog, video base_tog, base_ack, in_vbl,
-    // enable, EXTS HSEL, HTRANS, HWRITE, the queue's write and read Gray
-    // pointers (5 bits each), RAM HWRITE, RAM HSIZE, the read-back's y_line
-    // bits 1 and 0}.
-    wire [31:0] stall_state = {1'b0, sd_req, sd_post, sd_post_ok, sd_ack, ddr_dbg,
-                               y_tog, vid_base_tog, vid_base_ack, vid_in_vbl,
+    // S1 in a STALL report: {RAM sd_req, sd_post, sd_post_ok, sd_ack, the
+    // bridge's busy (not idle) and any way pending, video base_tog,
+    // base_ack, in_vbl, enable, EXTS HSEL, HTRANS, HWRITE, the queue's write
+    // and read Gray pointers (5 bits each), RAM HWRITE, RAM HSIZE, the
+    // read-back's four way toggles}.
+    wire [31:0] stall_state = {sd_req, sd_post, sd_post_ok, sd_ack, ddr_dbg,
+                               vid_base_tog, vid_base_ack, vid_in_vbl,
                                vid_enable, exts_sel, exts_trans, exts_write,
-                               q_wgray, q_rgray, ram_write, ram_size, y_line[1:0]};
+                               q_wgray, q_rgray, ram_write, ram_size, r_tog};
 
     // Hex fields at characters 11, 25, 38, 51, 65, 77, 89 and 101; CR at 109
     // and LF at 110.
@@ -534,7 +553,7 @@ module ae350_sys #(
                 line_ram <= ram_count;
                 line_ext <= ext_count;
                 line_raml <= ram_last;
-                line_state <= noboot_state;
+                line_state <= cpu_owns ? perf_tap : noboot_state;
                 line_e1 <= cpu_owns ? stall_state : stray_first;
                 line_el <= cpu_owns ? ext_last : stray_last;
                 line_stall <= cpu_owns;

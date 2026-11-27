@@ -127,11 +127,15 @@ module top (
         pix_rs <= {pix_rs[1:0], !hdmi_lock};
     wire pix_rst = pix_rs[2];
     wire core_rx, core_tx, soc_tx, cpu_run, x_rst;
-    wire q_we, y_tog;                           // ahb_ddr3's crossing
+    wire q_we;                                  // ahb_ddr3's crossing
     wire [3:0] q_waddr;
     wire [99:0] q_wdata;
     wire [4:0] q_wgray, q_rgray;
-    wire [255:0] y_line;
+    wire [3:0] r_tog;
+    wire [1:0] r_way;
+    wire [255:0] r_slot;
+    wire [2:0] p_open;                          // the bridge's PCLK reads in flight
+    wire [27:0] arb_dbg;                        // ddr3_arb's state, for ddr3_perf
     wire x_valid, x_ready, x_we, x_rvalid;
     wire [24:0] x_addr;
     wire [255:0] x_wdata, x_rdata;
@@ -151,7 +155,7 @@ module top (
     wire [3:0] f_wg, f_rg;
     wire [23:0] vid_rgb;
     wire vid_de, vid_hs, vid_vs;
-    wire [255:0] perf_snap;                     // ddr3_perf's counters, for exts_perf
+    wire [383:0] perf_snap;                     // ddr3_perf's counters, for exts_perf
     wire perf_snap_tog;
     assign core_rx = cpu_run ? 1'b1 : uart_rx;
     assign uart_tx = cpu_run ? soc_tx : core_tx;
@@ -1218,14 +1222,14 @@ module top (
         .bus_clk(bus_clk), .core_clk(core_clk), .pll_locked(cpu_lock), .run(cpu_run),
         .uart_tx(soc_tx), .uart_rx(cpu_run ? uart_rx : 1'b1),
         .q_we(q_we), .q_waddr(q_waddr), .q_wdata(q_wdata), .q_wgray(q_wgray),
-        .q_rgray(q_rgray), .y_tog(y_tog), .y_line(y_line),
+        .q_rgray(q_rgray), .r_tog(r_tog), .r_way(r_way), .r_slot(r_slot),
         .vid_enable(vid_enable), .vid_base(vid_base), .vid_base_tog(vid_base_tog),
         .vid_base_ack(vid_base_ack), .vid_vbl_tog(vid_vbl_tog), .vid_in_vbl(vid_in_vbl),
         .vid_late(vid_late), .perf_snap(perf_snap), .perf_snap_tog(perf_snap_tog));
     ahb_ddr3_pclk #(.AW(25)) xport (
         .bus_clk(bus_clk), .pclk(pclk), .prst(x_rst),
         .q_we(q_we), .q_waddr(q_waddr), .q_wdata(q_wdata), .q_wgray(q_wgray),
-        .q_rgray(q_rgray), .y_tog(y_tog), .y_line(y_line),
+        .q_rgray(q_rgray), .r_tog(r_tog), .r_way(r_way), .r_slot(r_slot), .p_open(p_open),
         .cmd_valid(c_valid), .cmd_ready(c_ready), .cmd_we(c_we), .cmd_addr(c_addr),
         .cmd_wdata(c_wdata), .cmd_wmask(c_wmask), .rdata_valid(c_rvalid), .rdata_line(a_rdata));
     // the video fetcher before the CPU onto ctrl_glue's CPU port
@@ -1235,13 +1239,15 @@ module top (
         .c_valid(c_valid), .c_ready(c_ready), .c_we(c_we), .c_addr(c_addr),
         .c_wdata(c_wdata), .c_wmask(c_wmask), .c_rvalid(c_rvalid), .rdata(a_rdata),
         .x_valid(x_valid), .x_ready(x_ready), .x_we(x_we), .x_addr(x_addr),
-        .x_wdata(x_wdata), .x_wmask(x_wmask), .x_rvalid(x_rvalid), .x_rdata(x_rdata));
+        .x_wdata(x_wdata), .x_wmask(x_wmask), .x_rvalid(x_rvalid), .x_rdata(x_rdata),
+        .dbg(arb_dbg));
     // read-latency counters on both sides of the arbiter, for exts_perf
     ddr3_perf perf (
         .pclk(pclk), .rst(x_rst),
         .c_valid(c_valid), .c_ready(c_ready), .c_we(c_we), .c_rvalid(c_rvalid),
         .x_valid(x_valid), .x_ready(x_ready), .x_we(x_we), .x_rvalid(x_rvalid),
-        .rd_load(ctrl_rd), .snap(perf_snap), .snap_tog(perf_snap_tog));
+        .rd_load(ctrl_rd), .v_valid(v_valid), .v_ready(v_ready), .v_rvalid(v_rvalid),
+        .arb_dbg(arb_dbg), .p_open(p_open), .snap(perf_snap), .snap_tog(perf_snap_tog));
     // 1280x720 from the DDR3: the fetcher on PCLK, the raster on pix_clk
     vid_fetch vfetch (
         .pclk(pclk), .rst(x_rst), .req_tog(req_tog), .req_addr(req_addr),

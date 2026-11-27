@@ -4,21 +4,26 @@
  *
  * Core-log entry 30 measured a cached read at 477 A25 cycles a 32-byte line,
  * about 640 ns and 50 MB/s, against 51.5 cycles a line for the write-back.
- * The read is latency-bound: one line miss at a time, each a round trip. This
- * bench reads the counters of fpga/ae350_ddr3/exts_perf.sv (bus clock) and
- * ddr3_perf.v (PCLK) around each pass and splits that round trip:
+ * The read was latency-bound: one line miss at a time, each a round trip.
+ * The bridge now reads up to three lines ahead of each lookup (its prefetch
+ * depth, exts_perf's PF_DEPTH).  This bench runs each pass at depths 0 to 3,
+ * reading the counters of fpga/ae350_ddr3/exts_perf.sv (bus clock) and
+ * ddr3_perf.v (PCLK) around it:
  *
  *   port wait     bus clocks the RAM port held HREADY low, per line: the part
  *                 of the line's time the fabric owns; the rest is the A25's
  *                 and the AE350's own
- *   miss          bus clocks from a line-buffer miss queued to its line back
- *                 (the bridge's b_read), per miss: both crossings and the
- *                 PCLK side
- *   hit beat      bus clocks a beat the line buffer answers waits, per beat
+ *   port idle     bus clocks the RAM port had no transfer, per line: the
+ *                 AE350's own time between beats
+ *   DDR3 wait     bus clocks the bridge waited on a line from the DDR3 to
+ *                 answer a beat, per line, and per demand miss
+ *   hit beat      bus clocks a beat answered without a demand read waits
+ *   prefetch      lines read ahead, and lookups one of them served, per line
  *   PCLK side     per CPU read: the arbiter's wait, then from taken to the
  *                 word back; within that, from ddr3_ctl taking it to its READ
  *                 in the PHY (queueing, ACTIVATE, PRECHARGE, refresh) and
- *                 from the READ to the word back (the fixed read latency)
+ *                 from the READ to the word back (the fixed read latency).
+ *                 Timed one read at a time, so shown at depth 0 only
  *
  * Passes, each over the same 115,200 lines (3.6 MiB):
  *
@@ -30,7 +35,9 @@
  *
  * The video unit is off: ddr3_perf times one read at a time and is right only
  * while the CPU's reads are the only ones. Clock rates are measured against
- * the A25's mcycle, not assumed.
+ * the A25's mcycle, not assumed.  The depth is left at 2, its reset value.
+ * Each pass also prints ddr3_perf's video and CPU word counts and its tap
+ * (ddr3_arb's state and the bridge's PCLK reads in flight).
  *
  * Run it with: tools/load_ae350.py build/firmware/apps/rd_lat/rd_lat.elf
  */
@@ -47,8 +54,10 @@
 static uint32_t *const base = (uint32_t *)(TV_VIDEO_BASE + (4u << 20));
 static volatile uint32_t checksum;
 
-enum { B_CLK, B_BEATS, B_BEAT_T, B_MISSES, B_MISS_T, B_STALL_T, B_N };
-enum { P_RD, P_WR, P_WAIT, P_OPEN, P_ISSUE, P_DATA, P_MAX, P_PCLK, P_N };
+enum { B_CLK, B_BEATS, B_BEAT_T, B_MISSES, B_MISS_T, B_STALL_T, B_LO };
+enum { B_PF = B_LO, B_PFHIT, B_IDLE_T, B_N };
+enum { P_RD, P_WR, P_WAIT, P_OPEN, P_ISSUE, P_DATA, P_MAX, P_PCLK,
+       P_VRD, P_VRET, P_CRET, P_TAP, P_N };
 
 struct counts {
 	uint64_t cyc;
@@ -67,11 +76,15 @@ static void take(struct counts *c)
 		;
 	do {
 		n = TV_PERF_NSNAP;
-		for (int i = 0; i < P_N; i++)
+		for (int i = 0; i < P_VRD; i++)
 			c->pclk[i] = TV_PERF_SNAP(i);
+		for (int i = P_VRD; i < P_N; i++)
+			c->pclk[i] = TV_PERF_SNAP_HI(i);
 		c->cyc = tv_cycles64();
-		for (int i = 0; i < B_N; i++)
+		for (int i = 0; i < B_LO; i++)
 			c->bus[i] = TV_PERF_REG(0x04 + 4 * i);
+		for (int i = B_LO; i < B_N; i++)
+			c->bus[i] = TV_PERF_REG(0x44 + 4 * (i - B_LO));
 	} while (TV_PERF_NSNAP != n);
 }
 
@@ -82,7 +95,8 @@ static void diff(struct counts *d, const struct counts *a, const struct counts *
 		d->bus[i] = b->bus[i] - a->bus[i];
 	for (int i = 0; i < P_N; i++)
 		d->pclk[i] = b->pclk[i] - a->pclk[i];
-	d->pclk[P_MAX] = b->pclk[P_MAX]; /* not a count */
+	d->pclk[P_MAX] = b->pclk[P_MAX]; /* not counts */
+	d->pclk[P_TAP] = b->pclk[P_TAP];
 }
 
 static void x10(uint64_t v)
@@ -115,13 +129,13 @@ static void row(const char *name, uint32_t clocks, uint32_t dom, uint64_t cyc,
 	printf(" ns\r\n");
 }
 
-static void report(const char *name, const struct counts *d)
+static void report(const char *name, unsigned depth, const struct counts *d)
 {
 	const uint32_t *b = d->bus, *p = d->pclk;
 	uint32_t hits = b[B_BEATS] - b[B_MISSES];
 	uint32_t hit_t = b[B_BEAT_T] > b[B_MISS_T] ? b[B_BEAT_T] - b[B_MISS_T] : 0;
 
-	printf("\r\n%s: %lu lines, A25", name, (unsigned long)LINES);
+	printf("\r\n%s depth %u: %lu lines, A25", name, depth, (unsigned long)LINES);
 	x10(d->cyc * 10u / LINES);
 	printf(" cycles/line =");
 	x10(d->cyc * 40u / (3u * LINES));
@@ -133,6 +147,10 @@ static void report(const char *name, const struct counts *d)
 	x10(per_x10(b[B_BEATS], LINES));
 	printf(", misses");
 	x10(per_x10(b[B_MISSES], LINES));
+	printf(", prefetches");
+	x10(per_x10(b[B_PF], LINES));
+	printf(", served");
+	x10(per_x10(b[B_PFHIT], LINES));
 	printf(", CPU reads");
 	x10(per_x10(p[P_RD], LINES));
 	printf(", writes");
@@ -140,8 +158,15 @@ static void report(const char *name, const struct counts *d)
 	printf("\r\n");
 
 	row("port wait, per line", b[B_STALL_T], b[B_CLK], d->cyc, LINES, "bus");
-	row("miss round trip, per miss", b[B_MISS_T], b[B_CLK], d->cyc, b[B_MISSES], "bus");
+	row("port idle, per line", b[B_IDLE_T], b[B_CLK], d->cyc, LINES, "bus");
+	row("DDR3 wait, per line", b[B_MISS_T], b[B_CLK], d->cyc, LINES, "bus");
+	row("DDR3 wait, per miss", b[B_MISS_T], b[B_CLK], d->cyc, b[B_MISSES], "bus");
 	row("hit beat wait, per hit (~)", hit_t, b[B_CLK], d->cyc, hits, "bus");
+	printf("    PCLK: video reads %lu, words %lu; CPU words %lu; tap %08lx\r\n",
+	       (unsigned long)p[P_VRD], (unsigned long)p[P_VRET],
+	       (unsigned long)p[P_CRET], (unsigned long)p[P_TAP]);
+	if (depth != 0)
+		return;
 	row("PCLK arbiter wait, per read", p[P_WAIT], p[P_PCLK], d->cyc, p[P_RD], "pclk");
 	row("PCLK taken to word, per read", p[P_OPEN], p[P_PCLK], d->cyc, p[P_RD], "pclk");
 	row("  ctl taken to READ", p[P_ISSUE], p[P_PCLK], d->cyc, p[P_RD], "pclk");
@@ -189,12 +214,16 @@ static void measure(const char *name, void (*pass)(void))
 {
 	struct counts a, b, d;
 
-	take(&a);
-	pass();
-	take(&b);
-	/* the wait in take, 20 us at most, is in the pass's time: under 0.1 % */
-	diff(&d, &a, &b);
-	report(name, &d);
+	for (unsigned depth = 0; depth < 4; depth++) {
+		TV_PERF_PF_DEPTH = depth;
+		take(&a);
+		pass();
+		take(&b);
+		/* the wait in take, 20 us at most, is in the pass's time: under 0.1 % */
+		diff(&d, &a, &b);
+		report(name, depth, &d);
+	}
+	TV_PERF_PF_DEPTH = 2;
 }
 
 int main(void)

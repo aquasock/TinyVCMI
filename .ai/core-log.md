@@ -1137,3 +1137,43 @@ Plan stage 2 for the user's approval: a four to eight line read buffer with seve
 - User Test: PASS
 
 ---
+
+## 34 COMMIT Unreleased 2026-11-27T15:52:14-07:00
+
+#### Coming From:
+
+Unreleased c2d1e3b
+
+#### Purpose:
+
+Implement stage 2 of the approved DDR3 read path redesign, a multi-line read buffer with fetch-ahead and several reads in flight, and record its unfinished timing closure for an agent handoff after the user deferred the cycle.
+
+#### Outcome:
+
+`ahb_ddr3.v` now holds four line ways with several reads in flight, sequential fetch-ahead whose depth is set by the new read/write register `TV_PERF_PF_DEPTH` (0x40, 0 to 3, reset 2), invalidation and poisoning of ways by overlapping writes, and `w_tag` flattened to `[4*AW-1:0]`; `ddr3_arb.v` gained a `dbg` tap with per-client reads in flight, sticky stray-return flags and the tag FIFO pointers for entry 31's hang; `ddr3_perf.v` and `exts_perf.sv` add prefetch, prefetch-hit and RAM-port idle counters and snapshot words 8 to 11 (0x44 to 0x5c), exposed in `firmware/include/tinyvcmi.h`, and `rd_lat` runs each pass at depths 0 to 3. `tb_ahb_ddr3.v` adds write storms, because the queue now drains faster (305 waits against stage 1's 1963 on the same stimulus), and `tools/sim_ae350_ddr3.sh` replaces the `nomerge` mutant with `noinval`, `nopoison` and `clkeep`; the gate exits 0 with every bench passing and every mutant failing. The first twelve-seed sweep `build/ae350/c1` closed no seed: the 1024-bit `r_line` doubled the bus-side bridge LUTs (972 to 1934), and the combinational `ddr3_perf` open-read counter enables from `ctl.rdy` failed on up to eleven seeds. The line slots were then moved into a distributed RAM `slot[0:3]` in `ahb_ddr3_pclk` read through the new `r_way`/`r_slot` ports (RAM16SDP4 132 to 196), `p_open` counts from the registered strobes `o_take`/`o_back`, every `ddr3_perf` input is registered once, `top.v` was regenerated with `tools/ddr3_write.py` and `--check` passed, and the sim gate passed again. The second sweep `build/ae350/c2` also closed no seed under `tools/closure_census.py`: the perf taps no longer fail, but `bus_clk` fails on all twelve seeds (66.45 to 74.37 MHz against 75, best seed 4 at -0.11 ns) on stage 1's address-phase path from `soc.cpu.DDR_HADDR` through `soc.ram.hit` and `sd_rd` to `hrdata` in `ahb_ram.sv`, and `pclk` closes only on seeds 7 and 11, failing elsewhere on the clock enables of `arb.c_addr`, `arb.c_wdata` and `xport.cmd_we` driven from the bridge's `pop` and `cmd_ready` (up to -2.67 ns) and on the controller's existing `core.check.pr2_gt` and `core.check.hit` (up to -1.95 ns). No stage 2 image was loaded, since none closed timing; the board was last loaded with stage 1's `b2` seed 2. The user then deferred the cycle, and in the same session the open-flow build, timing, simulation, loading and HDL procedures were published as agent skills in the separate repository `aquasock/tinytang-skills`. `.ai/core.md` was not changed. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering and the active log's 34 of 100 entries.
+
+#### Next Steps:
+
+Close stage 2's timing before any load: shorten the `bus_clk` path from `DDR_HADDR` through `soc.ram.hit` and `sd_rd` to `hrdata` in `ahb_ram.sv`, add a registered-ready skid between the bridge and `ddr3_arb` so `pop` and `cmd_ready` no longer reach the `arb.c_addr`, `arb.c_wdata` and `xport.cmd_we` enables, and address `core.check.pr2_gt` and `core.check.hit` if they still fail; rerun `tools/sim_ae350_ddr3.sh`, sweep twelve seeds into a new directory and judge it with `tools/closure_census.py`. Then load a seed that closes every clock on a warm board, run `rd_lat` against stage 1's 538.6, 508.0 and 553.1 ns per line, and hand the board to the user for testing. Stages 3 and 4, entry 31's known issue, the static columns and entry 29's waiting items stand.
+
+#### Files Modified:
+
+- firmware/apps/rd_lat/main.c
+- firmware/include/tinyvcmi.h
+- fpga/ae350_ddr3/ae350_sys.sv
+- fpga/ae350_ddr3/ahb_ddr3.v
+- fpga/ae350_ddr3/ddr3_arb.v
+- fpga/ae350_ddr3/ddr3_perf.v
+- fpga/ae350_ddr3/exts_perf.sv
+- fpga/ae350_ddr3/tb_ahb_ddr3.v
+- fpga/ae350_ddr3/top.v
+- tools/ddr3_write.py
+- tools/sim_ae350_ddr3.sh
+
+#### Status:
+
+- Build: FAIL
+- Deployment: NOT RUN
+- User Test: NOT RUN
+
+---

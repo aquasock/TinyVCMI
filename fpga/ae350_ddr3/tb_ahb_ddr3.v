@@ -5,19 +5,25 @@
 // ahb_ram and ahb_ddr3 under a pipelined AHB master, against a behavioural
 // ddr3_ctl request port: random ready with stalls of up to 400 PCLK, so
 // the bridge's queue fills and posted writes wait for room, reads returned
-// in order after a random delay, writes merged by their mask (1 keeps the
-// byte).
+// in order after a random delay with the line as it was when the read was
+// taken, writes merged by their mask (1 keeps the byte).  A read of a line
+// the master never uses, a prefetch's, returns a hash of its address; a
+// write there fails.
 //
 // The master runs single transfers of every size to random lanes, WRAP4
 // doubleword bursts, reads and writes, as the A25's cache-line fills and
 // write-backs come, INCR4 doubleword bursts that may cross into the next
 // line, and a read, a write and a read of one line with 0 to 2 idles
-// between, over 64 lines spread across the whole 1 GiB window,
+// between, a read and then writes and reads of the lines after it while
+// their prefetches are in flight, and walks of reads up consecutive lines,
+// over 64 lines spread across the whole 1 GiB window,
 // and to the block RAM at 0x7fff0000 above them; every read is checked
 // against a reference of what was written, byte by byte.  A data transfer
 // below the DDR3 window must get ERROR.  The bus clock and PCLK run at
 // incommensurate periods near 75 and 100 MHz, so their phases drift through
-// every alignment.
+// every alignment.  The prefetch depth changes every 500 sequences, the
+// last 40 of which are write-back bursts only, to fill the queue while the
+// controller stalls.
 module tb_ahb_ddr3;
     localparam integer NL = 64;             // DDR3 lines exercised
     localparam integer NB = 256;            // block RAM bytes exercised
@@ -61,11 +67,12 @@ module tb_ahb_ddr3;
     wire [31:0]  cmd_wmask;
     reg          rdata_valid = 1'b0;
     reg  [255:0] rdata_line = 256'd0;
+    reg  [1:0]   pf_depth = 2'd2;
 
     ahb_ddr3 #(.AW(25)) dut (
         .clk(clk), .resetn(resetn),
         .l_dw(sd_ldw), .l_hit(sd_lhit), .l_data(sd_ldata), .req(sd_req), .post(sd_post), .post_ok(sd_post_ok), .addr(sd_addr),
-        .lanes(sd_lanes), .wdata(sd_wdata), .ack(sd_ack), .rdata(sd_rdata),
+        .lanes(sd_lanes), .wdata(sd_wdata), .ack(sd_ack), .rdata(sd_rdata), .pf_depth(pf_depth),
         .pclk(pclk), .prst(prst), .cmd_valid(cmd_valid), .cmd_ready(cmd_ready),
         .cmd_we(cmd_we), .cmd_addr(cmd_addr), .cmd_wdata(cmd_wdata), .cmd_wmask(cmd_wmask),
         .rdata_valid(rdata_valid), .rdata_line(rdata_line));
@@ -95,9 +102,9 @@ module tb_ahb_ddr3;
     endtask
 
     // ---- the behavioural controller on PCLK ----------------------------
-    reg [24:0] rq_a [0:63];
     reg [31:0] rq_t [0:63];
-    integer    rq_w = 0, rq_r = 0, n_cmd_wr = 0, n_cmd_rd = 0, n_masked = 0;
+    reg [255:0] rq_d [0:63];
+    integer    rq_w = 0, rq_r = 0, n_cmd_wr = 0, n_cmd_rd = 0, n_masked = 0, n_unk = 0;
     integer    pcyc = 0, k2, ln;
     reg [31:0] seed_p = 32'h1234567;
     integer    stall = 0;
@@ -107,7 +114,7 @@ module tb_ahb_ddr3;
         rdata_valid <= 1'b0;
         if (!prst && cmd_valid && cmd_ready) begin
             ln = line_of(cmd_addr);
-            if (ln < 0) fail("a request outside the exercised lines");
+            if (ln < 0 && cmd_we) fail("a write outside the exercised lines");
             else if (cmd_we) begin
                 n_cmd_wr = n_cmd_wr + 1;
                 for (k2 = 0; k2 < 32; k2 = k2 + 1)
@@ -115,14 +122,15 @@ module tb_ahb_ddr3;
                     else n_masked = n_masked + 1;
             end else begin
                 n_cmd_rd = n_cmd_rd + 1;
-                rq_a[rq_w % 64] = cmd_addr;
+                if (ln < 0) n_unk = n_unk + 1;
+                rq_d[rq_w % 64] = ln < 0 ? {8{{7'd0, cmd_addr} ^ 32'h9e3779b9}} : dmem[ln];
                 rq_t[rq_w % 64] = pcyc + 4 + seed_p[4:0];   // 4 to 35 PCLK later
                 rq_w = rq_w + 1;
             end
         end
         if (rq_r != rq_w && pcyc >= rq_t[rq_r % 64]) begin
             rdata_valid <= 1'b1;
-            rdata_line <= dmem[line_of(rq_a[rq_r % 64])];
+            rdata_line <= rq_d[rq_r % 64];
             rq_r = rq_r + 1;
         end
         if (stall > 0) stall = stall - 1;
@@ -131,15 +139,22 @@ module tb_ahb_ddr3;
     end
 
     // the bus clocks a posted write waited for room, the writes posted with
-    // none, the reads answered with no wait state, and the hazard sequences
+    // none, the reads answered with no wait state, the hazard sequences, the
+    // demand reads and prefetches queued, the lookups a prefetch served, and
+    // the writes that poisoned a pending way
     integer n_wait = 0, n_post = 0, n_zw = 0, n_hseq = 0, n_cross = 0;
+    integer n_dmiss = 0, n_pf = 0, n_pfhit = 0, n_poison = 0, n_pseq = 0, n_walk = 0;
     always @(posedge clk)
         if (resetn) begin
             if (ram.stage[4]) n_wait = n_wait + 1;
             if (sd_post) n_post = n_post + 1;
+            if (dut.bus.p_miss) n_dmiss = n_dmiss + 1;
+            if (dut.bus.p_pf) n_pf = n_pf + 1;
+            if (dut.bus.p_pfhit) n_pfhit = n_pfhit + 1;
+            if (dut.bus.ws && |(dut.bus.s_eq & dut.bus.w_pend & ~dut.bus.ret)) n_poison = n_poison + 1;
             if (hready && ram.sd_zw) begin
                 n_zw = n_zw + 1;
-                if (sd_post || dut.bus.q_we) fail("a read answered from the buffer past an unmerged write");
+                if (sd_post || dut.bus.ws) fail("a read answered from cl past a write");
             end
         end
 
@@ -152,6 +167,7 @@ module tb_ahb_ddr3;
     reg        q_w [0:7];
     reg [63:0] q_d [0:7];
     reg        q_err [0:7];
+    reg        q_ns [0:7];                  // NONSEQ, else SEQ
     integer    q_g [0:7];
     integer    gap = 0;
     reg        q_burst = 1'b0;
@@ -232,7 +248,7 @@ module tb_ahb_ddr3;
                 hsize <= q_s[q_i];
                 hwrite <= q_w[q_i];
                 hburst <= q_hb;
-                htrans <= (q_i == 0 || !q_burst) ? 2'b10 : 2'b11;   // NONSEQ, then SEQ in a burst
+                htrans <= q_ns[q_i] ? 2'b10 : 2'b11;   // NONSEQ, then SEQ in a burst
             end else
                 htrans <= 2'b00;
         end
@@ -241,6 +257,7 @@ module tb_ahb_ddr3;
     // pick an exercised line: half the time the last one picked, so a line
     // is read, written and read again while it is in the buffer
     integer last_l = 0;
+    reg     wstorm = 1'b0;                  // write-back bursts only, to fill the queue
     function [31:0] pick_ddr(input integer r);
         begin
             if ((r / 7919) % 2 == 0) last_l = r % NL;
@@ -253,11 +270,15 @@ module tb_ahb_ddr3;
         reg [31:0] a;
         begin
             r = $random & 32'h7fffffff;
+            if (wstorm) r = r - r % 10 + 1;
             q_i = 0;
             gap = 0;
             q_burst = 1'b0;
             q_hb = 3'b000;
-            for (s = 0; s < 8; s = s + 1) q_g[s] = 0;
+            for (s = 0; s < 8; s = s + 1) begin
+                q_g[s] = 0;
+                q_ns[s] = 1'b0;
+            end
             case (r % 10)
                 0, 1: begin                 // a WRAP4 doubleword burst: a line fill or a write-back
                     l = r / 10;
@@ -324,6 +345,47 @@ module tb_ahb_ddr3;
                     q_hb = 3'b011;
                     if (!q_w[0] && d0 != 0) n_cross = n_cross + 1;
                 end
+                6: begin                    // a read, then a write and a read of each of the
+                    // next one or two lines, while their prefetches may
+                    // be in flight
+                    l = 26 + (r / 10) % 14;     // tag[l - k] is tag[l] + k
+                    q_a[0] = {2'b01, tag[l], 5'd0} | (((r >> 8) & 3) << 3);
+                    q_n = (l >= 27 && ((r >> 10) & 1)) ? 5 : 3;
+                    for (s = 1; s < q_n; s = s + 1)
+                        q_a[s] = {2'b01, tag[l - (s + 1) / 2], 5'd0} | ((((r >> (12 + 2 * ((s + 1) / 2))) & 3)) << 3);
+                    for (s = 0; s < q_n; s = s + 1) begin
+                        q_s[s] = 3'd3;
+                        q_w[s] = s == 1 || s == 3;
+                        q_d[s] = {$random, $random};
+                        q_err[s] = 1'b0;
+                        if (s > 0) q_g[s] = (r >> (18 + 2 * s)) % 3;
+                    end
+                    if ((r >> 30) & 1) q_s[1] = (r >> 28) & 3;  // or a narrower write
+                    n_pseq = n_pseq + 1;
+                end
+                7: begin                    // a walk of reads up consecutive lines: two WRAP4
+                    // bursts, or single reads of up to eight lines
+                    l = 26 + (r / 10) % 14;
+                    if ((r >> 8) & 1) begin
+                        for (s = 0; s < 8; s = s + 1)
+                            q_a[s] = {2'b01, tag[l - s / 4], 5'd0} | ((((r >> (10 + 4 * (s / 4))) + s) & 3) << 3);
+                        q_n = 8;
+                        q_burst = 1'b1;
+                        q_hb = 3'b010;
+                        q_ns[4] = 1'b1;
+                    end else begin
+                        q_n = (l - 24 < 8) ? l - 24 : 8;
+                        for (s = 0; s < q_n; s = s + 1)
+                            q_a[s] = {2'b01, tag[l - s], 5'd0} | ((((r >> (10 + 2 * s))) & 3) << 3);
+                    end
+                    for (s = 0; s < q_n; s = s + 1) begin
+                        q_s[s] = 3'd3;
+                        q_w[s] = 1'b0;
+                        q_d[s] = 64'd0;
+                        q_err[s] = 1'b0;
+                    end
+                    n_walk = n_walk + 1;
+                end
                 default: begin              // a single transfer of any size
                     s = (r / 10) % 4;
                     a = pick_ddr(r / 100) | ((((r / 7) % 32)) & ~((1 << s) - 1));
@@ -331,6 +393,8 @@ module tb_ahb_ddr3;
                     q_err[0] = 1'b0; q_n = 1;
                 end
             endcase
+            for (s = 0; s < q_n; s = s + 1)
+                if (s == 0 || !q_burst) q_ns[s] = 1'b1;
             // issue, then wait for the queue and its last data phase to finish
             @(negedge clk);
             while (q_i < q_n || dp_on || htrans[1]) @(negedge clk);
@@ -357,18 +421,27 @@ module tb_ahb_ddr3;
         repeat (3) @(posedge clk);
         resetn = 1'b1;
         repeat (3) @(posedge clk);
-        for (n = 0; n < 40000; n = n + 1) run_one;
+        for (n = 0; n < 40000; n = n + 1) begin
+            if (n % 500 == 0) pf_depth = n / 500;
+            wstorm = n % 500 >= 460;
+            run_one;
+        end
         repeat (20) @(posedge clk);
         $display("      %0d reads and %0d writes completed, %0d WRAP4 bursts, %0d refused, %0d to block RAM",
                  n_rd, n_wr, n_bursts, n_errs, n_bram);
-        $display("      DDR3: %0d reads and %0d writes requested, %0d bytes masked; %0d of %0d reads from the line buffer",
-                 n_cmd_rd, n_cmd_wr, n_masked, n_rd_ddr - n_cmd_rd, n_rd_ddr);
+        $display("      DDR3: %0d reads and %0d writes requested, %0d bytes masked; %0d of %0d reads with no demand read",
+                 n_cmd_rd, n_cmd_wr, n_masked, n_rd_ddr - n_dmiss, n_rd_ddr);
+        $display("      %0d prefetches (%0d of unused lines), %0d lookups served by one, %0d ways poisoned",
+                 n_pf, n_unk, n_pfhit, n_poison);
+        $display("      %0d prefetch hazard sequences, %0d walks", n_pseq, n_walk);
         $display("      %0d writes posted, %0d bus clocks spent waiting for room in the queue",
                  n_post, n_wait);
         $display("      %0d reads answered with no wait state, %0d hazard sequences, %0d INCR4 reads across lines",
                  n_zw, n_hseq, n_cross);
-        // each read burst's last three beats at least come from the buffer
-        if (n_rd_ddr - n_cmd_rd < 3 * n_rburst) fail("the line buffer served too few reads");
+        // each read burst's last three beats at least need no demand read
+        if (n_rd_ddr - n_dmiss < 3 * n_rburst) fail("too few reads served with no demand read");
+        if (n_pf < 20000 || n_pfhit < 2000 || n_poison < 500 || n_pseq < 2000 || n_walk < 2000)
+            fail("too few prefetches, prefetch hits, poisoned ways or prefetch sequences");
         if (n_errs < 50 || n_bursts < 5000) fail("too few refusals or bursts");
         if (n_wait < 500) fail("the queue was too seldom full");
         if (n_zw < 3 * n_rburst || n_hseq < 2000 || n_cross < 1000)

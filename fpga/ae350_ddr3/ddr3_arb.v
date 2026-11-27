@@ -24,6 +24,11 @@
 // nxt, cur and the PHY's latency, and the simulation stops if it is ever
 // exceeded or a word returns with no read open.
 //
+// dbg is for the board's stall dump (ae350_sys.sv): each client's reads in
+// flight, counted up as the controller takes one and down as its word
+// returns, a sticky flag per client set by a word returned to it with none
+// in flight, the request register's state and the tag FIFO's pointers.
+//
 // Simulation-only: MUT_TAG routes each word by the tag of the read before it;
 // tools/sim_ae350_ddr3.sh's video bench must fail it.
 module ddr3_arb #(
@@ -58,7 +63,10 @@ module ddr3_arb #(
     output reg  [255:0]  x_wdata = 256'd0,
     output reg  [31:0]   x_wmask = 32'd0,
     input  wire          x_rvalid,
-    input  wire [255:0]  x_rdata
+    input  wire [255:0]  x_rdata,
+
+    // {c_err, v_err, x_vid, v_slot, x_valid, x_ready, c_fl[5:0], v_fl[5:0], t_w, t_r}
+    output wire [17+2*TAG_LOG2:0] dbg
 );
     reg  x_vid = 1'b0;                  // the request held is the video's
     reg  v_slot = 1'b0;                 // the video's request, taken
@@ -119,6 +127,23 @@ module ddr3_arb #(
             c_rvalid <= 1'b0;
         end
     end
+
+    reg  [5:0] c_fl = 6'd0, v_fl = 6'd0;
+    reg        c_err = 1'b0, v_err = 1'b0;
+    wire       r_vid = tag[t_r];
+    always @(posedge pclk) begin
+        c_fl <= c_fl + (push && !x_vid) - (x_rvalid && !r_vid);
+        v_fl <= v_fl + (push && x_vid) - (x_rvalid && r_vid);
+        if (x_rvalid && !r_vid && c_fl == 6'd0) c_err <= 1'b1;
+        if (x_rvalid && r_vid && v_fl == 6'd0) v_err <= 1'b1;
+        if (rst) begin
+            c_fl <= 6'd0;
+            v_fl <= 6'd0;
+            c_err <= 1'b0;
+            v_err <= 1'b0;
+        end
+    end
+    assign dbg = {c_err, v_err, x_vid, v_slot, x_valid, x_ready, c_fl, v_fl, t_w, t_r};
 
 `ifndef SYNTHESIS
     integer open_reads = 0;
