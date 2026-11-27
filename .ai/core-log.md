@@ -1065,3 +1065,41 @@ Carry on with the user's next work on w1 seed 10, treating the lost DDR3 read as
 - User Test: FAIL
 
 ---
+
+## 32 COMMIT Unreleased 2026-11-27T11:04:30-07:00
+
+#### Coming From:
+
+Unreleased 8e0b08c
+
+#### Purpose:
+
+Measure where a cached DDR3 read's time goes with hardware latency counters, so that the read path can be redesigned from evidence rather than estimates.
+
+#### Outcome:
+
+The counters work and show that the read path is correct but slow by design, which the user has decided to redesign properly rather than trim. `fpga/ae350_ddr3/ddr3_perf.v` counts on PCLK the CPU's reads and writes taken by `ddr3_arb`, the PCLK a CPU read waits there, the PCLK from a read taken to its word returned, from the read taken by `ddr3_ctl` to the READ loading `dfi_phy`'s command registers (`ctrl_rd`) and from there to the word, and the longest of the first two, snapshotting the eight words every 2^10 PCLK behind a toggle; `fpga/ae350_ddr3/exts_perf.sv` is an EXTS slave at `0xe8020000` (ID `TVP1`, one wait state, ERROR on writes, unaligned addresses and offsets from 0x40) that counts bus clocks, `sd_req` beats and high clocks, bridge misses (`b_read` rises) and their high clocks and RAM port wait clocks, and copies the snapshot through a three-flop synchroniser; `ae350_sys.sv` decodes it on HADDR bit 17 beside the video and UART slaves, `tools/ddr3_write.py` wires it in `top.v`, the sweep reads both files, `firmware/include/tinyvcmi.h` names the registers and `firmware/apps/rd_lat` reads 115,200 lines three ways with video off and prints the breakdown. A throwaway bench checked the counts, the ID and the ERROR cases and caught the maxima one short, `tools/sim_ae350_ddr3.sh` passed with every mutant failing as required, and `tools/ddr3_write.py --check` was current. The twelve-seed sweep `build/ae350/p1` closed every clock on seeds 1, 5, 6, 8, 9 and 11; seed 1 (`pclk` 107.34, `bus_clk` 95.68 MHz, `ctrl.fs` sha256 `9592c1ce43e72dda...`) was loaded on the warm board, trained `error 0`, `d 1 b 2`, passed 34 memory test passes and ran `rd_lat` to completion. A 32-byte line costs about 636 ns sequential and scattered alike (about 50 MB/s, against about 466 MB/s for posted writes): about 436 ns with `sd_req` high, of which a miss round trip is about 330 ns (25 bus clocks) and each of the three line-buffer hits about 35 ns, and inside the miss 10 ns in the arbiter, about 85 ns from `ddr3_ctl` taking the read to the READ in the command registers (its FIFO, `nxt` and `cur`, then `dfi_phy`'s three-PCLK command pipeline) and 140 ns from there to the word (the PHY's fixed 12 PCLK, padded for every `rd_off`, and the controller's output register), while the DRAM itself needs about 25 ns; the remaining 200 ns per line, `sd_req` low, is mostly `ahb_ram`'s per-beat handshake, which takes every 8-byte beat as its own request and adds about two bus clocks between beats. Refresh collisions stretch a read to 67 PCLK. Screen capture on `/dev/video0` now works at the device's default 1920x1080 mode, and it showed the colour bar test with faint single-pixel columns at multiples of 160 pixels, on the bar edges, which the user confirmed are on the monitor too and are entry 31's raining columns gone static, so they are wrong words held in the frame buffer or on the fetch path. The user judged 50 MB/s a design fault rather than a tuning matter and approved redesigning the read path: a whole line fill as one burst with the remaining beats from the line buffer at zero wait states in the bus domain, then fetching ahead, then trimming the PHY padding, the crossing and the controller queue. `.ai/core.md` was not changed. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering and the active log's 32 of 100 entries.
+
+#### Next Steps:
+
+Plan the read path redesign for the user's approval, starting with the burst line fill across `ahb_ram.sv` and `ahb_ddr3.v`, then fetch-ahead with invalidation by overlapping writes, then the trims, keeping the counters in the image and re-running `rd_lat` after each step; read the frame buffer back against the colour bar pattern to tell whether the static columns are in memory or on the video fetch path. Entry 31's known issue and entry 29's waiting items stand.
+
+#### Files Modified:
+
+- firmware/apps/rd_lat/Makefile
+- firmware/apps/rd_lat/main.c
+- firmware/include/tinyvcmi.h
+- fpga/ae350_ddr3/ae350_sys.sv
+- fpga/ae350_ddr3/ddr3_perf.v
+- fpga/ae350_ddr3/exts_perf.sv
+- fpga/ae350_ddr3/top.v
+- tools/ae350_ddr3_sweep.sh
+- tools/ddr3_write.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: N/A
+
+---

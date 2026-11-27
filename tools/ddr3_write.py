@@ -435,6 +435,8 @@ SOC_WIRES = """\
     wire [3:0] f_wg, f_rg;
     wire [23:0] vid_rgb;
     wire vid_de, vid_hs, vid_vs;
+    wire [255:0] perf_snap;                     // ddr3_perf's counters, for exts_perf
+    wire perf_snap_tog;
     assign core_rx = cpu_run ? 1'b1 : uart_rx;
     assign uart_tx = cpu_run ? soc_tx : core_tx;"""
 
@@ -451,7 +453,7 @@ SOC_INST = """
         .q_rgray(q_rgray), .y_tog(y_tog), .y_line(y_line),
         .vid_enable(vid_enable), .vid_base(vid_base), .vid_base_tog(vid_base_tog),
         .vid_base_ack(vid_base_ack), .vid_vbl_tog(vid_vbl_tog), .vid_in_vbl(vid_in_vbl),
-        .vid_late(vid_late));
+        .vid_late(vid_late), .perf_snap(perf_snap), .perf_snap_tog(perf_snap_tog));
     ahb_ddr3_pclk #(.AW(25)) xport (
         .bus_clk(bus_clk), .pclk(pclk), .prst(x_rst),
         .q_we(q_we), .q_waddr(q_waddr), .q_wdata(q_wdata), .q_wgray(q_wgray),
@@ -466,6 +468,12 @@ SOC_INST = """
         .c_wdata(c_wdata), .c_wmask(c_wmask), .c_rvalid(c_rvalid), .rdata(a_rdata),
         .x_valid(x_valid), .x_ready(x_ready), .x_we(x_we), .x_addr(x_addr),
         .x_wdata(x_wdata), .x_wmask(x_wmask), .x_rvalid(x_rvalid), .x_rdata(x_rdata));
+    // read-latency counters on both sides of the arbiter, for exts_perf
+    ddr3_perf perf (
+        .pclk(pclk), .rst(x_rst),
+        .c_valid(c_valid), .c_ready(c_ready), .c_we(c_we), .c_rvalid(c_rvalid),
+        .x_valid(x_valid), .x_ready(x_ready), .x_we(x_we), .x_rvalid(x_rvalid),
+        .rd_load(ctrl_rd), .snap(perf_snap), .snap_tog(perf_snap_tog));
     // 1280x720 from the DDR3: the fetcher on PCLK, the raster on pix_clk
     vid_fetch vfetch (
         .pclk(pclk), .rst(x_rst), .req_tog(req_tog), .req_addr(req_addr),

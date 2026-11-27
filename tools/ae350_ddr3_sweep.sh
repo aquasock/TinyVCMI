@@ -46,8 +46,8 @@ yosys -Q -T -q -l "$out/synth.log" -p "
     read_verilog $ssrc/top.v $wsrc/wr_core.v $wsrc/rd_align.v $wsrc/rd_check.v
     read_verilog $src/ctrl_glue.v $src/dfi_phy.v $src/ddr3_derot.v $src/ddr3_bist.v
     read_verilog $src/ddr3_ctl.v $ssrc/ahb_ddr3.v
-    read_verilog $ssrc/ddr3_arb.v $ssrc/video_ddr3.v $ssrc/dvi_tx.v
-    read_verilog -sv $ssrc/ahb_boot_rom.sv $ssrc/ahb_ram.sv $ssrc/exts_uart.sv $ssrc/exts_video.sv
+    read_verilog $ssrc/ddr3_arb.v $ssrc/ddr3_perf.v $ssrc/video_ddr3.v $ssrc/dvi_tx.v
+    read_verilog -sv $ssrc/ahb_boot_rom.sv $ssrc/ahb_ram.sv $ssrc/exts_uart.sv $ssrc/exts_video.sv $ssrc/exts_perf.sv
     read_verilog -sv $ssrc/ae350_sys.sv
     synth_gowin -family gw5a -top top -run :map_luts
     sort

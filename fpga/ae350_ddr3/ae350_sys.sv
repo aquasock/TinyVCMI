@@ -67,7 +67,11 @@ module ae350_sys #(
     input  wire          vid_base_ack,
     input  wire          vid_vbl_tog,
     input  wire          vid_in_vbl,
-    input  wire [15:0]   vid_late
+    input  wire [15:0]   vid_late,
+
+    // ddr3_perf's PCLK snapshot, for exts_perf
+    input  wire [255:0]  perf_snap,
+    input  wire          perf_snap_tog
 );
     wire arst_n = pll_locked && run;
     reg [7:0] reset_count = 8'd0;
@@ -160,23 +164,47 @@ module ae350_sys #(
         .q_rgray(q_rgray), .y_tog(y_tog), .y_line(y_line), .dbg(ddr_dbg)
     );
 
-    // The EXTS window holds the UART's registers at 0xe8000000 and the
-    // video unit's at 0xe8010000 (exts_video); TinyNES's link, pads and
+    // The EXTS window holds the UART's registers at 0xe8000000, the video
+    // unit's at 0xe8010000 (exts_video) and the read-latency counters at
+    // 0xe8020000 (exts_perf); TinyNES's link, pads and
     // audio are not here, so the link's inputs are idle.  Each slave drives
     // its own hready and hresp, which are combined, and the read data is
     // that of the slave the last transfer went to, as TinyNES chooses it.
-    wire video_hit = exts_addr[16];
-    wire [31:0] uart_rdata, video_rdata;
-    wire uart_ready, uart_resp, video_ready, video_resp;
-    reg  data_video = 1'b0;
+    wire perf_hit = exts_addr[17];
+    wire video_hit = exts_addr[16] && !perf_hit;
+    wire uart_hit = !exts_addr[16] && !perf_hit;
+    wire [31:0] uart_rdata, video_rdata, perf_rdata;
+    wire uart_ready, uart_resp, video_ready, video_resp, perf_ready, perf_resp;
+    reg  data_video = 1'b0, data_perf = 1'b0;
     always @(posedge bus_clk)
-        if (!resetn)
+        if (!resetn) begin
             data_video <= 1'b0;
-        else if (exts_ready && exts_sel && exts_trans[1])
+            data_perf <= 1'b0;
+        end else if (exts_ready && exts_sel && exts_trans[1]) begin
             data_video <= video_hit;
-    assign exts_rdata = data_video ? video_rdata : uart_rdata;
-    assign exts_ready = uart_ready & video_ready;
-    assign exts_resp = uart_resp | video_resp;
+            data_perf <= perf_hit;
+        end
+    assign exts_rdata = data_perf ? perf_rdata : data_video ? video_rdata : uart_rdata;
+    assign exts_ready = uart_ready & video_ready & perf_ready;
+    assign exts_resp = uart_resp | video_resp | perf_resp;
+
+    exts_perf perf_regs (
+        .clk(bus_clk),
+        .resetn(resetn),
+        .haddr(exts_addr),
+        .htrans(exts_trans),
+        .hsel(exts_sel && perf_hit),
+        .hwrite(exts_write),
+        .hready_in(exts_ready),
+        .hrdata(perf_rdata),
+        .hready(perf_ready),
+        .hresp(perf_resp),
+        .sd_req(sd_req),
+        .b_read(ddr_dbg[1]),
+        .ram_ready(ram_ready),
+        .snap(perf_snap),
+        .snap_tog(perf_snap_tog)
+    );
 
     exts_video video_regs (
         .clk(bus_clk),
@@ -209,7 +237,7 @@ module ae350_sys #(
         .resetn(resetn),
         .haddr(exts_addr),
         .htrans(exts_trans),
-        .hsel(exts_sel && !video_hit),
+        .hsel(exts_sel && uart_hit),
         .hready_in(exts_ready),
         .hwrite(exts_write),
         .hwdata(exts_wdata),
