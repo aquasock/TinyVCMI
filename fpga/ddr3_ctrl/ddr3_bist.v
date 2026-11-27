@@ -117,6 +117,22 @@ module ddr3_bist #(
     // carry chain is short (as 32 bits it was 1.1 ns over 100 MHz fully timed)
     reg [R_LOG2-1:0] rcnt = {R_LOG2{1'b0}};
     reg [31:0]   lfsr = 32'h1;
+    // xs_next(lfsr), a register.  Its three xorshift steps sat in front of the
+    // 25-input `== LAST` compare that makes a_last, and with the mux that
+    // chooses the next address on top of them the path was 2.24 ns over
+    // 100 MHz on every one of nine routed seeds (core-log entry 29).  Held
+    // here, the network is register to register and a_last's compare reads a
+    // register.  It is a two-deep pipeline -- lfsr takes lfsr_nx and lfsr_nx
+    // takes its own successor, not lfsr's -- so both advance together and
+    // lfsr_nx is always one step ahead of lfsr, which is the value the random
+    // address is taken from.  Advancing lfsr_nx from lfsr instead lags it a
+    // cycle and a half and desynchronises them; the simulation invariant
+    // below caught that on the first run.
+    // lfsr_nx advances only when lfsr does -- at a random READ, not every
+    // clock -- so the pair stays one step apart.  Its own next value is still
+    // a network of three xorshifts, but that network is now register to
+    // register instead of sitting in front of a 25-input compare and a mux.
+    reg [31:0]   lfsr_nx = xs_next(32'h1);
 
     // the words owed, as {re-read, address}
     // in LUT RAM, read asynchronously into c0_a: inferred as block RAM, the
@@ -439,7 +455,8 @@ module ddr3_bist #(
                     set_addr(resume);
                     cmd_valid <= rroom;
                 end else begin
-                    lfsr <= xs_next(lfsr);      // the next random address
+                    lfsr <= lfsr_nx;            // the next random address
+                    lfsr_nx <= xs_next(lfsr_nx);
                     if (r_last) begin
                         cmd_valid <= 1'b0;
                         retry_pend <= 1'b0;
@@ -447,13 +464,13 @@ module ddr3_bist #(
                     end else begin
                         inc_rcnt;
                         if (retry_pend) begin
-                            resume <= xs_next(lfsr) & LAST;
+                            resume <= lfsr_nx & LAST;
                             set_addr(retry_addr);
                             cmd_retry <= 1'b1;
                             retry_pend <= 1'b0;
                             retry_fly <= 1'b1;
                         end else
-                            set_addr(xs_next(lfsr) & LAST);
+                            set_addr(lfsr_nx & LAST);
                         cmd_valid <= rroom;
                     end
                 end
@@ -499,6 +516,11 @@ module ddr3_bist #(
             $fatal(1, "FAIL  ddr3_bist: the write seed is not the pass's");
         if (a_last != (cmd_addr == LAST) || r_last != (rcnt == RLAST[R_LOG2-1:0]))
             $fatal(1, "FAIL  ddr3_bist: a_last or r_last disagrees with its compare");
+        // lfsr_nx is a register standing in for xs_next(lfsr): it must be that
+        // value at every edge, or a random pass would not walk the sequence
+        // this module's coverage argument assumes
+        if (lfsr_nx != xs_next(lfsr))
+            $fatal(1, "FAIL  ddr3_bist: lfsr_nx is not the LFSR's next value");
     end
 `endif
 endmodule

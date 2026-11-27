@@ -19,7 +19,12 @@
 # TINYVCMI_PIX_TRIAL=1 lets a pixel-clock bridge set not yet measured on the
 # board through, marked UNMEASURED.
 # tools/ae350_place.py keeps the AE350 system's fabric beside the AE350
-# macro.  Nothing here touches the board.  Run tools/sim_ae350_ddr3.sh and
+# macro.  TINYVCMI_SWEEP_STA=1 runs tools/ddr3_sta.py as a nextpnr post-route
+# hook for every seed, dumping the routed graph to that seed's own
+# $out/s<N>/sta.json, so tools/ddr3_sta.py can list every failing endpoint
+# rather than nextpnr's worst path per clock pair.  $TINYVCMI_SWEEP_EXTRA is
+# appended to nextpnr's arguments for every seed, for other diagnostics.
+# Nothing here touches the board.  Run tools/sim_ae350_ddr3.sh and
 # tools/sim_ddr3_ctrl.sh first.
 set -uo pipefail
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -58,8 +63,11 @@ python3 "$root/tools/ddr3_boundary_check.py" "$out/ctrl.json" || exit 1
 # both on the routed design, whatever this order is.
 export NPNR_GOWIN_CLK_FIRST=${NPNR_GOWIN_CLK_FIRST:-bus_clk}
 for s in "$@"; do
+    sta=""; [[ -n ${TINYVCMI_SWEEP_STA:-} ]] && \
+        sta="--post-route $root/tools/ddr3_sta.py"
     (TINYVCMI_CTRL_JSON=$out/ctrl.json TINYVCMI_CST=$ssrc/top.cst TINYVCMI_SDC=$ssrc/open.sdc \
-     TINYVCMI_PNR_EXTRA="--timing-allow-fail --placer-heap-beta 0.7 --pre-place $root/tools/ae350_place.py" \
+     TINYVCMI_STA_DUMP=$out/s$s/sta.json \
+     TINYVCMI_PNR_EXTRA="--timing-allow-fail --placer-heap-beta 0.7 --pre-place $root/tools/ae350_place.py $sta ${TINYVCMI_SWEEP_EXTRA:-}" \
      "$root/tools/ddr3_pin_seed.sh" "$s" "$out/s$s" >"$out/s$s.out" 2>&1) &
 done
 wait

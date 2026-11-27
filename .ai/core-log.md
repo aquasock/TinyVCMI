@@ -959,3 +959,35 @@ The write path's remaining lever is the crossing, which accepts one 8-byte trans
 - User Test: N/A
 
 ---
+## 29 COMMIT Unreleased 2026-11-26T19:23:30-07:00
+
+#### Coming From:
+
+Unreleased f4ed7bc
+
+#### Purpose:
+
+Take the first step of the closure-robustness work that gates the near-term bridge rewrite: find which `pclk` endpoint actually binds across many placements, fix it, and measure whether the closure rate moves.
+
+#### Outcome:
+
+One endpoint named the whole problem and fixing it doubled the closure rate, and a posted-write bridge was then written, measured and withdrawn. A baseline census routed twelve seeds of HEAD with `tools/ddr3_sta.py` dumped per seed through a new `TINYVCMI_SWEEP_STA` hook in `tools/ae350_ddr3_sweep.sh`, read by a new `tools/closure_census.py`: **1 of 12 seeds closed every clock**, and every failure was `pclk` alone, with `glue.bist.a_last` over timing on all nine seeds that routed that far, worst -2.24 ns. The path was the 32-bit xorshift `xs_next` LFSR, its address mux, and a 25-input `== LAST` compare all in the cycle that sets `a_last`. `lfsr_nx` now holds `xs_next(lfsr)` in a register, advancing only when `lfsr` does, so the compare reads a register. The first attempt advanced it every clock from `lfsr`, which desynchronises the pair, and a new simulation invariant caught it before anything else ran; a C model of the correct two-deep pipeline was checked before the RTL was touched again. Both gates then passed: `tools/sim_ddr3_ctrl.sh` with its six mutants and `tools/sim_ae350_ddr3.sh` with every byte across both clocks and the video path's 2,764,800 pixels and three mutants. Re-routing twelve seeds gave **4 of 12 closing**, with `a_last` gone from the failing list and `core.check.hit` (-2.06 ns on 10 seeds) taking its place at nearly the same severity, so the median `pclk` barely moved, 97.32 to 96.03 MHz: this design has several paths near the constraint, not one. The bridge rewrite was then attempted as `docs/ahb-bridge-design.md` sets out, posting writes through an eight-entry Gray-pointer asynchronous FIFO in `ahb_ddr3` so a store is acknowledged as it enters instead of after a clock-domain round trip. It passed both simulation gates and drove 92,115 writes where the old bench made 30,000, and on seed 7 of a routed sweep (103.36 MHz, every clock passing, all 306 tables equal) the board trained `error 0`, lanes `1111`, 422 trials, `d 1 b 2` and measured a write-back at 239.2 to 159.5 cycles a line, a 33 per cent cut, with an eight-word uncached store 479.9 to 439.9. But it was withdrawn: reads regressed 501.7 to 553.0 cycles a line from a six-PCLK read-settle delay added to stop a read overtaking a queued write, and under a heavily stalling controller model the write pointer passes the read pointer with `wfull` still low, which three attempts did not explain. `ahb_ddr3`, `ae350_sys.sv`, the generated `top.v`, `tb_ahb_ddr3.v`, `tools/ddr3_write.py` and `tools/sim_ae350_ddr3.sh` were reverted to HEAD, `tools/ddr3_write.py --check` reports the generated sources current, and both simulation gates pass on the reverted tree. Two limits are recorded rather than papered over: the posted writes only reach the FIFO, since `ahb_ram` still waits `sd_ack` per beat, so that change alone could not have reached the port's 600 MB/s; and the `nopush` mutant was removed because the 75 MHz AHB side cannot outrun the 100 MHz drain in that bench, `full` being unreachable by construction. The board was reloaded with entry 18's seed-3 image (`.fs` SHA-256 `f9574b4fd4181f41e0dbe5bee59d493dcbf4da3abf76198ed2c57cd8015e48d7`), accepted on `DONE`, and trains `error 0` with lanes `1111`; every load was powered from the host's 5 V over USB-C OTG and warm. `.ai/core.md` was not changed. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering and the active log's 29 of 100 entries.
+
+#### Next Steps:
+
+Attack the posted-write FIFO with a directed unit test of its full flag and a written occupancy argument, rather than through the integration bench, since three attempts at the full-flag logic failed to explain how the write pointer passes a synchronised read pointer with `wfull` low; then add the `ahb_ram` half of the posting, without which the port stays near a quarter of its 600 MB/s ceiling. The read-settle delay added to stop a read overtaking a queued write must be measured for its true minimum instead of being left at six PCLK, which cost reads 8 to 10 per cent. Closure stands at 4 of 12 seeds with `core.check.hit` (-2.06 ns on 10 seeds) and `glue.ctl.head_br` (-2.14 ns on 7) next, both in start-up test and controller logic rather than the AE350 store path; the `a_last` fix is verified in simulation only and wants a board run. Also waiting: the HDMI heat test, rebuilding the controller-only image with entry 16's `ddr3_ctl`, the STA disagreement on `m_n_r`, the frequency sweep, the nextpnr patch's upstream report and any 0.2.0 release.
+
+#### Files Modified:
+
+- docs/ahb-bridge-design.md
+- fpga/ddr3_ctrl/ddr3_bist.v
+- tools/ae350_ddr3_sweep.sh
+- tools/closure_census.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: N/A
+
+---
