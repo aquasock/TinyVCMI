@@ -8,9 +8,11 @@
 // in order after a random delay, writes merged by their mask (1 keeps the
 // byte).
 //
-// The master runs single transfers of every size to random lanes and
-// WRAP4 doubleword bursts, reads and writes, as the A25's cache-line fills
-// and write-backs come, over 64 lines spread across the whole 1 GiB window,
+// The master runs single transfers of every size to random lanes, WRAP4
+// doubleword bursts, reads and writes, as the A25's cache-line fills and
+// write-backs come, INCR4 doubleword bursts that may cross into the next
+// line, and a read, a write and a read of one line with 0 to 2 idles
+// between, over 64 lines spread across the whole 1 GiB window,
 // and to the block RAM at 0x7fff0000 above them; every read is checked
 // against a reference of what was written, byte by byte.  A data transfer
 // below the DDR3 window must get ERROR.  The bus clock and PCLK run at
@@ -31,20 +33,24 @@ module tb_ahb_ddr3;
     reg  [1:0]  htrans = 2'd0;
     reg         hwrite = 1'b0;
     reg  [2:0]  hsize = 3'd0;
+    reg  [2:0]  hburst = 3'd0;
     reg         hprot0 = 1'b1;
     reg  [63:0] hwdata = 64'd0;
     wire [63:0] hrdata;
     wire        hready, hresp, stray;
 
-    wire        sd_req, sd_post, sd_post_ok, sd_ack;
+    wire        sd_req, sd_post, sd_post_ok, sd_ack, sd_lhit;
+    wire [1:0]  sd_ldw;
+    wire [63:0] sd_ldata;
     wire [29:3] sd_addr;
     wire [7:0]  sd_lanes;
     wire [63:0] sd_wdata, sd_rdata;
 
     ahb_ram ram (
         .clk(clk), .resetn(resetn), .haddr(haddr), .htrans(htrans), .hwrite(hwrite),
-        .hsize(hsize), .hprot0(hprot0), .hwdata(hwdata), .hrdata(hrdata), .hready(hready),
+        .hsize(hsize), .hburst(hburst), .hprot0(hprot0), .hwdata(hwdata), .hrdata(hrdata), .hready(hready),
         .hresp(hresp), .stray(stray),
+        .sd_ldw(sd_ldw), .sd_lhit(sd_lhit), .sd_ldata(sd_ldata),
         .sd_req(sd_req), .sd_post(sd_post), .sd_post_ok(sd_post_ok), .sd_addr(sd_addr),
         .sd_lanes(sd_lanes), .sd_wdata(sd_wdata), .sd_ack(sd_ack), .sd_rdata(sd_rdata));
 
@@ -57,7 +63,8 @@ module tb_ahb_ddr3;
     reg  [255:0] rdata_line = 256'd0;
 
     ahb_ddr3 #(.AW(25)) dut (
-        .clk(clk), .resetn(resetn), .req(sd_req), .post(sd_post), .post_ok(sd_post_ok), .addr(sd_addr),
+        .clk(clk), .resetn(resetn),
+        .l_dw(sd_ldw), .l_hit(sd_lhit), .l_data(sd_ldata), .req(sd_req), .post(sd_post), .post_ok(sd_post_ok), .addr(sd_addr),
         .lanes(sd_lanes), .wdata(sd_wdata), .ack(sd_ack), .rdata(sd_rdata),
         .pclk(pclk), .prst(prst), .cmd_valid(cmd_valid), .cmd_ready(cmd_ready),
         .cmd_we(cmd_we), .cmd_addr(cmd_addr), .cmd_wdata(cmd_wdata), .cmd_wmask(cmd_wmask),
@@ -123,23 +130,32 @@ module tb_ahb_ddr3;
         cmd_ready <= seed_p[9:8] != 2'b00 && stall == 0;
     end
 
-    // the bus clocks a posted write waited for room, and the writes posted
-    // with none
-    integer n_wait = 0, n_post = 0;
+    // the bus clocks a posted write waited for room, the writes posted with
+    // none, the reads answered with no wait state, and the hazard sequences
+    integer n_wait = 0, n_post = 0, n_zw = 0, n_hseq = 0, n_cross = 0;
     always @(posedge clk)
         if (resetn) begin
             if (ram.stage[4]) n_wait = n_wait + 1;
             if (sd_post) n_post = n_post + 1;
+            if (hready && ram.sd_zw) begin
+                n_zw = n_zw + 1;
+                if (sd_post || dut.bus.q_we) fail("a read answered from the buffer past an unmerged write");
+            end
         end
 
     // ---- the AHB master --------------------------------------------------
-    // A transfer is queued as {write, size, address, data}; the queue holds
-    // one single transfer or one WRAP4 burst, issued back to back.
-    reg [31:0] q_a [0:3];
-    reg [2:0]  q_s [0:3];
-    reg        q_w [0:3];
-    reg [63:0] q_d [0:3];
-    reg        q_err [0:3];
+    // A transfer is queued as {write, size, address, data}, with the idle
+    // clocks before it; the queue holds one single transfer, one WRAP4
+    // burst, or one hazard sequence, issued back to back but for the idles.
+    reg [31:0] q_a [0:7];
+    reg [2:0]  q_s [0:7];
+    reg        q_w [0:7];
+    reg [63:0] q_d [0:7];
+    reg        q_err [0:7];
+    integer    q_g [0:7];
+    integer    gap = 0;
+    reg        q_burst = 1'b0;
+    reg [2:0]  q_hb = 3'd0;                 // its HBURST
     integer    q_n, q_i;
     reg        dp_on = 1'b0;                // a transfer in its data phase
     reg [31:0] dp_a;
@@ -207,11 +223,16 @@ module tb_ahb_ddr3;
                 hwdata <= dp_w ? q_d[q_i] : {$random, $random};
                 q_i = q_i + 1;
             end
-            if (q_i < q_n) begin
+            if (q_i < q_n && gap < q_g[q_i]) begin
+                gap = gap + 1;
+                htrans <= 2'b00;
+            end else if (q_i < q_n) begin
+                gap = 0;
                 haddr <= q_a[q_i];
                 hsize <= q_s[q_i];
                 hwrite <= q_w[q_i];
-                htrans <= (q_i == 0) ? 2'b10 : 2'b11;   // NONSEQ, then SEQ
+                hburst <= q_hb;
+                htrans <= (q_i == 0 || !q_burst) ? 2'b10 : 2'b11;   // NONSEQ, then SEQ in a burst
             end else
                 htrans <= 2'b00;
         end
@@ -233,6 +254,10 @@ module tb_ahb_ddr3;
         begin
             r = $random & 32'h7fffffff;
             q_i = 0;
+            gap = 0;
+            q_burst = 1'b0;
+            q_hb = 3'b000;
+            for (s = 0; s < 8; s = s + 1) q_g[s] = 0;
             case (r % 10)
                 0, 1: begin                 // a WRAP4 doubleword burst: a line fill or a write-back
                     l = r / 10;
@@ -245,6 +270,8 @@ module tb_ahb_ddr3;
                         q_err[s] = 1'b0;
                     end
                     q_n = 4;
+                    q_burst = 1'b1;
+                    q_hb = 3'b010;
                     n_bursts = n_bursts + 1;
                     if ((r % 10) == 0) n_rburst = n_rburst + 1;
                 end
@@ -263,6 +290,39 @@ module tb_ahb_ddr3;
                         q_a[0] = pick_ddr(r / 100); q_s[0] = 3'd3; q_w[0] = 1'b0;
                         q_d[0] = 64'd0; q_err[0] = 1'b0; q_n = 1;
                     end
+                end
+                4: begin                    // a read, then a write and a read of its line
+                    // back to back or 1 or 2 idles apart, twice: a read in
+                    // its address phase beside an unmerged write
+                    a = pick_ddr(r / 10);
+                    for (s = 0; s < 5; s = s + 1) begin
+                        q_a[s] = a | ((((r >> (2 * s + 8)) & 3)) << 3);
+                        q_s[s] = 3'd3;
+                        q_w[s] = s == 1 || s == 3;
+                        q_d[s] = {$random, $random};
+                        q_err[s] = 1'b0;
+                    end
+                    q_a[2] = q_a[1];
+                    q_g[2] = (r >> 20) % 3;
+                    q_g[4] = (r >> 22) % 3;
+                    if ((r >> 24) & 1) q_s[1] = (r >> 25) & 3;  // or a narrower write
+                    q_n = 5;
+                    n_hseq = n_hseq + 1;
+                end
+                5: begin                    // an INCR4 doubleword burst, from line i into line i - 1
+                    l = 26 + (r / 10) % 14;     // tag[l - 1] is tag[l] + 1
+                    d0 = (r / 1000) % 4;
+                    for (s = 0; s < 4; s = s + 1) begin
+                        q_a[s] = {2'b01, tag[l], 5'd0} + 8 * (d0 + s);
+                        q_s[s] = 3'd3;
+                        q_w[s] = (r / 7) % 4 == 0;
+                        q_d[s] = {$random, $random};
+                        q_err[s] = 1'b0;
+                    end
+                    q_n = 4;
+                    q_burst = 1'b1;
+                    q_hb = 3'b011;
+                    if (!q_w[0] && d0 != 0) n_cross = n_cross + 1;
                 end
                 default: begin              // a single transfer of any size
                     s = (r / 10) % 4;
@@ -305,10 +365,14 @@ module tb_ahb_ddr3;
                  n_cmd_rd, n_cmd_wr, n_masked, n_rd_ddr - n_cmd_rd, n_rd_ddr);
         $display("      %0d writes posted, %0d bus clocks spent waiting for room in the queue",
                  n_post, n_wait);
+        $display("      %0d reads answered with no wait state, %0d hazard sequences, %0d INCR4 reads across lines",
+                 n_zw, n_hseq, n_cross);
         // each read burst's last three beats at least come from the buffer
         if (n_rd_ddr - n_cmd_rd < 3 * n_rburst) fail("the line buffer served too few reads");
         if (n_errs < 50 || n_bursts < 5000) fail("too few refusals or bursts");
-        if (n_wait < 1000) fail("the queue was too seldom full");
+        if (n_wait < 500) fail("the queue was too seldom full");
+        if (n_zw < 3 * n_rburst || n_hseq < 2000 || n_cross < 1000)
+            fail("too few reads with no wait state, hazard sequences or reads across lines");
         if (errs == 0)
             $display("PASS  ahb_ddr3: every byte read back as last written, across both clocks");
         else

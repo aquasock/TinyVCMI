@@ -105,6 +105,9 @@ module ae350_sys #(
     wire [3:0] ram_prot;
 
     wire [1:0] ddr_dbg;
+    wire [1:0] sd_ldw;
+    wire sd_lhit;
+    wire [63:0] sd_ldata;
     wire sd_req;
     wire sd_post;
     wire sd_post_ok;
@@ -140,12 +143,16 @@ module ae350_sys #(
         .htrans(ram_trans),
         .hwrite(ram_write),
         .hsize(ram_size),
+        .hburst(ram_burst),
         .hprot0(ram_prot[0]),
         .hwdata(ram_wdata),
         .hrdata(ram_rdata),
         .hready(ram_ready),
         .hresp(ram_resp),
         .stray(ram_stray),
+        .sd_ldw(sd_ldw),
+        .sd_lhit(sd_lhit),
+        .sd_ldata(sd_ldata),
         .sd_req(sd_req),
         .sd_post(sd_post),
         .sd_post_ok(sd_post_ok),
@@ -158,6 +165,7 @@ module ae350_sys #(
 
     ahb_ddr3_bus #(.AW(25)) ddr (
         .clk(bus_clk), .resetn(resetn),
+        .l_dw(sd_ldw), .l_hit(sd_lhit), .l_data(sd_ldata),
         .req(sd_req), .post(sd_post), .post_ok(sd_post_ok), .addr(sd_addr), .lanes(sd_lanes),
         .wdata(sd_wdata), .ack(sd_ack), .rdata(sd_rdata),
         .q_we(q_we), .q_waddr(q_waddr), .q_wdata(q_wdata), .q_wgray(q_wgray),

@@ -9,14 +9,24 @@
 //
 // ahb_ram hands over two kinds of transfer:
 //
+//   A read raises req in its data phase, with addr steady, until ack; rdata
+//   is valid while ack is high, and ahb_ram registers it into HRDATA at
+//   that edge.  ack and rdata come from registers through logic, so a line
+//   reaches HRDATA in the clock it arrives.  Nothing is posted while a read
+//   is open.
+//
+//   A read that continues a burst in the line of the read before it is
+//   answered in its address phase with no wait state: l_hit says the line
+//   buffer holds the line of addr, the read before it, and l_data is the
+//   doubleword l_dw of the buffer, registered into HRDATA at the edge the
+//   read is accepted.  ahb_ram decides from HTRANS, HBURST, HSIZE and
+//   HADDR[4:0] whether a read is in its predecessor's line, so no address
+//   compare sits on the AE350's HADDR.
+//
 //   A write is posted: post pulses for one bus clock with addr, lanes and
 //   wdata valid in that clock, and is never refused.  ahb_ram posts only
 //   while post_ok is high, which promises room for that write and for one
 //   more posted in the next clock (xfifo_w's LEAD).
-//
-//   A read raises req, with addr steady, until ack pulses; rdata is valid
-//   while ack is high.  A read is never accepted in the cycle ack is high,
-//   and nothing is posted while a read is open.
 //
 // One DDR3 word is 32 bytes, one A25 cache line, byte k of the line at
 // cmd_wdata[8k +: 8] and write-mask bit k (ddr3_ctl's beat k / 4, lane
@@ -30,12 +40,15 @@
 //
 // The last line read is held in a one-line buffer, so a cache-line fill's
 // four doublewords cost one DDR3 read: the first misses and waits for the
-// line, the other three are answered from the buffer.  A write is merged
-// into the buffer as it leaves the queue's staging register, if it hits the
-// buffered line, so the buffer never holds stale data: the A25 is the RAM
-// port's only master.  A read waits while the staging register holds
-// anything, so it never sees the buffer before a write ahead of it is
-// merged.
+// line, the other three are answered from the buffer with no wait state.
+// A write is merged into the buffer as it leaves the queue's staging
+// register, if it hits the buffered line, so the buffer never holds stale
+// data: the A25 is the RAM port's only master.  A read in its data phase
+// waits while the staging register holds anything, so it never sees the
+// buffer before a write ahead of it is merged; a read answered in its
+// address phase follows a read of its own burst, so no write is in the
+// queue's staging register or in its data phase then (checked in
+// simulation).
 //
 // The bus clock and PCLK come from different PLLs.  The queue is an
 // asynchronous FIFO with Gray-coded pointers (xfifo_w, xfifo_r); its LUT
@@ -65,6 +78,9 @@ module ahb_ddr3 #(
     // the bus clock side, from ahb_ram
     input  wire          clk,
     input  wire          resetn,
+    input  wire [1:0]    l_dw,
+    output wire          l_hit,
+    output wire [63:0]   l_data,
     input  wire          req,
     input  wire          post,
     output wire          post_ok,
@@ -93,7 +109,8 @@ module ahb_ddr3 #(
     wire [4:0]    q_wgray, q_rgray;
     wire [255:0]  y_line;
     ahb_ddr3_bus #(.AW(AW)) bus (
-        .clk(clk), .resetn(resetn), .req(req), .post(post), .post_ok(post_ok), .addr(addr),
+        .clk(clk), .resetn(resetn), .l_dw(l_dw), .l_hit(l_hit), .l_data(l_data),
+        .req(req), .post(post), .post_ok(post_ok), .addr(addr),
         .lanes(lanes), .wdata(wdata), .ack(ack), .rdata(rdata),
         .q_we(q_we), .q_waddr(q_waddr), .q_wdata(q_wdata), .q_wgray(q_wgray),
         .q_rgray(q_rgray), .y_tog(y_tog), .y_line(y_line));
@@ -283,14 +300,20 @@ module ahb_ddr3_bus #(
 ) (
     input  wire          clk,
     input  wire          resetn,
+    // a read in its address phase in the line of addr: its doubleword, and
+    // whether the buffer holds that line
+    input  wire [1:0]    l_dw,
+    output wire          l_hit,
+    output wire [63:0]   l_data,
+    // its data phase
     input  wire          req,
     input  wire          post,
     output wire          post_ok,
     input  wire [AW+4:3] addr,
     input  wire [7:0]    lanes,
     input  wire [63:0]   wdata,
-    output reg           ack = 1'b0,
-    output reg  [63:0]   rdata = 64'd0,
+    output wire          ack,
+    output wire [63:0]   rdata,
     // to the PCLK half, each a register on the bus clock
     output wire          q_we,
     output wire [3:0]    q_waddr,
@@ -320,9 +343,12 @@ module ahb_ddr3_bus #(
     wire [7:0]    s_lanes = q_wdata[71:64];
     wire [63:0]   s_wd = q_wdata[63:0];
 
+    assign l_hit = hit;
+    assign l_data = lb_data[64*l_dw +: 64];
+
     assign dbg = {b_read, lb_valid};
-    wire rd_go = req && !ack && !b_read && !q_we;
     wire full;
+    wire rd_go = req && !b_read && !q_we;
     wire rd_push = rd_go && !hit && !full;
     wire push = post || rd_push;
     xfifo_w #(.W(AW + 75), .LOG2(4), .LEAD(2)) fw (
@@ -331,6 +357,12 @@ module ahb_ddr3_bus #(
         .full(full), .room(post_ok),
         .q_we(q_we), .q_waddr(q_waddr), .q_wdata(q_wdata), .q_wgray(q_wgray),
         .q_rgray(q_rgray));
+
+    // the data phase ends in the clock its line arrives, or its buffer hit
+    // is seen; the staging register still holds the read, since nothing is
+    // pushed while it is open
+    assign ack = (b_read && y_edge) || (rd_go && hit);
+    assign rdata = b_read ? y_line[64*s_dw +: 64] : lb_data[64*addr[4:3] +: 64];
 
     function [255:0] merge(input [255:0] old, input [1:0] dw, input [7:0] ln, input [63:0] wd);
         integer k;
@@ -347,27 +379,16 @@ module ahb_ddr3_bus #(
 
     always @(posedge clk) begin
         if (!resetn) begin
-            ack <= 1'b0;
-            rdata <= 64'd0;
             lb_valid <= 1'b0;
             b_read <= 1'b0;
             y_s <= 3'd0;
         end else begin
-            ack <= 1'b0;
             y_s <= {y_s[1:0], y_tog};
             if (b_read && y_edge) begin
-                // the staging register still holds the read: nothing is
-                // pushed while it is open
                 b_read <= 1'b0;
                 lb_valid <= 1'b1;
                 lb_tag <= s_line;
                 lb_data <= y_line;
-                rdata <= y_line[64*s_dw +: 64];
-                ack <= 1'b1;
-            end
-            if (rd_go && hit) begin
-                rdata <= lb_data[64*addr[4:3] +: 64];
-                ack <= 1'b1;
             end
             if (rd_push)
                 b_read <= 1'b1;

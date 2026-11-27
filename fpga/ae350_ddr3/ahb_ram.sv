@@ -15,8 +15,9 @@
 // a line fill gets ERROR (core-log entry 7). Zero is an illegal
 // instruction, so a fetch that is really executed still traps. stray
 // pulses as each transfer outside both windows completes. Byte, halfword,
-// word and doubleword writes update only their own byte lanes. Burst type
-// is not needed: every beat is a complete transfer here.
+// word and doubleword writes update only their own byte lanes. Every beat
+// is a complete transfer here; the burst type only tells whether a beat is
+// in the line of the beat before it.
 //
 // As in ahb_boot_rom, the transfer is registered when accepted and the
 // macro's inputs come from flip-flops. A block RAM write is done in the
@@ -25,9 +26,18 @@
 // output. A DDR3 write is posted to ahb_ddr3's queue (sd_post) in its data
 // phase with no wait state while sd_post_ok promises room, and otherwise
 // waits in its data phase until it does. A DDR3 read is requested (sd_req)
-// from the cycle after it is accepted and completes in the cycle after
-// sd_ack. sd_addr and sd_lanes hold the transfer in the cycle after it is
-// accepted, and sd_wdata is the bus's write data.
+// from the cycle after it is accepted and completes at the edge sd_ack is
+// high, sd_rdata registered into HRDATA; but a SEQ beat after a DDR3 read,
+// in that read's 32-byte line, is answered as it is accepted, with no wait
+// state, if ahb_ddr3's line buffer holds the line (sd_lhit, from sd_addr):
+// sd_ldata, the buffer's doubleword sd_ldw, is registered into HRDATA then.
+// A SEQ beat is in its predecessor's line unless it starts a line
+// (HADDR[4:0] 0) in a burst that is not a wrapping burst of at most 32
+// bytes. The decision uses only HTRANS, HBURST, HSIZE, HADDR[4:0] and
+// registers, so no address compare sits on the macro's outputs. sd_addr
+// and sd_lanes hold the transfer last accepted, and sd_wdata is the bus's
+// write data. Simulation-only: MUT_SEQLINE takes every SEQ beat to be in
+// its predecessor's line; tb_ahb_ddr3 must fail it.
 module ahb_ram #(
     parameter integer BYTES = 65536,
     parameter [31:0] BASE = 32'h7fff0000,
@@ -40,6 +50,7 @@ module ahb_ram #(
     input  wire [1:0]  htrans,
     input  wire        hwrite,
     input  wire [2:0]  hsize,
+    input  wire [2:0]  hburst,
     input  wire        hprot0,
     input  wire [63:0] hwdata,
     output reg  [63:0] hrdata,
@@ -47,6 +58,9 @@ module ahb_ram #(
     output reg         hresp,
     output reg         stray,
 
+    output wire [1:0]  sd_ldw,
+    input  wire        sd_lhit,
+    input  wire [63:0] sd_ldata,
     output reg         sd_req,
     output reg         sd_post,
     input  wire        sd_post_ok,
@@ -82,6 +96,18 @@ module ahb_ram #(
     wire sd_win = (haddr >> SDRAM_SPAN_BITS) == (SDRAM_BASE >> SDRAM_SPAN_BITS)
                   && (haddr >> SPAN_BITS) != (BASE >> SPAN_BITS);
     assign sd_wdata = hwdata;
+    assign sd_ldw = haddr[4:3];
+    reg sd_rd = 1'b0;                       // the transfer last accepted was a DDR3 read
+`ifdef MUT_SEQLINE
+    wire seq_line = htrans == 2'b11;
+`else
+    wire wrap_line = (hburst == 3'b010 && hsize <= 3'd3) ||   // WRAP4
+                     (hburst == 3'b100 && hsize <= 3'd2) ||   // WRAP8
+                     (hburst == 3'b110 && hsize <= 3'd1);     // WRAP16
+    wire seq_line = htrans == 2'b11 && (haddr[4:0] != 5'd0 || wrap_line);
+`endif
+    // a DDR3 read answered from the line buffer as it is accepted
+    wire sd_zw = sd_rd && seq_line && sd_lhit;
 
     genvar lane;
     generate
@@ -113,6 +139,7 @@ module ahb_ram #(
             sd_post <= 1'b0;
             sd_addr <= 0;
             sd_lanes <= 8'd0;
+            sd_rd <= 1'b0;
         end else begin
             stage <= 5'b00000;
             stray <= 1'b0;
@@ -125,10 +152,13 @@ module ahb_ram #(
                     hit <= (haddr >> SPAN_BITS) == (BASE >> SPAN_BITS);
                     sd_addr <= haddr[SDRAM_SPAN_BITS-1:3];
                     sd_lanes <= lane_mask(haddr[2:0], hsize);
+                    sd_rd <= sd_win && !hwrite;
                     fetch <= !hprot0 && !hwrite;
                     lanes <= lane_mask(haddr[2:0], hsize);
                     if (sd_win && hwrite && sd_post_ok) begin
                         sd_post <= 1'b1;            // posted in its data phase
+                    end else if (sd_zw) begin
+                        hrdata <= sd_ldata;         // from the line buffer
                     end else begin
                         hready <= 1'b0;
                         if (!sd_win)

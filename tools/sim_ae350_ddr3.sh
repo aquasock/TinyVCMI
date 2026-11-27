@@ -7,10 +7,10 @@
 # promised one entry late, and a read handed out ahead of the write before
 # it.  Then fpga/ae350_ddr3/tb_ahb_ddr3.v drives ahb_ram and ahb_ddr3 with
 # a pipelined AHB master against a behavioural ddr3_ctl request port, the
-# bus clock and PCLK at incommensurate periods, and must pass; then four
+# bus clock and PCLK at incommensurate periods, and must pass; then five
 # mutants of the bridge must fail: a write's mask on the doubleword after
-# its own, a write that hits the line buffer left unmerged, and the queue's
-# two.  Then the video path (below).  Nothing here touches the board.
+# its own, a write that hits the line buffer left unmerged, every SEQ beat
+# taken to be in the line of the beat before it, and the queue's two.  Then the video path (below).  Nothing here touches the board.
 set -uo pipefail
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 # shellcheck source=tools/openflow_env.sh
@@ -48,7 +48,7 @@ done
 
 line=$(run base); echo "$line"; [[ $line == PASS* ]] || rc=1
 grep -E "^      " "$out/base.log"
-for m in mask:MUT_MASK nomerge:MUT_NOMERGE full:MUT_FULL bypass:MUT_BYPASS; do
+for m in mask:MUT_MASK nomerge:MUT_NOMERGE seqline:MUT_SEQLINE full:MUT_FULL bypass:MUT_BYPASS; do
     line=$(run "${m%%:*}" "-D${m##*:}")
     if [[ $line == FAIL* ]]; then echo "PASS  the ${m%%:*} mutant fails: $line"
     else echo "FAIL  the ${m%%:*} mutant passes: $line"; rc=1; fi

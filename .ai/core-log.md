@@ -1103,3 +1103,37 @@ Plan the read path redesign for the user's approval, starting with the burst lin
 - User Test: N/A
 
 ---
+
+## 33 COMMIT Unreleased 2026-11-27T13:30:00-07:00
+
+#### Coming From:
+
+Unreleased 24204e2
+
+#### Purpose:
+
+Answer the AE350's sequential read beats from the bridge's line buffer at zero wait states, as the first stage of the approved DDR3 read path redesign.
+
+#### Outcome:
+
+Sequential reads that stay in the previous beat's line now complete with no wait state, which cut a cached line read from about 636 ns to 508 to 553 ns, and the user found the board behaving as before. A first version looked the line up from HADDR in the address phase with a 27-bit tag compare and pushed misses early, and it passed the bench, but the twelve-seed sweep `build/ae350/b1` failed timing on every seed (`bus_clk` 62 to 71 MHz against 75) because the path ran from the AE350's `DDR_HADDR` through the compare to `hrdata`, so it was redesigned and `b1` deleted. In the second version `ahb_ram.sv` takes HBURST and answers a beat at once when a register says the previous accepted beat was a DDR3 read, the beat is SEQ and in the same line (HADDR[4:0] not zero, or a wrapping burst no wider than 32 bytes), and `ahb_ddr3_bus` reports the line buffer holding the line of its registered address, reading the doubleword from `lb_data` by HADDR[4:3]; NONSEQ reads keep the request and acknowledge path, whose acknowledge and read data are now combinational, and the early push was dropped. Such a beat's predecessor is a read of the same burst that waited for no queued write, and nothing is posted during a read burst, so no unmerged write can be pending, which the bench asserts at every zero-wait answer. `ae350_sys.sv` wires the new ports; `tb_ahb_ddr3.v` drives HBURST, WRAP4 and INCR4 bursts including INCR4 bursts that cross into the next line, read, write and read sequences of one line with zero to two idle clocks, and counts zero-wait answers, hazard sequences and crossing bursts against minimums; `tools/sim_ae350_ddr3.sh` replaces the `nohazard` mutant with `seqline`, which drops the same-line test. The gate passed with 54,396 reads, 37,489 writes, 19,323 zero-wait answers, 3,912 hazard sequences and 2,367 crossing bursts, with every mutant and the video bench mutants failing as required, and `tools/ddr3_write.py --check` was current. The sweep `build/ae350/b2` closed every clock on seeds 2, 5, 9 and 10; seed 2 (`bus_clk` 82.45, `pclk` 102.20 MHz, `ctrl.fs` sha256 `1279bd088636e532...`) was loaded on the warm board, trained `error 0`, `d 1 b 2`, passed 34 memory test passes, and `rd_lat` gave 538.6 ns per line for seq8, 508.0 for seq1 and 553.1 for scatter, with hit beat waits at zero, about 338 ns of port wait per line of which a miss round trip is about 325 ns, and about 200 ns per line with the port not waiting, which is not the handshake as entry 32 supposed but most likely the AE350 between cache misses. Because the CPU waits for each miss, a single sequential read stream is bound to about 130 to 150 MB/s even with fetch-ahead, so read throughput near the 466 MB/s of posted writes needs several reads outstanding, from a DMA engine or the video fetch, which the user was told. `.ai/core.md` was not changed. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering and the active log's 33 of 100 entries.
+
+#### Next Steps:
+
+Plan stage 2 for the user's approval: a four to eight line read buffer with several reads in flight, an asynchronous return FIFO, sequential fetch-ahead, invalidation and merging by overlapping writes, a counter for the clocks the AE350 spends between misses, and PCLK-side taps on `ddr3_arb`'s tags for entry 31's hang, with a bench mutant for each; then stage 3 (the PHY padding and the controller path) and stage 4 (the crossing). Entry 31's known issue, the static columns and entry 29's waiting items stand.
+
+#### Files Modified:
+
+- fpga/ae350_ddr3/ae350_sys.sv
+- fpga/ae350_ddr3/ahb_ddr3.v
+- fpga/ae350_ddr3/ahb_ram.sv
+- fpga/ae350_ddr3/tb_ahb_ddr3.v
+- tools/sim_ae350_ddr3.sh
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: PASS
+
+---
