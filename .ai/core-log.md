@@ -1213,3 +1213,33 @@ The user is to test seed 8's image on the HDMI picture and the flips, and a seed
 - User Test: NOT RUN
 
 ---
+
+## 36 COMMIT Unreleased 2026-11-27T18:56:00-07:00
+
+#### Coming From:
+
+Unreleased 361b474
+
+#### Purpose:
+
+Record the user's acceptance of stage 2's board result, which entry 35 left as not run.
+
+#### Outcome:
+
+The user reports the HDMI picture perfect on seed 8 of `build/ae350/e1`, and the full `video_test` run agrees: 48,348 bytes loaded in 0.26 s, the 1280x720 test screen on both pages, then 3,601 frames and 3,601 flips over 60 s with `LATE` 0 at every one-second report, ending `TinyVCMI VIDEO OK` and `TinyVCMI EXIT 0`, with a full-frame fill of 27,785 us against 73,000 before entry 33. That completes the cycle's evidence, so entry 35's `User Test: NOT RUN` is superseded by this entry rather than rewritten, and stage 2 of the read path redesign is accepted on the board. The board is left on seed 8 (`ctrl.fs` SHA-256 `6757c049b4f0a2d7360ff19f0bacc543c92cabd1c0dc743d10ebad343c6bc5c6`, `pclk` 102.90 MHz, `bus_clk` 75.64) in one-wire mode, trained, with the boot ROM waiting for a program; the desktop is not restored. Nothing was built, rebuilt or reloaded for this entry. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering and the active log's 36 of 100 entries.
+
+#### Next Steps:
+
+The next cycle's largest lever on closure is the STALL report's formatter, `soc.regs.hold` through the 111-character barrel shift, which is up to 3.4 ns over on the five seeds that miss `bus_clk`; then `glue.bist.rcnt`'s enable (-1.61 ns on four), `core.check.all_r` and `glue.ctl.rdy`. A seed must then pass a video-liveness check before it is loaded, since seed 3 closed with the most margin and its flip never acknowledged while seed 8 ran 3,601 flips clean, and nothing in the flow tests the pixel-clock handshake. Scattered reads at 583.4 ns are slower than stage 1's 553.1 and unexplained, `docs/ahb-bridge-design.md` still describes the pre-rewrite bridge, and the placement-dependent flip hang deserves a reference record. Entry 31's lost DDR3 read is still open and deferred, as are stages 3 and 4, the static columns and entry 29's waiting items.
+
+#### Files Modified:
+
+None.
+
+#### Status:
+
+- Build: N/A
+- Deployment: N/A
+- User Test: PASS
+
+---
