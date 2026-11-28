@@ -1497,3 +1497,40 @@ The SDL side of cycle C is ready for the engine: next are SDL_ttf and a minimal 
 - User Test: PASS
 
 ---
+
+## 44 COMMIT Unreleased 2026-11-27T22:15:09-07:00
+
+#### Coming From:
+
+Unreleased f191b1d
+
+#### Purpose:
+
+Build SDL2_ttf and SDL2_image for the AE350 as VCMI uses them, the next part of cycle C the user approved, and prove them on the board.
+
+#### Outcome:
+
+SDL2_ttf 2.24.0 with its vendored FreeType 2.13.2 and SDL2_image 2.8.12 now build for `rv32imc` and render and decode correctly on HDMI, which the user saw. A survey of VCMI 1.7.5 at `6901839` found it uses about twenty `TTF_` calls on plain TrueType Noto fonts (`config/fonts.json`, `Mods/vcmi`) and SDL_image only for `IMG_Load_RW` of images that are not H3 PCX and `IMG_SavePNG`, and MiSTer-VCMI's `scripts/build-deps.sh` gave the proven options. The new `tools/build_sdl2_addons.sh` fetches both release tarballs and VCMI's `NotoSans-Medium.ttf`, each with a SHA-256 pinned and equal to MiSTer-VCMI's independent copy, and builds `libSDL2_ttf.a` (FreeType's base, bitmap, glyph, stroker and synthetic-bold files, and the autofit, truetype, sfnt, psnames, smooth and raster modules, 19 objects) and `libSDL2_image.a` (the stb backend for PNG and JPEG, CMake's default BMP, GIF, LBM, PCX, PNM, QOI, SVG, TGA, XCF, XPM and XV loaders, PNG and JPEG saving, 20 objects) beside `libSDL2.a` in about 11 s; FreeType's module list and options are TinyVCMI's headers in `firmware/sdl/freetype`, selected through `FT_CONFIG_MODULES_H` and `FT_CONFIG_OPTIONS_H`, with zlib, bzip2, PNG, Brotli and HarfBuzz off as SDL_ttf's CMake sets them, so no source was patched. The new `firmware/apps/ttf_test` (ELF SHA-256 `7ed9d70e8658dc3ff5eafd4021d5bf030b1850b04b277edc6f2c8f48e7042e18`, 1.56 MB of text with the 601,272-byte font embedded by `objcopy`, loaded in 8.4 s) sets up VCMI's software-renderer screen on the zero-copy path, opens the font with `TTF_OpenFontRW` and mono hinting in about 2 ms, checks the metrics, `TTF_SizeUTF8` and `TTF_GlyphIsProvided`, draws five 28-point lines blended plain, bold and italic, solid and in UTF-8, each in 9 to 17 ms, and requires their glyph pixels on the shown page, then round-trips a 64x48 pattern through memory as PNG (4,055 bytes, 20.7 ms, exact), BMP (12,410 bytes, 1.2 ms, exact) and JPEG (2,082 bytes, 23.1 ms, mean error 0.35) and shows all three. On seed 8 of `build/ae350/e1` (`ctrl.fs` SHA-256 `6757c049b4f0a2d7360ff19f0bacc543c92cabd1c0dc743d10ebad343c6bc5c6`), still trained and handed over from entry 38, warm and powered from the host's 5 V over USB-C OTG, it reported `TTF OK, 0 wrong` and exit 0 on all three runs, and frames captured from `/dev/video0` showed the five lines, with é, ñ, ö, ß and Å drawn, and the three decoded patterns equal to the originals; the user reported that it looks good. The first run's 15-second hold, a loop reading only the cycle counter, drew fifteen `STALL:` reports and then exited normally: `ae350_sys.sv`'s watchdog counts bus clocks in which no port accepts a transfer, not, as entry 31 described it, clocks in which a port holds `HREADY` low, so a program running from its caches with no bus access for about 1.8 s reads to it as a stopped CPU, and the report's own state showed nothing pending in the DDR3 path. The hold now polls the video unit's frame counter, and the later runs drew no report. `THIRD_PARTY.md` records SDL2_ttf, FreeType under its GPL option, SDL2_image with the licences of its bundled `stb_image`, `miniz`, `tiny_jpeg`, `nanosvg` and `qoi`, and the OFL font as test data not committed; `docs/vcmi-port-plan.md` and the README record the libraries. The board is left in one-wire mode with seed 8 trained, the test's last picture shown and the boot ROM at `LOAD`. `.ai/core.md` was not changed. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` unchanged and that no settled log entry was altered, and checked this entry's six sections, ordering, prose, Status values, numbering and the active log's 44 of 100 entries.
+
+#### Next Steps:
+
+Cycle C's last piece is input: decode TinyTang's mouse and keyboard frames (INPUT-002, PROT-003) into SDL events in the `tinyvcmi` driver's `PumpEvents`, which needs a link mode this image's UART does not yet have. Then cycle B's runtime pieces the engine needs, the cooperative thread shim, the read-only file layer and the event loop, and the asset delivery choice, before cycle D builds VCMI for `rv32imc`. A program idling from its caches for more than about 1.8 s will draw false `STALL:` reports; if the engine's waits do that, the watchdog should count only clocks with a transfer waiting, a fabric change. The fence decision (AE350-012), read path stages 3 and 4, the copy's and scattered reads' costs, entry 36's closure and video-liveness findings, entry 31's lost DDR3 read, the static columns and entry 29's waiting items stand.
+
+#### Files Modified:
+
+- README.md
+- THIRD_PARTY.md
+- docs/vcmi-port-plan.md
+- firmware/apps/ttf_test/Makefile
+- firmware/apps/ttf_test/main.c
+- firmware/sdl/freetype/ftmodule_tinyvcmi.h
+- firmware/sdl/freetype/ftoption_tinyvcmi.h
+- tools/build_sdl2_addons.sh
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: PASS
+
+---

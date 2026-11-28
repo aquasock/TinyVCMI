@@ -43,6 +43,44 @@ and design lessons taken from sibling projects are recorded in
     over the window surface's own pixels and skips a copy of such a texture
     onto itself, so that VCMI's screen is drawn straight into the shown page.
 
+## SDL2_ttf 2.24.0, with FreeType 2.13.2
+
+- **Use:** VCMI's TrueType fonts (`config/fonts.json`), opened with
+  `TTF_OpenFontRW` and drawn solid and blended.
+- **Licence:** SDL2_ttf is zlib. FreeType, which the SDL2_ttf release vendors
+  under `external/freetype`, is dual-licensed under its FreeType License or
+  the GNU GPL version 2 or any later version; TinyVCMI uses it under the
+  GPL, which version 3 of satisfies. HarfBuzz, also vendored, is not built.
+- **Not committed:** fetched by `tools/build_sdl2_addons.sh` from
+  <https://github.com/libsdl-org/SDL_ttf>, release `release-2.24.0`, the
+  tarball's SHA-256 pinned in the script, and built under `build/sdl/`.
+- **Modifications:** none to either source. FreeType's module list and
+  options are TinyVCMI's own headers, `firmware/sdl/freetype/`, selected
+  with FreeType's `FT_CONFIG_MODULES_H` and `FT_CONFIG_OPTIONS_H`: the
+  TrueType driver, sfnt, psnames, the auto-hinter and the two rasterisers,
+  without zlib, bzip2, PNG, Brotli or HarfBuzz.
+
+## SDL2_image 2.8.12
+
+- **Use:** VCMI's `IMG_Load_RW` for every image that is not an H3 PCX, and
+  `IMG_SavePNG` for screenshots.
+- **Licence:** zlib. Its bundled decoders and encoders keep their own
+  licences: `stb_image.h` and `tiny_jpeg.h` public domain, `miniz.h` public
+  domain (Unlicense), `nanosvg.h` and `nanosvgrast.h` zlib, `qoi.h` MIT.
+- **Not committed:** fetched by `tools/build_sdl2_addons.sh` from
+  <https://github.com/libsdl-org/SDL_image>, release `release-2.8.12`, the
+  tarball's SHA-256 pinned, and built under `build/sdl/`.
+- **Modifications:** none. Built as MiSTer-VCMI builds it: the stb backend
+  for PNG and JPEG, CMake's default formats, AVIF, JXL, TIFF and WebP off.
+
+## Noto Sans Medium (test data, not distributed)
+
+`tools/build_sdl2_addons.sh` fetches `NotoSans-Medium.ttf` from VCMI at
+commit `6901839`, its SHA-256 pinned, into `build/sdl/fonts/` for
+`firmware/apps/ttf_test`, which embeds it in a test program run on the
+board. The font is Google's, under the SIL Open Font License 1.1, and is not
+committed to this repository.
+
 ## SDL2 drivers written for this project
 
 `firmware/sdl/SDL_tinyvcmivideo.c`, `SDL_tinyvcmivideo.h` and

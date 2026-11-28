@@ -379,7 +379,10 @@ before it has a result.
    from 113 ms to 36.0 ms; the cache-off window of entry 28 is now slower than
    the cache and is not to be used for speed.
 2. **C. SDL and the video driver.** In progress: SDL2 2.32.10 draws and flips
-   on the board (entries 37 and 38). SDL2 first, then SDL_ttf and a minimal
+   on the board (entries 37 and 38), and SDL2_ttf 2.24.0 and SDL2_image
+   2.8.12 render VCMI's Noto font and round-trip PNG, BMP and JPEG there
+   (entry 44, `firmware/apps/ttf_test`); injected input remains. SDL2 first,
+   then SDL_ttf and a minimal
    SDL_image, with the `tinyvcmi` driver and a test program that flips pages
    and takes injected input. Hardware: G1. As MiSTer does, SDL2 is the
    upstream library and not a shim: MiSTer vendors SDL2 2.32.10, SDL2_ttf

@@ -156,7 +156,8 @@ acknowledged a page flip (entry 35).
   program with `tools/load_ae350.py`. Programs are under `firmware/apps/` and
   build with `make` against the runtime in `firmware/rt/`.
 - `tools/build_sdl2.sh` fetches the pinned SDL2 release and builds it for the
-  AE350 with the patches in `firmware/sdl/`.
+  AE350 with the patches in `firmware/sdl/`; `tools/build_sdl2_addons.sh`
+  then builds SDL2_ttf, with FreeType, and SDL2_image beside it.
 
 Two offline checks need no board: `tools/build_openflow_smoke.sh` builds a
 minimal design through the whole open toolchain, and
