@@ -101,6 +101,26 @@ memory and no per-frame upload happens (`client/renderSDL/ScreenHandler.cpp`
 pixels are the DDR3 frame buffer, and `SDL_RenderCopy` of that texture over a
 same-sized window is a page flip rather than a copy.
 
+## The libraries, built
+
+zlib 1.3.1, minizip-ng 4.0.10, libsquish 1.15, Boost 1.90.0 (`atomic`,
+`container`, `date_time`, `filesystem`, `program_options` and every library's
+headers) and oneTBB 2022.3.0 build for the AE350 with the threaded toolchain
+(`tools/build_vcmi_deps.sh`, entry 50) and work on the board
+(`firmware/apps/deps_test`): Boost.Filesystem walks the card's data, and
+oneTBB runs `parallel_for`, `parallel_reduce`, task groups, arenas and its
+concurrent containers with one thread, `max_concurrency` 1. Three choices
+carry into the engine build. Boost.Locale is not built, so VCMI's
+`TextOperations::toUnicode` and `fromUnicode` need the port's own converter
+for the single-byte Windows code pages the game's text uses (CP1250 to
+CP1252), and `locale` leaves VCMI's `BOOST_COMPONENTS`. Boost.Asio is
+installed as headers only and needs sockets the AE350 lacks, so the event loop
+item below still stands. And everything built against the threaded toolchain
+must use its flags (`tools/cmake/ae350-threads.cmake`), which tell Boost and
+the C++ library that the atomics are always lock-free and which platform this
+is. SDL2, SDL2_ttf and SDL2_image, built by the xPack toolchain, link into a
+threaded program unchanged (`sdl_test` built with `RT_THREADS` passes G1).
+
 ## What the AE350 runtime needs
 
 1. **Threads.** Built (entry 49): `firmware/rt/pthread.c` is a cooperative

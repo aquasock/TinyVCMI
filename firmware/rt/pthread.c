@@ -797,6 +797,56 @@ int pthread_rwlock_unlock(pthread_rwlock_t *l)
 	return 0;
 }
 
+/* ----------------------------------------------------------- semaphores */
+
+#include <semaphore.h>
+
+int sem_init(sem_t *sem, int pshared, unsigned value)
+{
+	(void)pshared;
+	sem->count = (int)value;
+	return 0;
+}
+
+int sem_destroy(sem_t *sem)
+{
+	(void)sem;
+	return 0;
+}
+
+static int sem_until(sem_t *sem, const struct timespec *until, int try)
+{
+	while (sem->count <= 0) {
+		if (try || past(until)) {
+			errno = try ? EAGAIN : ETIMEDOUT;
+			return -1;
+		}
+		tv_thread_yield();
+	}
+	sem->count--;
+	return 0;
+}
+
+int sem_wait(sem_t *sem) { return sem_until(sem, NULL, 0); }
+int sem_trywait(sem_t *sem) { return sem_until(sem, NULL, 1); }
+
+int sem_timedwait(sem_t *sem, const struct timespec *until)
+{
+	return sem_until(sem, until, 0);
+}
+
+int sem_post(sem_t *sem)
+{
+	sem->count++;
+	return 0;
+}
+
+int sem_getvalue(sem_t *sem, int *value)
+{
+	*value = sem->count;
+	return 0;
+}
+
 /* ------------------------------------------------ keys and once routines */
 
 static unsigned char key_used[KEYS_MAX];

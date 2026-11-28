@@ -1706,3 +1706,50 @@ The libraries VCMI links, built with the threaded toolchain for `rv32imc`: Boost
 - User Test: NOT RUN
 
 ---
+
+## 50 COMMIT Unreleased 2026-11-28T07:43:34-07:00
+
+#### Coming From:
+
+Unreleased b93650b
+
+#### Purpose:
+
+Build the libraries VCMI 1.7.5 links for the AE350 with the threaded toolchain and prove them on the board, the second of the software cycles the user chose before the link at speed.
+
+#### Outcome:
+
+Every library VCMI needs besides SDL now builds for the AE350 and works on the board. The new `tools/build_vcmi_deps.sh` builds zlib 1.3.1, libsquish 1.15, minizip-ng 4.0.10, Boost 1.90.0 and oneTBB 2022.3.0 as static libraries into `build/deps/prefix`, through the new CMake toolchain file `tools/cmake/ae350-threads.cmake` for the threaded GCC of entry 49; it uses MiSTer-VCMI's versions and options, and every tarball's SHA-256 is pinned, each taken from a fresh upstream download equal to MiSTer's own copy. Getting there took a set of supplements, most of them shared with the engine build to come. Newlib for riscv lacks `lstat`, `utime`, `statvfs`, `posix_memalign` (declared but absent from `libc.a`), semaphores and `dlfcn`, so the new `firmware/rt/posix.c` provides `lstat` (as `stat`), `utime` and `statvfs` (`EROFS` and `ENOSYS`, the card being read-only), `dlopen` and its kin (nothing loads), and `__stack_chk_guard` with a `__stack_chk_fail` that reports `TinyVCMI STACK SMASHED`, all linked into every program. `firmware/rt/pthread.c` gains POSIX semaphores, and `firmware/rt/include` gains `dlfcn.h`, `semaphore.h`, a `sys/utime.h`, a `sys/statvfs.h` and a `sys/stat.h` that wraps newlib's with `lstat`. A bare-metal compiler defines no OS macro, so Boost selected no platform and Boost.Container took its Win32 branch. The new `firmware/rt/include/tinyvcmi_target.h`, force-included by the toolchain file and by `rt.mk` with `RT_THREADS`, defines `TINYVCMI_AE350` and points Boost at `tinyvcmi_boost_platform.hpp`, which is Boost's own generic-unix detection. Without the A extension GCC reports the atomics only sometimes lock-free and Boost.Atomic refused the target; both now define them always lock-free, which is true on this one hart because `atomic.c` masks interrupts, and which changes no generated code. Boost is built without Locale, whose only VCMI use is converting the game's Windows code-page text and which would bring Boost.Thread. Boost.Container's dlmalloc is built with `HAVE_MMAP=0`, and Boost.Filesystem's compile-only `fdopendir` check is set absent. Every library's headers are installed for VCMI's header-only uses. oneTBB is patched in four places by the new `firmware/deps/onetbb-2022.3.0-ae350.patch`, to accept `TINYVCMI_AE350` where it names its OS, turn resumable tasks off and use `memalign`; it is built without IPO or PIC, and `firmware/rt/link.ld` now places a `.got`, which no image currently has. Everything builds from scratch in 13.5 s. The new `firmware/apps/deps_test` (932 KB of text), built with `RT_THREADS`, ran on seed 8 of `build/ae350/e1` under TinyTang `c46548b` to `TinyVCMI DEPS OK, 0 wrong` and `EXIT 0`. It round-tripped 64 KiB through zlib and a 20,000-byte entry through an in-memory zip, and produced libsquish's DXT1 block `50d1301f55ffaa00` as the same code built for the host does. Boost.Filesystem listed `/card/data/Data`, 7 files and 273,733,593 bytes, the host copy's total. It also parsed options, did date arithmetic, and ran oneTBB's `parallel_for`, `parallel_reduce`, `task_group`, `task_arena`, `global_control` and four concurrent containers with `max_concurrency` 1 in 25.4 ms. The first run's two failures were the test's own: a guessed DXT1 error bound, and one `error_code` shared between the iterator and the calls inside the loop. `sdl_test` built with `RT_THREADS` passed `G1` with entry 43's frame times, so the SDL libraries built by the xPack toolchain need no rebuild, and `thread_test` and `card_test` passed again with the new runtime; every app rebuilds. `THIRD_PARTY.md` records the five libraries, their licences and the oneTBB patch, `docs/vcmi-port-plan.md` records them as built with the choices they leave the engine build, and TOOL-077 was added to `.ai/core-reference.md`. The board is left in 2-wire mode with TinyVCMI's image loaded, the A25 at its boot ROM's `LOAD` and the desk layer on. The user did not test this cycle on the board. `.ai/core.md` was not changed. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` unchanged and that no settled log entry was altered, validated the new record against the reference schema with every YAML block parsing and 117 unique record IDs, and checked this entry's six sections, ordering, prose, Status values, numbering and the active log's 50 of 100 entries.
+
+#### Next Steps:
+
+Build VCMI 1.7.5 itself at `6901839` with MiSTer's option set through `tools/cmake/ae350-threads.cmake`, against `build/deps/prefix` and the SDL libraries in `build/sdl`. Expect to port four things. `locale` leaves `BOOST_COMPONENTS` and `TextOperations` gets a table converter for the CP1250 to CP1252 text. `boost::asio::io_context` is replaced by a loop on the cooperative scheduler, single-player needing no sockets. VCMI's platform detection (`Global.h`) and its file locations are pointed at `/card/data` with an in-RAM writable area. And `main` runs on a thread with a large DDR3 stack. Link it into one image with `rt.mk` and count its size against ae350run's DDR3 window before the first board run. After the engine runs, the link at speed. The fence decision (AE350-012), read path stages 3 and 4, entry 36's closure and video-liveness findings, entry 31's lost DDR3 read, the static columns and entry 29's waiting items stand.
+
+#### Files Modified:
+
+- THIRD_PARTY.md
+- docs/vcmi-port-plan.md
+- firmware/apps/deps_test/Makefile
+- firmware/apps/deps_test/main.cpp
+- firmware/deps/onetbb-2022.3.0-ae350.patch
+- firmware/rt/include/dlfcn.h
+- firmware/rt/include/semaphore.h
+- firmware/rt/include/sys/stat.h
+- firmware/rt/include/sys/statvfs.h
+- firmware/rt/include/sys/utime.h
+- firmware/rt/include/tinyvcmi_boost_platform.hpp
+- firmware/rt/include/tinyvcmi_target.h
+- firmware/rt/link.ld
+- firmware/rt/posix.c
+- firmware/rt/pthread.c
+- firmware/rt/rt.mk
+- tools/build_vcmi_deps.sh
+- tools/cmake/ae350-threads.cmake
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: NOT RUN
+
+---

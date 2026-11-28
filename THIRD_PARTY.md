@@ -76,6 +76,38 @@ and design lessons taken from sibling projects are recorded in
 - **Obligations:** none beyond the exception's, for programs; the
   toolchain itself, if passed on, goes with its source.
 
+## The libraries VCMI links: zlib, minizip-ng, libsquish, Boost, oneTBB
+
+- **Use:** linked into the engine as MiSTer-VCMI links them, at MiSTer's
+  versions, built by `tools/build_vcmi_deps.sh` with the threaded toolchain
+  through `tools/cmake/ae350-threads.cmake` into `build/deps/prefix`.
+  `firmware/apps/deps_test` exercises each on the board.
+- **Versions and licences:**
+  - zlib 1.3.1 — zlib licence.
+  - minizip-ng 4.0.10 — zlib licence.
+  - libsquish 1.15 (Debian's `.orig` tarball) — MIT.
+  - Boost 1.90.0 — Boost Software License 1.0; compiled are `atomic`,
+    `container`, `date_time`, `filesystem` and `program_options`, and every
+    library's headers are installed. Boost.Locale is not built (VCMI's one use,
+    converting the game's Windows code-page text, is done in the port).
+  - oneTBB 2022.3.0 — Apache-2.0.
+- **Not committed:** every tarball is fetched by the script with its SHA-256
+  pinned; each digest was taken from a fresh upstream download on 2026-11-28
+  and found equal to MiSTer-VCMI's independently fetched copy.
+- **Modifications:** only oneTBB's, in
+  `firmware/deps/onetbb-2022.3.0-ae350.patch`, whose header says what it
+  changes: oneTBB names its operating system in four places and is told to
+  accept the `TINYVCMI_AE350` target there (the export macro, two library
+  names that are never loaded, resumable tasks off, `memalign` in place of
+  `posix_memalign`). The other libraries build unmodified; the build sets
+  options (Boost.Filesystem's `fdopendir` check, Boost.Container's
+  `HAVE_MMAP=0`, oneTBB's IPO and PIC off), and `firmware/rt` supplies the
+  POSIX calls newlib lacks.
+- **Obligations:** Apache-2.0 asks that a distributed binary carry the
+  licence and oneTBB's NOTICE and that modified files say so, which the
+  patch does; zlib, MIT and the Boost licence ask only that their notices
+  stay with the source.
+
 ## SDL2_ttf 2.24.0, with FreeType 2.13.2
 
 - **Use:** VCMI's TrueType fonts (`config/fonts.json`), opened with

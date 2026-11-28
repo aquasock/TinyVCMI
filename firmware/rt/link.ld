@@ -52,6 +52,9 @@ SECTIONS
 	/* .tm_clone_table: crtbegin and crtend of the threaded GCC carry it
 	 * (empty); GNU ld's own scripts keep it in .data. */
 	.data : { *(.data .data.*) KEEP(*(.tm_clone_table)) } > ddr3
+	/* A global offset table, should position-independent code be linked
+	 * in; nothing built here asks for one today. */
+	.got : { *(.got.plt) *(.igot.plt) *(.got) *(.igot) } > ddr3
 	.sdata : {
 		__global_pointer$ = . + 0x800;
 		*(.srodata.cst16) *(.srodata.cst8) *(.srodata.cst4)

@@ -69,11 +69,17 @@ LDFLAGS   += $(ARCHFLAGS) -nostdlib -static -T $(RT_DIR)/link.ld \
 LDLIBS    += -Wl,--start-group -lstdc++ -lsupc++ -lm -lc -lgcc -Wl,--end-group
 
 RT_SOURCES := $(RT_DIR)/crt0.S $(RT_DIR)/syscalls.c $(RT_DIR)/atomic.c \
-              $(RT_DIR)/card.c $(ROOT)/firmware/common/uart.c
+              $(RT_DIR)/card.c $(RT_DIR)/posix.c $(ROOT)/firmware/common/uart.c
 ifeq ($(RT_THREADS),1)
 RT_SOURCES += $(RT_DIR)/pthread.c $(RT_DIR)/thread_switch.S
 # pthread_once's cleanup must run when a C++ once routine throws through it.
 CFLAGS    += -fexceptions
+# The atomic types are always lock-free on this one hart (atomic.c), as
+# tools/cmake/ae350-threads.cmake tells the libraries built for these
+# programs; the code generated is the same.
+RT_LOCK_FREE := $(foreach t,BOOL CHAR CHAR16_T CHAR32_T WCHAR_T SHORT INT LONG LLONG POINTER,\
+                -U__GCC_ATOMIC_$(t)_LOCK_FREE -D__GCC_ATOMIC_$(t)_LOCK_FREE=2)
+CPPFLAGS  += $(RT_LOCK_FREE) -include $(RT_DIR)/include/tinyvcmi_target.h
 endif
 objects     = $(patsubst %,$(BUILD)/obj/%.o,$(subst /,_,$(1)))
 RT_OBJECTS := $(call objects,$(notdir $(RT_SOURCES)))
