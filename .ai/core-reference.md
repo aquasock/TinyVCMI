@@ -129,6 +129,7 @@ Topic IDs are the `record_id` prefix. An entry reserves a namespace; it does not
 | What is the core link's wire format, and at what rates does it run? | PROT | PROT-003 |
 | How do TinyNES and TinyGBC load AE350 programs? | PROT | PROT-001 |
 | Which desktop core does this board's card hold, and which one is restored after a board cycle? | PROT | PROT-002 |
+| How does TinyVCMI's image run in 2-wire mode, and what does TinyTang's ae350run offer it? | PROT | PROT-004 |
 | Which VCMI revision did the MiSTer port use? | VCMI | VCMI-001 |
 | How much memory did that port consume? | VCMI | VCMI-002 |
 | Why is 64 MiB not yet a qualified VCMI capacity? | VCMI | VCMI-002 |
@@ -247,6 +248,7 @@ INPUT-002: "TinyTang sends live mouse frames as command 0x16 and BLE keyboard st
 PROT-003: "Core-link frames are 0xAA, a big-endian length counting the type byte, then the payload, up to 2047 bytes; 0x16 is six bytes and 0x17 seven, and the link negotiates 10, then 5, then 2 Mbaud"
 PROT-001: "TinyNES/TinyGBC load AE350 ELF-derived images through a checked UART protocol and then enter TinyTang link mode"
 PROT-002: "The card's one desktop core is /root/cores/console138k/tinytang.bin (4,558,518 bytes), answering core ID 0x54; the -lora and -abi16-open builds are gone and the operator reports the LoRa split resolved, so tinytang.bin is the image to restore"
+PROT-004: "In 2-wire mode TinyTang tangloads the card's tinyvcmi.bin (seed 8 of build/ae350/e1), the probe trains and hands over through fpgapipe, and load_ae350.py --tinytang runs programs at 187 KB/s; ae350run knows only TinyNES, TinyGBC, Tiny89 and TinyCreature and sends one whole file per run"
 VCMI-001: "MiSTer-VCMI pins VCMI 1.7.5 at commit 6901839ae9760dfcd1d5ff2c4aa4ef6968fee752"
 VCMI-002: "The MiSTer port measured roughly 100-115 MB resident at 800x600, so 64 MiB is not a qualified full-engine target"
 VCMI-003: "Single-player VCMI 1.7.5 runs the client and local server over an in-memory InternalConnection; TCP exists only for multiplayer, and boost::asio::io_context is the event loop"
@@ -698,6 +700,18 @@ PROV-001: "Reuse source and interface ideas with their original license boundari
     - "TinyTang commit 8a52baf, ports/bl616/tang_fpga_link.h (FPGA_CMD_INPUT, FPGA_CMD_KEYBOARD, tang_fpga_link_fast, tang_fpga_link_rate, tang_fpga_link_slow)"
     - "TinyVCMI fpga/ae350_ddr3/ae350_sys.sv (UART_DIV2) and fpga/ae350_ddr3/exts_uart.sv"
   verification: "Read from the current TinyTang source and this project's UART. The input frames are board-proven on this board family through TinyTang (INPUT-002); the 5 and 10 Mbaud rates and the file-stream switching are the BL616's own contract and have not been exercised from the AE350 side, so this record stays SOURCED."
+
+- record_id: PROT-004
+  topic_id: PROT
+  title: "TinyVCMI's AE350 image runs in 2-wire mode through TinyTang; ae350run does not yet know it"
+  status: VERIFIED
+  verified_date: 2026-11-27
+  statement: "With the board in 2-wire mode TinyTang owns the card and the FPGA's JTAG, and its USB console enumerates as ffff:5454. The card's /root/cores/console138k/tinyvcmi.bin (4,751,744 bytes) is byte for byte seed 8 of build/ae350/e1's ctrl.bin (SHA-256 66783363b4694e22401040f5379e4a1fd67a240e1091cb9ab8d86551b288b0f8), read back with tangget at about 6 MB/s. tangload of it programmed the FPGA; tools/ddr3_write_probe.py on the console port sent fpgapipe and found training done, error 0, lanes 1111, 422 trials, d 1 b 2; handover --soak 60 handed the DDR3 to the A25, whose boot ROM then printed TinyVCMI LOAD through the pipe; and tools/load_ae350.py --tinytang loaded sdl_test (578,956 bytes) and ttf_test (1,564,424 bytes) at 187 KB/s, both exiting 0 with every check passing. TinyTang's ae350run <program.elf> [<file>] (ports/bl616/tang_fpga_uart.c, ae350_load.h) loads a program from the card through the boot ROM's TNL1 block protocol, recognises a program's lines only by the names TinyNES, TinyGBC, Tiny89 and TinyCreature, waits for '<name> LOAD', and sends its one data file, whole, when the program prints '<name> WANT <address> <room>'. tang_fpga_link_open raises the link to 10 or 5 Mbaud only for a core that reports the rate in register 0x1C (FPGA_LINK_FAST_BAUD, FPGA_REG_LINK_RATE)."
+  consequence: "The 2-wire path needs no change to the image or the tools to run TinyVCMI's programs, at the same 187 KB/s as 1-wire, and it is the path to the card's game data (root/media/vcmi/data). ae350run cannot serve TinyVCMI yet: it needs TinyVCMI as a name, and VCMI needs more than one whole file per run, so the card file service the port plan calls for is a TinyTang change, a ranged read by path, beside a file layer in firmware/rt. Rates above 2 Mbaud need the image's UART to switch rate and answer register 0x1C, a fabric change."
+  sources:
+    - "TinyTang commit 8a52baf, ports/bl616/tang_fpga_uart.c (ae350_run, ae350_past_name, tang_fpga_link_open), ports/bl616/ae350_load.h and ports/bl616/tdsh_tang_flash.c (tangload, tangget)"
+    - "TinyVCMI tools/ddr3_write_probe.py, tools/load_ae350.py (--tinytang) and build/board/ctrl-2wire.log, handover-2wire.log, sdl_test-2wire.log and ttf_test-2wire.log, not committed; core-log entry 45"
+  verification: "Run on the board on 2026-11-27 (core-log entry 45) after the user rebooted it into 2-wire mode, warm and powered from the host's 5 V over USB-C OTG. ae350run was read, not run, since it would not recognise TinyVCMI's lines."
 
 - record_id: VCMI-001
   topic_id: VCMI

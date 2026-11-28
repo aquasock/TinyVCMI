@@ -1534,3 +1534,33 @@ Cycle C's last piece is input: decode TinyTang's mouse and keyboard frames (INPU
 - User Test: PASS
 
 ---
+
+## 45 COMMIT Unreleased 2026-11-27T22:26:56-07:00
+
+#### Coming From:
+
+Unreleased 87fef58
+
+#### Purpose:
+
+Bring TinyVCMI's AE350 image and programs up in 2-wire mode through TinyTang, the first cycle of the plan the user approved for running VCMI on the Heroes III data on the card.
+
+#### Outcome:
+
+The whole board path now works in 2-wire mode with no change to the image or the tools. The user rebooted the board into 2-wire mode, TinyTang's console enumerating as `ffff:5454` on `/dev/ttyACM1` beside the ESP32 on `ttyACM0`, and `ls` on it showed the game data on the card at `/root/media/vcmi/data`, its seven `Data` files at the sizes of MiSTer-VCMI's extracted copy, with `Maps` and `Mp3`. The card already held `/root/cores/console138k/tinyvcmi.bin`, and reading it back with `tangget` (4,751,744 bytes in 0.8 s) showed it byte for byte seed 8 of `build/ae350/e1`'s `ctrl.bin` (SHA-256 `66783363b4694e22401040f5379e4a1fd67a240e1091cb9ab8d86551b288b0f8`), so nothing was written to the card. `tangload` programmed the FPGA with it; `tools/ddr3_write_probe.py` on the console port, which sends `fpgapipe` itself, found training done at `error 0`, lanes `1111`, 422 trials, `d 1 b 2`, 7 CALIB pulses a lane and the test running with no lane error; `handover --soak 60` handed the DDR3 to the A25, whose boot ROM printed `TinyVCMI LOAD` through the pipe; and `tools/load_ae350.py --tinytang` loaded `sdl_test` (578,956 bytes in 3.10 s) and `ttf_test` (1,564,424 bytes in 8.37 s), both at 187 KB/s, the 1-wire rate, `sdl_test` giving `G1 PASS` with every frame of all three passes checked right and the same frame times as entry 43, and `ttf_test` `TTF OK, 0 wrong`, both exiting 0. Reading TinyTang at `8a52baf` found that its `ae350run <program.elf> [<file>]` loads a program from the card through the boot ROM's TNL1 protocol and sends one whole data file on `<name> WANT`, but recognises only the names TinyNES, TinyGBC, Tiny89 and TinyCreature, so it does not yet answer `TinyVCMI LOAD`; and that the link runs above 2 Mbaud only for a core answering register `0x1C`. Since `ae350run` must change anyway for the file service, adding TinyVCMI's name was left for that cycle so the BL616 is flashed once. PROT-004 records the path and these limits. The board is left in 2-wire mode with the TinyVCMI image loaded, the A25 at its boot ROM's `LOAD` and the TinyTang desktop core not loaded, which `tangload /root/cores/console138k/tinytang.bin` restores. `.ai/core.md` was not changed. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` unchanged and that no settled log entry was altered, validated the new record against the reference schema with 113 unique record IDs, and checked this entry's six sections, ordering, prose, Status values, numbering and the active log's 45 of 100 entries.
+
+#### Next Steps:
+
+Cycle 2, the card file service: in TinyTang, add TinyVCMI to `ae350run`'s names and a ranged read of a card file by path, offset and length, answered from FatFS over the link; in `firmware/rt`, a file layer giving `open`, `read`, `lseek`, `stat`, `opendir` and `readdir` over it with a DDR3 cache and RAM-only writes; copy VCMI's `config` and `Mods` to the card once; and prove it by reading entries of `H3bitmap.lod` on the board. Building and flashing TinyTang's BL616 firmware needs its procedure confirmed and the user's go-ahead before the first flash. Then the 10 Mbaud link, the threaded libstdc++, the libraries and VCMI itself, as approved. The fence decision (AE350-012), read path stages 3 and 4, entry 36's closure and video-liveness findings, entry 31's lost DDR3 read, the static columns and entry 29's waiting items stand.
+
+#### Files Modified:
+
+None.
+
+#### Status:
+
+- Build: N/A
+- Deployment: PASS
+- User Test: NOT RUN
+
+---
