@@ -1,0 +1,20 @@
+--- a/src/atomic/SDL_spinlock.c
++++ b/src/atomic/SDL_spinlock.c
+@@ -137,6 +137,17 @@
+         : "cc", "memory");
+     return result == 0;
+ 
++#elif defined(__riscv) && defined(__riscv_atomic)
++    /* TinyVCMI: RV32A.  One atomic swap of 1 into the lock word, acquire
++       order.  The A25 runs one hart with no preemption, so this is never
++       contended, but it is the correct primitive and costs one instruction. */
++    int result;
++    __asm__ __volatile__("amoswap.w.aq %0, %1, (%2)"
++                         : "=&r"(result)
++                         : "r"(1), "r"(lock)
++                         : "memory");
++    return result == 0;
++
+ #elif defined(__MACOSX__) || defined(__IPHONEOS__)
+     /* Maybe used for PowerPC, but the Intel asm or gcc atomics are favored. */
+     return OSAtomicCompareAndSwap32Barrier(0, 1, lock);

@@ -1,0 +1,25 @@
+--- a/src/video/SDL_video.c
++++ b/src/video/SDL_video.c
+@@ -71,6 +71,12 @@
+ #endif
+ 
+ /* Available video drivers */
++#ifdef SDL_VIDEO_DRIVER_TINYVCMI
++/* TinyVCMI: the driver lives in firmware/sdl, not in this tree, so it is
++   declared here rather than in SDL_sysvideo.h. */
++extern VideoBootStrap TINYVCMI_bootstrap;
++#endif
++
+ static VideoBootStrap *bootstrap[] = {
+ #ifdef SDL_VIDEO_DRIVER_COCOA
+     &COCOA_bootstrap,
+@@ -145,6 +151,9 @@
+ #ifdef SDL_VIDEO_DRIVER_OFFSCREEN
+     &OFFSCREEN_bootstrap,
+ #endif
++#ifdef SDL_VIDEO_DRIVER_TINYVCMI
++    &TINYVCMI_bootstrap,          /* ahead of the dummy, which stays a fallback */
++#endif
+ #ifdef SDL_VIDEO_DRIVER_DUMMY
+     &DUMMY_bootstrap,
+ #ifdef SDL_INPUT_LINUXEV

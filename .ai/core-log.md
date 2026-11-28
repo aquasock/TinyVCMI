@@ -1243,3 +1243,44 @@ None.
 - User Test: PASS
 
 ---
+
+## 37 COMMIT Unreleased 2026-11-27T20:18:00-07:00
+
+#### Coming From:
+
+Unreleased 61c660a
+
+#### Purpose:
+
+Begin cycle C by porting SDL2 to the AE350 as G1 requires, and hand the unfinished result to the next agent at the user's direction.
+
+#### Outcome:
+
+SDL2 2.32.10 now builds for the AE350 and links into a program that reaches the video driver, but G1 is not met: the first program traps inside SDL after `VideoInit`, and the board's link was left unreliable. `tools/build_sdl2.sh` fetches the pinned release, applies three patches under `firmware/sdl`, compiles SDL's own source list with `-march=rv32imac_zicsr_zifencei -mabi=ilp32` and archives `libSDL2.a` (99 objects, 22.9 MB) reproducibly; the patches are the RV32A `amoswap.w.aq` spinlock SDL otherwise rejects with "please implement for your platform", the dynamic API off for bare metal as SDL does for PS2 and PSP, and the driver's registration in SDL's bootstrap table. Following MiSTer's shape (`sdl-driver/mister`, read at `76e1e1c`) the drawing is SDL's own software renderer and only the platform hooks are ours: `firmware/sdl/SDL_tinyvcmivideo.c` reports 1280x720 ARGB8888, hands out the back DDR3 page at `0x7f000000` as the window framebuffer, and turns `UpdateWindowFramebuffer` into a `TV_VID_BASE` move with a D-cache write-back before it; `firmware/sdl/SDL_systimer_tinyvcmi.c` takes the clock from `mcycle` at 750 MHz. The config is `HAVE_MALLOC`, so SDL shims onto newlib rather than carrying dlmalloc, and the generic thread backend supplies mutexes and semaphores while `SDL_THREADS_DISABLED` keeps `SDL_CreateThread` from pretending to start one; audio is off because it is deferred. `firmware/apps/sdl_test` builds at 566 KB and on the board printed `TinyVCMI SDL 2.32.10` and `INFO: tinyvcmi: VideoInit` before `BAD TRAP C=`, whose cause and address were lost because `tv_put_hex` emitted nothing and the loader closes the port on a `BAD` line. Two defects in this cycle's own work were found and fixed: clearing `SDL_PREALLOC` told SDL it owned pixels it did not, so `SDL_FreeSurface` would have freed a DDR3 address, and enabling the raster in `VideoInit` left whatever the DDR3 held on screen for good if the program then died, which is the likely source of the distorted pixels the user saw, so the raster now starts on the first completed flip. `THIRD_PARTY.md` was added because PROV-001 requires an inventory once implementation begins and because SDL2's zlib licence and this project's three patches to it have to be recorded: SDL's source is fetched and ignored, only `firmware/sdl` is committed, and the new driver files carry the zlib identifier rather than the project's. The user reported the HDMI showing something after the driver initialised and later distorted pixels, which is not acceptance. The board was loaded with seed 8 and trained `error 0`, lanes `1111`, 422 trials, `d 1 b 2` before each run, but its UART became unreachable partway through this cycle: the FT2232 re-enumerated during one load and both channels then answered nothing to command `0x01`, so the last runs could not be completed, and the board's final state is unknown. Nothing was committed before this entry. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering and the active log's 37 of 100 entries.
+
+#### Next Steps:
+
+Establish the board's link before anything else: power-cycle the Tang, confirm the TinyTang console or the FT2232 answers, load `build/ae350/e1/s8/ctrl.fs`, train and hand over, since nothing can be measured on the board until it replies. Then find the trap that follows `VideoInit`, starting with the two decode paths rather than SDL's internals: make `tv_put_hex` in `firmware/common/uart.c` actually emit before `tv_rt_reboot` (it printed nothing, so the cause, EPC and trap value were lost), and capture the full line by wrapping `load_ae350.py`'s `Board.check_line` so it does not close the port on `BAD`. The three candidates in order are `SDL_GetNumVideoDrivers` beside the patched bootstrap table, SDL's display-mode and window-framebuffer path through `SDL_AddBasicVideoDisplay`, and the first `SDL_FillRect`'s blitter selection; the step markers `step A` to `step D` in `firmware/apps/sdl_test/main.c` are already in the binary and will name the next one. With the trap fixed, G1's remaining work is the second half of the gate, drawing the same pattern through the engine's blitter path, and only then the frame-time measurement the plan asks for. `docs/vcmi-port-plan.md`'s cycle C should also be corrected: it names SDL_image and SDL_ttf, but VCMI's `client/renderSDL` references 170 distinct SDL and TTF symbols and the whole engine 260, MiSTer vendors SDL2 2.32.10 rather than writing a shim, and `libSDL2.a` at 566 KB of text in one program is already a size the image's linker and the loader's 3 s per 575 KB should be checked against. Entry 36's closure and video-liveness findings stand, and nothing in the pending list has changed except that the STALL formatter and `glue.bist.rcnt` are still the largest closure levers.
+
+#### Files Modified:
+
+- THIRD_PARTY.md
+- firmware/apps/sdl_test/Makefile
+- firmware/apps/sdl_test/main.c
+- firmware/sdl/SDL_config.h
+- firmware/sdl/SDL_config_tinyvcmi.h
+- firmware/sdl/SDL_systimer_tinyvcmi.c
+- firmware/sdl/SDL_tinyvcmivideo.c
+- firmware/sdl/SDL_tinyvcmivideo.h
+- firmware/sdl/sdl2-baremetal-dynapi.patch
+- firmware/sdl/sdl2-riscv-atomics.patch
+- firmware/sdl/sdl2-tinyvcmi-bootstrap.patch
+- tools/build_sdl2.sh
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: FAIL
+
+---

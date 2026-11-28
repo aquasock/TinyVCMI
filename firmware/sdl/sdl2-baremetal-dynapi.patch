@@ -1,0 +1,13 @@
+--- a/src/dynapi/SDL_dynapi.h
++++ b/src/dynapi/SDL_dynapi.h
+@@ -53,6 +53,10 @@
+ #define SDL_DYNAMIC_API 0
+ #elif defined(SDL_BUILDING_WINRT) && SDL_BUILDING_WINRT /* probably not useful on WinRT, given current .dll loading restrictions */
+ #define SDL_DYNAMIC_API 0
++#elif defined(__riscv) && !defined(__linux__)
++/* TinyVCMI: bare-metal RISC-V, statically linked, no dlopen; the same reason
++   the PS2, PSP and RISC OS branches above disable it. */
++#define SDL_DYNAMIC_API 0
+ #elif defined(__PS2__)
+ #define SDL_DYNAMIC_API 0
+ #elif defined(__PSP__) && __PSP__
