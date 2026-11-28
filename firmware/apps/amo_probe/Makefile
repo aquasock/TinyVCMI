@@ -8,6 +8,9 @@
 
 APP     := amo_probe
 SOURCES := main.c
+# This program executes AMOs and LR/SC on purpose, so it keeps the A
+# extension whatever the runtime's default arch is.
+RT_MARCH := rv32imac_zicsr_zifencei
 
 ifeq ($(HANG),1)
 CPPFLAGS += -DAMO_PROBE_HANG

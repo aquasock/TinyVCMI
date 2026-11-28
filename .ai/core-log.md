@@ -1392,3 +1392,42 @@ Entry 38's next steps stand: G1's second half, drawing through a streaming textu
 - User Test: N/A
 
 ---
+
+## 41 COMMIT Unreleased 2026-11-27T21:51:39-07:00
+
+#### Coming From:
+
+Unreleased e2fe554
+
+#### Purpose:
+
+Trial building runtime programs and SDL2 without the A extension, the option the user chose for keeping hardware atomics out of the engine (AE350-011), and adopt it once the trial passes.
+
+#### Outcome:
+
+Runtime programs and SDL2 are now built for `rv32imc_zicsr_zifencei` with every atomic in software, verified on the board, and the trial found a second, unexplained cost in the A25's fences. `firmware/rt/atomic.c` implements libatomic's sized and generic `__atomic_*` functions for 1, 2, 4 and 8 bytes and any size, `__atomic_test_and_set`, `__atomic_clear`, `__atomic_is_lock_free` and the `__sync_*` builtins, under their ABI names through asm labels, each as a plain read-modify-write with machine interrupts masked, which is atomic because the A25 is the only hart. `firmware/rt/rt.mk` takes `RT_MARCH`, now defaulting to `rv32imc_zicsr_zifencei` so that the toolchain's `rv32imc/ilp32` newlib and libstdc++ are linked, adds `atomic.c` to the runtime and fails the link of any A-free image containing an AMO, LR or SC, which a throwaway program with one `amoswap.w` proved; `amo_probe` keeps `rv32imac`, and the boot ROM, which has its own flags and no atomics, was not changed. `tools/build_sdl2.sh` takes `SDL_MARCH` with the same default, and `firmware/sdl/SDL_config_tinyvcmi.h` sets `HAVE_GCC_ATOMICS` when the A extension is absent, since SDL otherwise stops at its `#error`, so SDL's atomics become three `__sync` calls into `atomic.c`; an `rv32imac` build is unchanged and still uses the patched spinlock. A survey found no lock-free assumption in oneTBB 2022.3.0 or the Boost libraries VCMI uses, and that VCMI's `std::atomic` is on `int32_t`, `int`, `int64_t`, `bool` and enums. The new `firmware/apps/atomic_test` runs every `std::atomic` operation at 1, 2, 4, 8 and 12 bytes, `atomic_flag`, an enum, `shared_ptr` and the `__sync` builtins, each on a line just written back and invalidated, the case that hangs an AMO, and on seed 8 of `build/ae350/e1` (`ctrl.fs` SHA-256 `6757c049b4f0a2d7360ff19f0bacc543c92cabd1c0dc743d10ebad343c6bc5c6`), still trained and handed over from entry 38, warm and powered from the host's 5 V over USB-C OTG, it reported 0 of 97 wrong on every run. Its timing showed a `seq_cst` `fetch_add` at 1,470 cycles against 22 relaxed, and further loops found why, recorded as AE350-012: a fence that orders writes costs 3 to 8 cycles alone but 1,431 to 1,500 after a store to the DDR3, 1,400 after a store to the block RAM and 1,170 after a load, while `fence r,rw` after a load costs 4, so the cost is the core's and not the bridge's, and its cause is unknown. `atomic.c` therefore uses compiler barriers, which meet every memory order with one hart, and a `seq_cst` `fetch_add` now costs 20 cycles, a 64-bit one 26 and a CAS loop 30; GCC still puts such fences inline around `seq_cst` atomic loads and stores and before release stores, with or without the A extension. With the defaults switched every app built and passed the link check, both SDL libraries were rebuilt, and on the board `atomic_test` passed again, `sdl_test` gave `G1 PASS` with the shown page right on 180 frames at 66.5 ms, `video_test` ran 3,601 flips in 60 s with `LATE` 0, `write_cost` gave 180.4 and 175.0 cycles a line and `vcmi_bench` a fill of 29.2 cycles a pixel, the `rv32imac` builds' figures. AE350-011 was revised in place with the chosen build and its verification, AE350-012 was added, `docs/vcmi-port-plan.md` records the decision and a new fences item and replaces the atomics decision with the fences one, the README's limits say the same, and `THIRD_PARTY.md` says the spinlock patch serves only an A build. The board is left in one-wire mode with seed 8 trained, the raster on after `vcmi_bench`, and the boot ROM at `LOAD`. `.ai/core.md` was not changed. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` unchanged and that no settled log entry was altered, validated the revised and new records against the reference schema with 112 unique record IDs, and checked this entry's six sections, ordering, prose, Status values, numbering and the active log's 41 of 100 entries.
+
+#### Next Steps:
+
+G1's second half is next: draw through a streaming texture and `SDL_RenderCopy` as VCMI does and measure the frame time. When the engine is built, build it and its libraries for `rv32imc` as the runtime is, and count the fences it executes before deciding, with the user, whether to leave GCC's inline fences, build with the Ztso mapping or weaken the engine's memory orders (AE350-012); why the A25's fences cost so much is worth a probe of its own. Read path stages 3 and 4, the copy's cost, the scattered reads, entry 36's closure and video-liveness findings, entry 31's lost DDR3 read, the static columns and entry 29's waiting items stand.
+
+#### Files Modified:
+
+- README.md
+- THIRD_PARTY.md
+- docs/vcmi-port-plan.md
+- firmware/apps/amo_probe/Makefile
+- firmware/apps/atomic_test/Makefile
+- firmware/apps/atomic_test/main.cpp
+- firmware/rt/atomic.c
+- firmware/rt/rt.mk
+- firmware/sdl/SDL_config_tinyvcmi.h
+- tools/build_sdl2.sh
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: NOT RUN
+
+---

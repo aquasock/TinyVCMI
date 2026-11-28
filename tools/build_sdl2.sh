@@ -1,8 +1,13 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-3.0-only
-# Build SDL2 2.32.10 for the AE350: rv32imac, bare metal, newlib, no OS.
+# Build SDL2 2.32.10 for the AE350: rv32imc, bare metal, newlib, no OS.
 #
 #   build_sdl2.sh [OUT_DIR]        default build/sdl
+#   SDL_MARCH=<arch> build_sdl2.sh DIR
+#                                  build for <arch> in place of
+#                                  rv32imc_zicsr_zifencei, the runtime's
+#                                  default (rt.mk's RT_MARCH): no A extension,
+#                                  AE350-011
 #   SDL_TRACE=1 build_sdl2.sh DIR  diagnostic build: every SDL and driver
 #                                  function entry can be printed on the UART
 #                                  (firmware/sdl/SDL_trace_tinyvcmi.c); build
@@ -72,7 +77,8 @@ sdl=SDL2-$ver
             'TINYVCMI_bootstrap' src/video/SDL_video.c) || exit 1
 
 port=$root/firmware/sdl
-arch="-march=rv32imac_zicsr_zifencei -mabi=ilp32 -O2 -g"
+march=${SDL_MARCH:-rv32imc_zicsr_zifencei}
+arch="-march=$march -mabi=ilp32 -O2 -g"
 trace=${SDL_TRACE:-0}
 if [[ $trace == 1 ]]; then
     [[ $out != "$root/build/sdl" ]] || {

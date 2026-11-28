@@ -30,7 +30,10 @@ and design lessons taken from sibling projects are recorded in
     branch for `SDL_AtomicTryLock`: an ordinary load of the lock word, then
     `lr.w.aq`/`sc.w`, on every pass, because this A25 completes an atomic
     only on a line already in its D-cache (AE350-011). Entry 37's version, one
-    `amoswap.w.aq`, hung on such a miss.
+    `amoswap.w.aq`, hung on such a miss. The branch is used only by a build
+    with the A extension: the default build is `rv32imc`, where
+    `SDL_config_tinyvcmi.h` sets `HAVE_GCC_ATOMICS` and SDL's atomics go
+    through `firmware/rt/atomic.c`.
   - `sdl2-baremetal-dynapi.patch` — `src/dynapi/SDL_dynapi.h` disables the
     dynamic API for bare-metal RISC-V, as SDL does for PS2, PSP and RISC OS.
   - `sdl2-tinyvcmi-bootstrap.patch` — `src/video/SDL_video.c` declares and

@@ -12,6 +12,14 @@
 #   make                  build $(BUILD)/$(APP).elf
 #   make BUILD=<dir>      choose the output directory
 #   make OPT=<flags>      optimise with <flags> in place of -O2
+#   make RT_MARCH=<arch>  build for <arch> in place of rv32imc_zicsr_zifencei
+#
+# Programs are built without the A extension: on this A25 an AMO on a line
+# not in the D-cache never completes (AE350-011).  The compiler and the
+# toolchain's rv32imc libraries then emit no AMO, LR or SC, every atomic
+# becomes a call to atomic.c, and the link checks the image for those
+# instructions and fails if it finds one.  A program that must execute them,
+# amo_probe, sets RT_MARCH to rv32imac_zicsr_zifencei itself.
 
 RT_DIR    := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 ROOT      := $(abspath $(RT_DIR)/../..)
@@ -22,9 +30,13 @@ CROSS     ?= $(RISCV_BIN)/riscv-none-elf-
 CC        := $(CROSS)gcc
 CXX       := $(CROSS)g++
 SIZE      := $(CROSS)size
+OBJDUMP   := $(CROSS)objdump
+# The arch's base letters, before any _z extension: an A-free arch has no a.
+RT_HAS_A  := $(findstring a,$(firstword $(subst _, ,$(patsubst rv32%,%,$(RT_MARCH)))))
 
 OPT       ?= -O2
-ARCHFLAGS := -march=rv32imac_zicsr_zifencei -mabi=ilp32
+RT_MARCH  ?= rv32imc_zicsr_zifencei
+ARCHFLAGS := -march=$(RT_MARCH) -mabi=ilp32
 CPPFLAGS  += -I$(RT_DIR)/include -I$(ROOT)/firmware/include -I$(ROOT)/firmware/common -MMD -MP
 COMMON    := $(ARCHFLAGS) $(OPT) -g -ffunction-sections -fdata-sections \
              -Wall -Wextra -Werror
@@ -41,7 +53,8 @@ LDFLAGS   += $(ARCHFLAGS) -nostdlib -static -T $(RT_DIR)/link.ld \
              -Wl,-Map,$(BUILD)/$(APP).map
 LDLIBS    += -Wl,--start-group -lstdc++ -lsupc++ -lm -lc -lgcc -Wl,--end-group
 
-RT_SOURCES := $(RT_DIR)/crt0.S $(RT_DIR)/syscalls.c $(ROOT)/firmware/common/uart.c
+RT_SOURCES := $(RT_DIR)/crt0.S $(RT_DIR)/syscalls.c $(RT_DIR)/atomic.c \
+              $(ROOT)/firmware/common/uart.c
 objects     = $(patsubst %,$(BUILD)/obj/%.o,$(subst /,_,$(1)))
 RT_OBJECTS := $(call objects,$(notdir $(RT_SOURCES)))
 APP_OBJECTS := $(call objects,$(SOURCES))
@@ -57,6 +70,12 @@ $(BUILD)/$(APP).elf: $(RT_OBJECTS) $(APP_OBJECTS) $(LIB_OBJECTS) \
 	    $(call crtfile,crtbegin.o) $(APP_OBJECTS) $(LIB_OBJECTS) \
 	    $(EXTRA_OBJECTS) $(LDLIBS) \
 	    $(call crtfile,crtend.o) $(call crtfile,crtn.o)
+ifeq ($(RT_HAS_A),)
+	@if $(OBJDUMP) -d $@ | grep -qE '\s(amo[a-z]+|lr|sc)\.[wd]'; then \
+	    echo "$@: AMO, LR or SC in an image built for $(RT_MARCH)" >&2; \
+	    $(OBJDUMP) -d $@ | grep -E '\s(amo[a-z]+|lr|sc)\.[wd]' | head -5 >&2; \
+	    rm -f $@; exit 1; fi
+endif
 	$(SIZE) $@
 
 define compile

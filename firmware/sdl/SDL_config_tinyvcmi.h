@@ -64,6 +64,14 @@
 #define HAVE_TRUNCF 1
 #define HAVE_ICONV 0
 #define HAVE_DLOPEN 0
+/* Atomics.  Built without the A extension (tools/build_sdl2.sh with
+   SDL_MARCH=rv32imc..., as the runtime is), GCC's __sync and __atomic
+   builtins become calls into firmware/rt/atomic.c, which is what this tells
+   SDL to use; with the A extension SDL keeps its own spinlock, patched to
+   load the lock word before LR/SC (sdl2-riscv-atomics.patch, AE350-011). */
+#if defined(__riscv) && !defined(__riscv_atomic)
+#define HAVE_GCC_ATOMICS 1
+#endif
 /* subsystems */
 #define SDL_VIDEO_DRIVER_TINYVCMI 1
 #define SDL_VIDEO_DRIVER_DUMMY 1

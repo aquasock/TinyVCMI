@@ -90,11 +90,16 @@ Limits that are measured but not yet removed:
 - **Keep the D-cache on.** Turning it off around a store-only pass, which
   paid on the first image, now costs 319.9 cycles a line against 187.1 cached
   (`firmware/apps/pma_probe`, AE350-010).
-- **Atomics need the line in the D-cache.** On this A25 an AMO whose line is
-  not in the D-cache, or any AMO with the D-cache off, never returns, and LR
-  on such a line does not bring the line in, so every SC after it fails. An
-  ordinary load first makes both correct (`firmware/apps/amo_probe`,
-  AE350-011 in `.ai/core-reference.md`).
+- **No hardware atomics.** On this A25 an AMO whose line is not in the
+  D-cache, or any AMO with the D-cache off, never returns, and LR on such a
+  line does not bring the line in, so every SC after it fails (AE350-011 in
+  `.ai/core-reference.md`). Programs and SDL2 are therefore built for
+  `rv32imc`, without the A extension, and every atomic goes through
+  `firmware/rt/atomic.c` at 20 to 30 cycles a call; the link refuses an
+  image with an AMO, LR or SC in it.
+- **Fences are expensive.** A fence that orders writes costs 1,170 to 1,500
+  cycles after any memory access (AE350-012), and GCC puts one around every
+  `seq_cst` atomic load and store.
 - **The DDR3 array itself is not the limit.** The controller's own test reads
   and writes the whole array at about 2.67 GB/s, 83 per cent of DDR3-800 x32's
   3.2 GB/s peak; the A25 reaches about 137 MB/s of it, because it waits for

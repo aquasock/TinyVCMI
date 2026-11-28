@@ -133,17 +133,24 @@ same-sized window is a page flip rather than a copy.
    on a line already in the D-cache (AE350-011, entry 38): an AMO on a line
    that is not there, or any AMO with the D-cache off, never returns, and LR on
    such a line returns its value without bringing the line in, so every SC
-   after it fails. An ordinary load does bring the line in. SDL's spinlock
-   therefore loads the lock word, then runs LR/SC, on every pass. The engine
-   is the larger exposure:
-   with the xpack toolchain's libstdc++ (no gthreads, so `shared_ptr` counts
-   under the single-threaded lock policy and emits no AMO), `std::atomic`'s
-   read-modify-write operations still compile to AMOs, `fetch_add` to
-   `amoadd.w.aqrl`, and VCMI uses `std::atomic`. Before engine code runs,
-   cycle D must either build against the toolchain's `rv32imc` multilib with
-   `__atomic_*` supplied as plain loads and stores (sound here, with one hart
-   and no preemption), or find out what the RAM port must answer for the
-   A25's bus atomic.
+   after it fails. `std::atomic`'s read-modify-writes compile to AMOs and
+   VCMI uses `std::atomic`, so, by the user's choice (entry 41), everything
+   runtime programs link is built without the A extension: `rt.mk` and
+   `tools/build_sdl2.sh` default to `rv32imc_zicsr_zifencei`, the toolchain's
+   `rv32imc` newlib and libstdc++ are linked, every atomic goes through
+   `firmware/rt/atomic.c` as a read-modify-write with interrupts masked, and
+   the link fails an image with any AMO, LR or SC in it. `atomic_test`
+   verified every `std::atomic` operation VCMI uses on evicted lines, at 20
+   to 30 cycles a call, and neither oneTBB 2022.3.0 nor the Boost libraries
+   VCMI uses ask whether atomics are lock-free. The engine and its libraries
+   must be built the same way.
+8. **Fences.** A fence that orders writes costs 1,170 to 1,500 cycles on this
+   A25 once there has been a memory access before it (AE350-012), and GCC puts
+   one around every `seq_cst` atomic load and store and before every release
+   store, with or without the A extension. `atomic.c` needs none, but those
+   inline fences will be in the engine, and how often it reaches them must be
+   measured before deciding whether to remove them, by building with the
+   Ztso extension's mapping or by weakening the engine's memory orders.
 
 ## Video and the redraw budget
 
@@ -394,12 +401,9 @@ before it has a result.
 
 ## Decisions for the user
 
-- Atomics in the engine (AE350-011): build against the toolchain's `rv32imc`
-  multilib with `__atomic_*` supplied as plain loads and stores, or find what
-  the RAM port must answer for the A25's bus atomic. Recommended: the
-  multilib, since it is firmware alone and is sound with one hart and no
-  preemption; the fabric route needs the hard macro's bus behaviour, which
-  nothing here documents.
+- Fences in the engine (AE350-012): leave GCC's inline fences, build with
+  the Ztso mapping, or weaken the engine's memory orders. Recommended: decide
+  after the engine runs, from a count of the fences it actually executes.
 - Read path stages 3 and 4 before or after the engine's first light.
   Recommended: after G1's second half, which measures the texture path VCMI
   uses and so says how much of a real frame is reads.
