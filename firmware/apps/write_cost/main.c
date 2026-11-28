@@ -24,8 +24,12 @@
  * the comparison holds row-buffer and bank behaviour as constant as this
  * firmware can.
  *
- * The video unit is left off here, unlike G0, so the measurement is the store
- * path alone; the controller and the bridge are otherwise the same.
+ * The video unit is turned off here, unlike G0, so the measurement is the
+ * store path alone; the controller and the bridge are otherwise the same.
+ * It must be turned off and not merely assumed off: the boot ROM does not
+ * reset it, and a program run before this one (vcmi_bench) can leave the
+ * raster scanning, which on the current bridge costs stores about 30 per cent
+ * (core-log entry 39).
  *
  * Run it with: tools/load_ae350.py build/firmware/apps/write_cost/write_cost.elf
  */
@@ -62,7 +66,7 @@ static void report(const char *name, uint64_t best, uint64_t worst,
 	       name, (unsigned long)(lo / 10), (unsigned long)(lo % 10),
 	       (unsigned long)(hi / 10), (unsigned long)(hi % 10),
 	       stores_per_line == 8 ? "8" : stores_per_line == 4 ? "4" : "1",
-	       (unsigned long)(best / LINES));
+	       (unsigned long)(best * 1000u / (TV_CORE_HZ / 1000000u) / LINES));
 }
 
 /* All eight words of each line. */
@@ -134,6 +138,7 @@ int main(void)
 	uint64_t t;
 
 	setvbuf(stdout, NULL, _IONBF, 0);
+	TV_VID_CTRL = 0;	/* video off, whatever the last program left */
 	printf("\r\nTinyVCMI write-path cost: %lu lines of 32 bytes, %lu KiB span\r\n",
 	       (unsigned long)LINES, (unsigned long)(SPAN >> 10));
 
@@ -169,7 +174,7 @@ int main(void)
 		uint32_t full_x10 = per_line_x10(full, LINES);
 		uint32_t one_x10 = per_line_x10(one, LINES);
 
-		printf("\nfirst/seq_full = %lu.%02lu per cent of the cost"
+		printf("\nfirst/seq_full = %lu.%02lu of the cost"
 		       " for one eighth of the stores\r\n",
 		       (unsigned long)(one_x10 * 100u / full_x10 / 100u),
 		       (unsigned long)(one_x10 * 100u / full_x10 % 100u));

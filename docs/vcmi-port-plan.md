@@ -147,201 +147,109 @@ same-sized window is a page flip rather than a copy.
 
 ## Video and the redraw budget
 
-G0 has run on the board (`firmware/apps/vcmi_bench`, results in
-`core-log.md` entry 23), and it changes what this section should say.
+The A25 draws into a 32-bit frame buffer in the DDR3, so what a frame costs is
+set by the A25's path to the DDR3, and that path has been rebuilt since G0 first
+priced it: writes are posted through an ordered queue (entry 30), sequential
+reads are answered from a line buffer at zero wait (entry 33), and a four-way
+read buffer fetches ahead (entry 35). `docs/ahb-bridge-design.md` describes the
+bridge as built. The figures below are from seed 8 of `build/ae350/e1`,
+re-measured on 2026-11-27 (entries 39 and 40), in 750 MHz A25 cycles, caches
+on, best of three runs.
 
-Measured, in 750 MHz A25 cycles per 1280x720 pixel, caches on, best of three
-runs and reproducible to 0.1 cycles between runs:
+### What drawing costs now
 
-| operation | cycles/pixel | full screen | so alone |
-| --- | ---: | ---: | ---: |
-| 32-bit fill | 92.3 | 113 ms | 8.8 fps |
-| 32-bit copy | 158.3 | 195 ms | 5.1 fps |
-| 8-bit indexed expand | 104.3 | 128 ms | 7.8 fps |
-| 32-bit alpha blend | 165.9 | 204 ms | 4.9 fps |
-| nearest 2x scale | 103.6 | 127 ms | 7.8 fps |
-| fill from L1 cache | 3.2 | 4 ms | 250 fps |
+Per 1280x720 pixel, `firmware/apps/vcmi_bench`, with the raster scanning the
+same array:
 
-The last row is the important one. A fill served from the 32 KiB L1 data cache
-costs 3.2 cycles per pixel; the same fill into the DDR3 frame buffer costs
-92.3. The drawing work is not arithmetic, it is the DDR3 write path, and that
-path is worth 29 times more than any choice of canvas.
+| operation | first image (entry 23) | now | full screen now | so alone |
+| --- | ---: | ---: | ---: | ---: |
+| 32-bit fill | 92.3 | 29.2 | 36.0 ms | 27.8 fps |
+| 32-bit copy | 158.3 | 118.4 | 145.6 ms | 6.9 fps |
+| 8-bit indexed expand | 104.3 | 59.6 | 73.3 ms | 13.6 fps |
+| 32-bit alpha blend | 165.9 | 152.4 | 187.3 ms | 5.3 fps |
+| nearest 2x scale | 103.6 | 56.6 | 69.6 ms | 14.4 fps |
+| fill from L1 cache | 3.2 | 3.0 | 3.8 ms | 264 fps |
 
-The arithmetic behind it: 92.3 cycles per 32-bit word is 738 cycles per
-32-byte line, which at 750 MHz is a sustained **32 MB/s** of A25 stores, about
-one per cent of the array's 3.2 GB/s peak. Reads through the same bridge come
-to 513 cycles per line in the write-path bench, matching AE350-004's 477
-closely enough that the video's reads are not measurably slowing the CPU's
-stores: with the video on, a full line of stores cost 738.0 cycles and with it
-off 738.0.
+A page flip's D-cache write-back is now about 100 us, against 298 us, and the
+rest of a flip is the wait for vertical blank. Through SDL2's software
+renderer a full screen of fills costs 66.5 ms a frame (entry 38), because the
+renderer rasterises its queued rectangles at present time.
 
-The follow-up bench (`firmware/apps/write_cost`, entry 24) found where that 738
-goes, and the answer is not what a write-combining buffer would fix:
+Per 32-byte line, `firmware/apps/write_cost` and `firmware/apps/write_depth`
+with the raster off:
 
-| stores per line | cycles per line |
-| ---: | ---: |
-| 8 (sequential fill) | 738.0 |
-| 4 (every other word) | 739.5 |
-| 1 (word 0 only) | 739.7 |
-| 1 (word 7 only) | 739.7 |
+| measurement | first image (entries 24, 27) | now |
+| --- | ---: | ---: |
+| full line stored, D-cache on | 738.0 / 683.3 | 180.4 to 187.1 |
+| the same with the raster scanning | 738.0 | 234.4 |
+| full line read, D-cache on | 513.3 / 501.7 | 175.0 |
+| one store to each of K = 2, 4, 8 fresh lines | 684.5 | 180.0 |
+| dirty line written back in an eviction stream | 239.2 | 62.8 |
+| one uncached 4-byte store | 59.9 | 39.9 |
+| one uncached 4-byte read | 374.9 | 131.2 |
+| full line stored, D-cache off | 479.9 | 319.9 |
 
-Writing one word of a line costs exactly what writing all eight costs, so the
-price is the line, not the store: each dirty line pays one round trip, 74 bus
-clocks at 75 MHz, and the CPU's eight stores are already combined maximally by
-the write-back cache. A write-combining stage inside a line therefore cannot
-help. What can help is letting successive lines overlap, because today they do
-not: the 738 cycles is one full round trip per line with nothing outstanding
-behind it.
+What changed, and what it means:
 
-That makes the write path a pipelining problem, and prices it: two transfers
-in flight would halve the cost and eight would divide it by eight, which is a
-full-screen fill at 28 ms and 14 ms instead of 113 ms. Nothing in the
-measurement promises those factors, since DDR3 refresh, bank conflicts and the
-video's own share all take cuts, but the headroom is the largest in this plan.
+1. **A cached line now costs about what its fill costs.** A full-line store,
+   180 cycles, is a line read, 175, plus a few cycles: the write-back is
+   posted and overlaps (62.8 cycles a line in an eviction stream, 15.7 a
+   transfer, so several are in flight), and the fill is answered from the
+   read buffer's prefetch. The cost is still per line and not per store: one
+   store to a line costs 180.0, eight cost 180.4.
+2. **The cache-off write-around window no longer pays; keep the D-cache on.**
+   Entry 28's window won only because a cached store paid a 501.7-cycle fill.
+   Now a write-only pass costs 187.1 cycles a line cached and 319.9 with the
+   D-cache off, 27 ms a screen against 49 ms (`firmware/apps/pma_probe`), and
+   a copy is worse uncached too, 1,020.0 against 881.8. `tv_dcache_save_off`
+   stays in `tinyvcmi.h` for the probes that measure it, and no driver should
+   use it for speed (AE350-010).
+3. **Scanout costs stores about 30 per cent.** The same full-line store is
+   180.4 cycles with the raster off and 234.4 with it scanning, and a
+   whole-screen fill is 27 ms without it (`pma_probe`, `video_test`'s 27.8 ms)
+   against 36.0 ms with it (`vcmi_bench`); reads are not measurably slowed.
+   `LATE` stays at 0 or 1 through all of it, so the arbiter keeps scanout
+   ahead of the CPU.
+4. **Reads are now the expensive half of drawing.** A fill is 29.2 cycles a
+   pixel but a copy is 118.4 and an alpha blend 152.4: those passes read a
+   source and, for the blend, the destination, and a read that prefetch does
+   not cover still waits 336 to 397 ns for the DDR3. Scattered reads gain
+   nothing from prefetch (583.4 ns a line at every depth, `rd_lat`), and why a
+   copy costs about four fills is not yet explained.
+5. **Draw inside the cache where possible.** Cache-resident drawing is still
+   ten times cheaper than a fill into the DDR3 and forty times cheaper than a
+   copy: tiles, fonts and the regions an incremental redraw touches are nearly
+   free when they fit in the 32 KiB L1. VCMI's own dirty-rectangle discipline
+   is what makes this usable, and it should be measured before it is trusted.
+6. **A smaller canvas helps proportionally, and the full screen is now
+   reachable for fills.** At 30 fps the A25 can fill about 856,000 DDR3-bound
+   pixels a frame with the raster on, 93 per cent of a 1280x720 screen; a
+   full-screen fill is 18.7 ms at 800x600 and 9.0 ms at 640x360. A full-screen
+   copy or blend each frame is still out of reach at any canvas worth showing,
+   so map scrolling that redraws the whole screen will be slow, and the read
+   path is now where that is decided.
 
-Entry 25 tried the cheap version of this and it did not pay. A gather that
-merges a line's four doublewords into one 256-bit DDR3 write was built, passed
-every simulation gate, and ran on the board: writes fell 738.0 to 654.8 cycles
-per line and a whole screen went 113 ms to 101 ms, but only 1 seed of 16 closed
-and `bus_clk` lost about 11 MHz against the entry-18 image's 86.28. It was
-reverted (`AE350-008`). The reason it bought so little is now clear and is the
-useful part: a full-line write costs 656 cycles and a read 512, each essentially
-one crossing round trip, so the line was never paying four round trips and
-command count was never the cost. Combining within a line is a dead end;
-overlapping successive lines is the live direction, and any fabric change there
-has to be cheaper than 11 MHz of `bus_clk` or it will not close.
+So the canvas question is still not the first question, but it is closer: the
+write path is no longer the limit, and what bounds an interactive frame now is
+how much of it reads the DDR3.
 
-The video held up under it: LATE stayed at 1 across every run while the A25
-hammered the buffer the unit was scanning out, so `ddr3_arb` gives scanout
-service even at maximum CPU write rate.
+### How the figures got here
 
-### What the write path actually charges (entry 27)
-
-`firmware/apps/write_depth` timed the crossing itself rather than the loop
-around it. Every figure below is cycles per 32-byte line at 750 MHz, best of
-three, and the whole table reproduced to a tenth over four runs on the same
-image:
-
-| measurement | cycles/line |
-| --- | ---: |
-| full line stored, D-cache on (E1) | 683.3 |
-| full line read, D-cache on (E1) | 501.7 |
-| one dirty line written back, no fill, no CPU stall (E2) | 239.2 |
-| one store then a dependent chain of 256 cycles (E3) | 394.4 |
-| K = 2, 4, 8 fresh-line stores back to back (E4) | 684.3, 684.5, 684.5 |
-| one uncached word, 4 bytes (E5) | 59.9 |
-| second word of the buffered line, uncached (E5) | 113.3 |
-| one uncached line read (E5) | 374.9 |
-| full line stored, D-cache off (E6) | 479.9 |
-| half a line, D-cache off (E6) | 239.9 |
-
-The unit is the transfer, not the line and not the byte. One uncached 32-bit
-store costs 59.9 cycles, half a line costs 4 x 60, a full line costs 8 x 60,
-and a dirty line's write-back costs 4 x 60 even though the CPU never touched
-the bus for it. The same 60 appears whether the request comes from an uncached
-CPU store or from the cache's write-back, so the charge is on the bridge side
-of the boundary and not in the A25's store pipeline. RV32 has no 64-bit store,
-so a line cannot be written in fewer than eight transfers from firmware, and
-`E7` confirmed it: four `uint64_t` stores compiled to eight 32-bit ones and
-cost exactly what eight 32-bit stores cost.
-
-Nothing is ever in flight. A line's four write-backs cost 239.2 cycles, which
-is 4 x 59.8 -- the bare transfer cost, not a pipelined fraction of it -- so the
-answer to the question entry 26 left open is that the A25 keeps no write-back
-outstanding at all, and successive lines do not amortise either (`E4`, flat
-from K = 2 to K = 8). Each transfer waits for the toggle to come back before
-the next is accepted, which is what `ahb_ddr3`'s one-outstanding-request
-handshake does by construction.
-
-The cached path pays one more thing: a fill. A line's stores miss, so the
-cache reads the line from the DDR3 first, and that read costs 501.7 cycles of
-stall. That is why entry 25's gather bought only 11 per cent -- it halved the
-transfers in the write-back half of a 738-cycle line and left the 500-cycle
-fill untouched. A full line stored with the cache bypassed costs 479.9 cycles
-and no fill at all, which makes the cache itself a 203.4-cycle tax on a
-write-only pass like a fill or a page clear.
-
-What the numbers do buy is a ceiling and a target. Draw the crossing right and
-a full-screen fill goes from 105 ms to 18 ms, which is 54 fps rather than 9.5;
-leave it alone and the only lever is to stop paying the fill, worth 1.42 times
-on its own. Compute can already hide 261 cycles of a miss (`E3`), so the
-remaining cost is bandwidth-shaped and a deeper crossing is the way at it.
-
-### The write-around path, and why it is a cache-off window (entry 28)
-
-Stopping the fill looked like a memory-map question: mark the 16 MiB video
-window non-cacheable and the fill disappears. It is not, and
-`firmware/apps/pma_probe` settled that on the board (AE350-010). The A25's
-machine-custom CSR window was dumped under a trap-catching handler: it holds
-`mxstatus`, `mhcr`, `mhint`, `mcache_ctl`, `mcctlbgnaddr`, `mcctlcommand`,
-`mcctldata`, `mmisc_ctl` and the geometry registers, and not one of them is a
-memory-region or attribute control. The Zicboz and Zicbom instructions
-`cbo.zero`, `cbo.clean`, `cbo.flush` and `cbo.inval` are all illegal
-instructions, so a line cannot be zeroed without a fill either. The frame
-buffer's range is cached exactly as ordinary DDR3 is, 661.8 and 523.4 cycles a
-line to store and read against 661.7 and 523.4 at `0x40400000`, so no window of
-the array is already uncached. The AE350 hard macro exposes no attribute or
-region port, and neither U-Boot's AX25 cache driver nor its Andes CSR header
-defines one.
-
-What does work is turning the D-cache off around the pass. Write back and
-invalidate the cache, clear its enable bit, fill a whole screen, re-enable: 480.0
-and then 479.9 cycles a line against 683.1 cached, 0 bad words on every read-back,
-104 ms to 73 ms a screen. The boundary is as sharp as AE350-009 predicted: a
-32-byte copy under the same switch costs 1,614.9 cycles a line against 1,210.9
-cached, 33 per cent worse, because an uncached read is 375 cycles a line. With
-the video scanning the buffer being filled, the same pass costs 563.2 cycles a
-line and `LATE` did not move, so the arbiter stays ahead of it.
-
-That makes the lever a driver discipline rather than a memory-map choice, and a
-dangerous one if done casually: the invalidation before the disable is
-mandatory, since a dirty line of the buffer left in the cache would be written
-back over the new data, and the pass has to be a leaf loop holding its state in
-registers, because every stack access becomes a DDR3 transfer. `tinyvcmi.h`
-now carries `tv_dcache_save_off` and `tv_dcache_restore` with those rules
-written down.
-
-Consequences for the port, in order of leverage:
-
-1. **The write path is the lever, not the canvas, and combining is a dead end.**
-   29 times separates cache-resident drawing from DDR3 drawing, while 1280x720
-   against 800x600 separates only 2.6 times. The unit of cost is one 8-byte AHB
-   transfer, 59.9 cycles, and `ahb_ddr3` allows exactly one outstanding, so a
-   line costs four transfers on a write-back and eight stores uncached. The
-   cached path adds a 501.7-cycle fill, which is why combining a line's
-   doublewords bought only 11 per cent. Allowing more than one transfer
-   outstanding is the one direction with real headroom, and it must be cheap
-   enough to close against the 11 MHz the last crossing change cost.
-2. **A write-only pass should bypass the cache, by turning it off.** A full line
-   stored with the D-cache off costs 479.9 cycles against 683.3 with it on,
-   because a write-allocate cache reads a line it is about to overwrite, and
-   nothing in the A25 lets that be set per window (AE350-010). The sequence is
-   write-back-and-invalidate, disable, run a leaf loop, re-enable; it is worth
-   104 ms to 73 ms a screen and it is 33 per cent worse the moment the pass
-   reads. Fills, page clears and opaque blits are the shapes that benefit.
-3. **Draw inside the cache where possible.** Tiles, fonts and the regions an
-   incremental redraw touches are nearly free when they fit in L1. VCMI's own
-   dirty-rectangle discipline is what makes this usable, and it should be
-   measured before it is trusted.
-4. **A smaller canvas helps, but only proportionally.** At 30 fps the A25 can
-   touch about 271,000 DDR3-bound pixels per frame, 29 per cent of a 1280x720
-   screen. A full-screen fill at 800x600 is 59 ms and at 640x360 is 28 ms, so
-   even a small canvas cannot be redrawn whole every frame.
-5. **Full-screen redraws above about 9 fps are not available** at any canvas
-   large enough to be worth showing, until the write path improves. Map
-   scrolling that redraws the whole screen will be slow; this is the reason it
-   is slow, and it is a fabric problem rather than an engine one.
-
-So the canvas question is no longer the first question. The first question is
-whether the write path can be improved, because that is what decides whether
-VCMI on this board is interactive or a slideshow.
+G0 (entry 23) first found drawing bound by the write path, at 92.3 cycles a
+pixel for a fill. `write_cost` (entry 24) showed the price was per line, not
+per store; a gather that merged a line's doublewords into one DDR3 write bought
+11 per cent and was reverted (entry 25, AE350-008); `write_depth` (entry 27)
+found the unit was one 8-byte AHB transfer at 59.9 cycles with none ever
+outstanding, plus a 501.7-cycle read-allocate fill (AE350-009); and with no
+memory-attribute register on the A25, turning the D-cache off around a
+write-only pass was the only way past the fill, worth 104 ms to 73 ms a screen
+at the time (entry 28, AE350-010). The bridge rewrite then removed both the
+one-outstanding crossing and most of the fill's cost, which is why item 2 above
+reverses entry 28's advice.
 
 The video reserve is 16 MiB at `0x7f000000`, which holds four 1280x720
 `XRGB8888` frames of 3,686,400 bytes; a double buffer costs 7.4 MiB and leaves
-room for two more. A page flip is cheap: the D-cache write-back at the flip is
-298 us, because only the still-dirty part of the 32 KiB cache is flushed, and
-the rest of the cost is the blank wait, 11 to 15 ms, which is the display's and
-not the CPU's.
+room for two more.
 
 ## Assets
 
@@ -429,6 +337,9 @@ honest:
 - **G1, SDL on the board.** SDL2 plus the `tinyvcmi` driver draw and flip a test
   pattern at 60 Hz with the A25 idle, and a second run draws the same pattern
   from the engine's blitter path. This measures the driver, not the engine.
+  First half passed (entry 38): `firmware/apps/sdl_test` draws and flips with
+  the shown page checked on every frame, at 66.5 ms a frame rather than 60 Hz
+  because each frame redraws the whole screen; the user accepted the picture.
 - **G2, main menu.** VCMI boots to its main menu from a minimal data set, on
   HDMI, with measured frame time. The user's acceptance test for this
   milestone is that menu, drawn and driven by the real keyboard and mouse.
@@ -442,16 +353,16 @@ before it has a result.
    the board, and the follow-up found the store cost is per line and serialized
    rather than per store. The DDR3 write path, not the canvas, is the limit,
    and overlapping line writes is the fix.
-1. **B. The write path.** Costed, tried and measured. Combining within a line
-   gave 11 per cent for 11 MHz of `bus_clk` and was reverted (entry 25); the
-   crossing is one 8-byte transfer at 59.9 cycles with only one outstanding, so
-   a cached line is a 501.7-cycle fill plus 239.2 of write-back (entry 27);
-   and the fill cannot be avoided by memory attributes, only by turning the
-   D-cache off around a store-only pass, which is measured and shipped as
-   `tv_dcache_save_off` (entry 28, 104 ms to 73 ms a screen). What remains is
-   the crossing itself: accepting more than one transfer at a time would change
-   the 59.9-cycle charge, at a closure cost of about 11 MHz to stay inside.
-2. **C. SDL and the video driver.** SDL2 first, then SDL_ttf and a minimal
+1. **B. The write path.** Done. Combining within a line was tried and reverted
+   (entry 25), the crossing was found to be one 8-byte transfer at 59.9 cycles
+   with none outstanding (entry 27), and the bridge was rebuilt as an ordered
+   queue with posted writes (entry 30) and a read path with a zero-wait line
+   buffer and a four-way prefetching read buffer (entries 33 and 35). A
+   full-line store went from 738.0 to 180.4 cycles and a whole-screen fill
+   from 113 ms to 36.0 ms; the cache-off window of entry 28 is now slower than
+   the cache and is not to be used for speed.
+2. **C. SDL and the video driver.** In progress: SDL2 2.32.10 draws and flips
+   on the board (entries 37 and 38). SDL2 first, then SDL_ttf and a minimal
    SDL_image, with the `tinyvcmi` driver and a test program that flips pages
    and takes injected input. Hardware: G1. As MiSTer does, SDL2 is the
    upstream library and not a shim: MiSTer vendors SDL2 2.32.10, SDL2_ttf
@@ -472,24 +383,30 @@ before it has a result.
 5. **F. The link at speed.** Programmable UART divisor and, if the user wants
    it, the BL616 file service, so a power cycle does not cost minutes of asset
    load.
-6. **G. The write path's remaining cost.** Find what of the leftover is the
-   controller's own and what is DDR3's share, and whether a small fabric cache
-   for the canvas is worth adding on top. A fabric cache is now the more
-   promising of the two, since it sidesteps the crossing entirely.
+6. **G. The read path's remaining cost.** Reads are now the expensive half of
+   drawing: a copy costs about four fills and an alpha blend five, a miss that
+   prefetch does not cover still waits 336 to 397 ns, and scattered reads gain
+   nothing from prefetch and are slower than before the read buffer (583.4
+   against 553.1 ns a line). The read path redesign's stages 3 (the PHY's
+   fixed padding and the controller's queue) and 4 (the crossing) are the
+   measured levers, and a copy's cost should be explained before either is
+   built.
 
 ## Decisions for the user
 
-- The write path, now that the crossing and the cache are both measured: build
-  the deeper crossing that lets more than one 8-byte transfer be outstanding,
-  add a small fabric cache for the canvas, or leave the fabric alone now that
-  the write-around window is available. Recommended: the deeper crossing, since
-  it is the only lever that changes the 59.9-cycle charge and the write-around
-  window has already taken the cheaper 1.42 times; the fabric cache stays the
-  fallback if the crossing will not close inside 11 MHz.
+- Atomics in the engine (AE350-011): build against the toolchain's `rv32imc`
+  multilib with `__atomic_*` supplied as plain loads and stores, or find what
+  the RAM port must answer for the A25's bus atomic. Recommended: the
+  multilib, since it is firmware alone and is sound with one hart and no
+  preemption; the fabric route needs the hard macro's bus behaviour, which
+  nothing here documents.
+- Read path stages 3 and 4 before or after the engine's first light.
+  Recommended: after G1's second half, which measures the texture path VCMI
+  uses and so says how much of a real frame is reads.
 - Canvas: native 1280x720, or a smaller internal canvas upscaled in the fabric.
-  Recommended: the G0 result makes the write path the first question; the
-  canvas is a proportional 2.6 times, so decide it after the write path is
-  costed, and keep the engine at 1280x720 until then.
+  Recommended: keep the engine at 1280x720. A full-screen fill now runs at
+  27.8 fps with the raster on, and a smaller canvas buys only its pixel ratio,
+  2.6 times at 800x600; decide it from the engine's measured frame time.
 - Assets: the data is staged and verified on the card at
   `root/media/vcmi/data`; what remains open is whether the first milestone loads
   it whole at boot or pages it from the card through a BL616 file service.

@@ -126,12 +126,15 @@ static inline void tv_dcache_wbinval(void)
 	CSR_WRITE(CSR_MCCTLCOMMAND, MCCTL_L1D_WBINVAL_ALL);
 }
 
-/* Run a store-only pass without the D-cache, so its stores go straight to the
- * DDR3 instead of allocating lines first. AE350-009 measured a cached 32-byte
- * line at 683.3 cycles against 479.9 uncached, the difference being the
- * read-allocate fill a write-only pass does not need; AE350-010 confirms the
- * A25 offers no memory-attribute register and no cache-block operations, so
- * this pair is the only way to reach that 1.42 times.
+/* Run a pass without the D-cache, so its stores go straight to the DDR3
+ * instead of allocating lines first.  This no longer pays and is not for
+ * speed: on the bridge of core-log entries 30 to 35 a store-only pass costs
+ * 187.1 cycles a 32-byte line cached and 319.9 with the D-cache off, and a
+ * copy 881.8 against 1,020.0 (AE350-010, entry 40).  It won, 683.3 against
+ * 479.9, only while a cached store paid a 501.7-cycle read-allocate fill
+ * through a one-transfer-at-a-time crossing.  The pair stays for the probes
+ * that measure it (pma_probe, write_depth, amo_probe); no atomic may run
+ * between them (AE350-011).
  *
  * The sequence is not optional. tv_dcache_save_off writes back and invalidates
  * the whole cache first, because a dirty line of the buffer left behind would
@@ -139,9 +142,8 @@ static inline void tv_dcache_wbinval(void)
  * buffer already in the DDR3, so the invalidation discards nothing wanted.
  * With the cache off every data access costs a DDR3 transfer, so the pass
  * belongs in a leaf loop that keeps its state in registers, must not call
- * anything, and must not touch data it needs quickly. A pass that reads gets
- * slower rather than faster: a 32-byte copy measured 1,210.9 cycles a line
- * cached and 1,614.9 uncached. Nothing else may run between the two calls.
+ * anything, and must not touch data it needs quickly. Nothing else may run
+ * between the two calls.
  *
  * tv_dcache_restore needs no write-back afterwards: the cache holds nothing
  * valid from the window, so later reads refill from the DDR3. */

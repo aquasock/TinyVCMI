@@ -1358,3 +1358,37 @@ Fix `firmware/apps/write_cost` to set the video state it reports and to print na
 - User Test: N/A
 
 ---
+
+## 40 COMMIT Unreleased 2026-11-27T21:38:48-07:00
+
+#### Coming From:
+
+Unreleased 5921d20
+
+#### Purpose:
+
+Bring the reference records, the bridge document and the port plan up to the current bridge's measurements, and fix the `write_cost` defects entry 39 found, as the user approved.
+
+#### Outcome:
+
+The documentation now describes the bridge as built and measured, and one of its earlier conclusions is reversed: turning the D-cache off around a store-only pass, which entry 28 found worth 1.42 times, is now slower than the cache. To revise the records from the image they describe, `write_depth` and `pma_probe` were run on seed 8 of `build/ae350/e1` (`ctrl.fs` SHA-256 `6757c049b4f0a2d7360ff19f0bacc543c92cabd1c0dc743d10ebad343c6bc5c6`), still trained and handed over from entry 38, warm and powered from the host's 5 V over USB-C OTG, both exiting 0: a full line stored costs 187.1 cycles cached and 319.9 with the D-cache off, a whole-screen store-only pass 27 ms against 49 ms and a copy 881.8 against 1,020.0 cycles a line; a dirty line's write-back in an eviction stream 62.8 cycles, 15.7 a transfer, against 39.9 for one uncached store, so posted writes overlap; one uncached word read 131.2; K = 2 to 8 fresh-line stores 180.0 a line each; the frame buffer's range 179.8 and 175.8 cycles a line against 179.8 and 175.7 for ordinary DDR3; and the CSR dump and `cbo` results identical to entry 28's. `firmware/apps/write_cost` now turns the video off itself, prints nanoseconds rather than cycles in its ns column and its ratio as a ratio, and run straight after `vcmi_bench`, which leaves the raster on, it gave 180.4 cycles and 240 ns a line where the unfixed program had given 234.4. AE350-004, AE350-006, AE350-007, AE350-009 and AE350-010 in `.ai/core-reference.md` were revised in place with entries 39 and 40's figures, each with a revision note keeping the first image's figures, with their fast-index lines and three routing questions updated; AE350-009's revision corrects entry 27's reading of the 374.9-cycle E5 figure as an uncached line read, since E5 reads one word. `docs/ahb-bridge-design.md` was rewritten from the RTL's own comments as the bridge as built (`ahb_ram`'s posted writes and zero-wait sequential reads, the 16-entry ordered queue, the four ways with `cl`, prefetch, invalidation and poisoning, `ddr3_arb` and the reset rule), with the serialised bridge, the proposal's predictions and the as-built figures side by side, the simulation gates and mutants as `tools/sim_ae350_ddr3.sh` runs them, and the open items. `docs/vcmi-port-plan.md`'s redraw-budget section now leads with the current drawing and line costs and their consequences, that fills reach 27.8 fps with the raster on and reads are now the expensive half, and condenses entries 23 to 28 into a short history; cycle B is marked done, cycle C in progress, cycle G is now the read path, G1's first half is recorded, and the decisions list replaces the finished write-path choice with the atomics choice from entry 38 and the timing of read path stages 3 and 4. The comment on `tv_dcache_save_off` in `firmware/include/tinyvcmi.h` now says it does not pay and is kept for the probes, and the README carries the `write_cost` correction and a "keep the D-cache on" limit. Every program that includes `tinyvcmi.h` and the boot ROM rebuild; all YAML in the reference parses with 111 unique record IDs. The board is left in one-wire mode with seed 8 trained, the raster off and the boot ROM at `LOAD`. `.ai/core.md` was not changed. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` unchanged and that no settled log entry was altered, validated the five revised records against the reference schema, and checked this entry's six sections, ordering, prose, Status values, numbering and the active log's 40 of 100 entries.
+
+#### Next Steps:
+
+Entry 38's next steps stand: G1's second half, drawing through a streaming texture and `SDL_RenderCopy` as VCMI does and measuring the frame time, and the user's choice of how the engine is built without AMOs (AE350-011), for which the plan recommends the `rv32imc` multilib. Read path stages 3 and 4 wait on that measurement, and the copy's cost of about four fills and the scattered reads' 583.4 ns should be explained before either is built. Entry 36's closure and video-liveness findings, entry 31's lost DDR3 read, the static columns and entry 29's waiting items stand.
+
+#### Files Modified:
+
+- README.md
+- docs/ahb-bridge-design.md
+- docs/vcmi-port-plan.md
+- firmware/apps/write_cost/main.c
+- firmware/include/tinyvcmi.h
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: N/A
+
+---

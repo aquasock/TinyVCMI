@@ -87,6 +87,9 @@ Limits that are measured but not yet removed:
   copy 118.4, an 8-bit palette expand 59.6, a 2x scale 56.6 and an alpha
   blend 152.4 (`firmware/apps/vcmi_bench`). Through SDL2's software renderer
   a full-screen frame of fills costs 66.5 ms, about 15 fps.
+- **Keep the D-cache on.** Turning it off around a store-only pass, which
+  paid on the first image, now costs 319.9 cycles a line against 187.1 cached
+  (`firmware/apps/pma_probe`, AE350-010).
 - **Atomics need the line in the D-cache.** On this A25 an AMO whose line is
   not in the D-cache, or any AMO with the D-cache off, never returns, and LR
   on such a line does not bring the line in, so every SC after it fails. An
@@ -99,8 +102,9 @@ Limits that are measured but not yet removed:
 
 The A25 cycle counts are best-of-three runs. `rd_lat` reproduced to 0.1 cycle
 across two sessions, and `write_cost` to 1.5 cycles once the video was in the
-same state; `write_cost` leaves the video as it finds it, so an earlier
-"video off" reading of 233.0 cycles was in fact taken with the raster running.
+same state; until entry 40 `write_cost` left the video as it found it, so an
+earlier "video off" reading of 233.0 cycles was in fact taken with the raster
+running, and it now turns the video off itself.
 The alpha blend measured 138.9 cycles in an earlier build of the same source,
 a change from the program's placement rather than the memory.
 
