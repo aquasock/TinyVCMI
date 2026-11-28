@@ -1431,3 +1431,34 @@ G1's second half is next: draw through a streaming texture and `SDL_RenderCopy` 
 - User Test: NOT RUN
 
 ---
+
+## 42 COMMIT Unreleased 2026-11-27T21:57:55-07:00
+
+#### Coming From:
+
+Unreleased 73eb29c
+
+#### Purpose:
+
+Complete gate G1 by drawing the test pattern through the presentation path VCMI 1.7.5 uses and measuring its frame time.
+
+#### Outcome:
+
+G1's second half passes on the board and shows where a VCMI frame's time goes. `firmware/apps/sdl_test` now runs a second pass after the renderer pass, copying MiSTer-VCMI's `client/renderSDL/ScreenHandler.cpp` (VCMI-004): a streaming `ARGB8888` texture locked once and aliased by a screen surface, each frame drawn into that surface with SDL's blitter (an `SDL_FillRect` clear, the eight bars, an opaque 64x64 sprite blit, a half-transparent sprite blit and the moving box), then `SDL_RenderCopy` of the whole texture with `SDL_RenderFlush`, and `SDL_RenderPresent`, each part timed; after every present the page the raster shows is read back and must hold the box, bar 1 and the opaque sprite, a check both passes now share. Built for `rv32imc` (ELF SHA-256 `c8c2fac45ffbfa4cbaac273ec5302820f6d5aba7085e8df29c11ff97e13d9321`) and run on seed 8 of `build/ae350/e1` (`ctrl.fs` SHA-256 `6757c049b4f0a2d7360ff19f0bacc543c92cabd1c0dc743d10ebad343c6bc5c6`), still trained and handed over from entry 38, warm and powered from the host's 5 V over USB-C OTG, the renderer pass gave 66.6 ms a frame as before and the engine pass 183.4 ms, about 5.5 fps: 58.0 ms of drawing, 123.9 ms of `SDL_RenderCopy` and flush, which copies the whole texture onto the window surface and matches `vcmi_bench`'s full-screen copy, and 1.5 ms of present, with the shown page right on all 180 frames of each pass, `TinyVCMI G1 PASS` and exit 0. Twelve consecutive frames captured from `/dev/video0` during the engine pass all showed the bars, the box, the checker sprite and the alpha sprite as dark red over black. The proposed fix, allocating the texture in the frame-buffer pages so that presenting is a page flip, does not fit VCMI: `WindowHandler::simpleRedraw` draws only the top window into a screen surface VCMI keeps for the whole run, so the surface must keep its content between frames and cannot alternate pages. Asked to choose, the user chose a single buffer with no copy, the texture being the page the raster shows and presenting only the cache write-back, accepting that a half-drawn update may show, over a fabric copy engine or dirty-region copies, and chose to commit G1 without watching it, so the user test was not run. `docs/vcmi-port-plan.md` records G1 as passed with these figures. The board is left in one-wire mode with seed 8 trained, the raster off and the boot ROM at `LOAD`. `.ai/core.md` was not changed. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` unchanged and that no settled log entry was altered, and checked this entry's six sections, ordering, prose, Status values, numbering and the active log's 42 of 100 entries.
+
+#### Next Steps:
+
+Build the single-buffered present the user chose: make the streaming texture's pixels the page the raster shows and `SDL_RenderCopy` of that texture over the whole window a no-op in SDL's software renderer, so that presenting is the cache write-back, then measure the engine pass against this entry's 183.4 ms and look at the picture for torn updates on HDMI. The fence decision (AE350-012), read path stages 3 and 4, the copy's and scattered reads' costs, entry 36's closure and video-liveness findings, entry 31's lost DDR3 read, the static columns and entry 29's waiting items stand.
+
+#### Files Modified:
+
+- docs/vcmi-port-plan.md
+- firmware/apps/sdl_test/main.c
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: NOT RUN
+
+---

@@ -12,6 +12,21 @@
  * engine's drawing is priced separately (vcmi_bench, AE350-006), so a frame
  * here is the driver's floor, not a prediction of VCMI's frame rate.
  *
+ * Two passes of FRAMES frames each:
+ *
+ *   renderer  the bars and box drawn by the renderer itself
+ *             (SDL_RenderClear, SDL_RenderFillRect), presented
+ *   engine    the second half of G1: the path VCMI 1.7.5 uses
+ *             (client/renderSDL/ScreenHandler.cpp, VCMI-004).  A streaming
+ *             ARGB8888 texture, its pixels aliased by a screen surface; the
+ *             frame drawn into that surface with SDL's blitter (SDL_FillRect
+ *             and SDL_BlitSurface, an opaque sprite and an alpha-blended
+ *             one); then SDL_RenderCopy of the whole texture, SDL_RenderFlush
+ *             and SDL_RenderPresent, timed as three parts.
+ *
+ * After every present the page the raster shows is read back and must hold
+ * the frame just drawn.
+ *
  * Run it with tools/load_ae350.py after the hand-over.
  */
 #include <stdint.h>
@@ -42,6 +57,158 @@ static int fail(const char *what)
 {
 	printf("BAD %s: %s\n", what, SDL_GetError());
 	return 1;
+}
+
+#define AMASK 0xff000000u
+#define RMASK 0x00ff0000u
+#define GMASK 0x0000ff00u
+#define BMASK 0x000000ffu
+
+/* The engine path's sprite and where it goes: an opaque 64x64 checker the
+   box never crosses in FRAMES frames, and a half-transparent red one. */
+#define SPRITE   64
+#define SPRITE_X 1100
+#define SPRITE_Y 560
+#define ALPHA_X  40
+#define ALPHA_Y  420
+
+static uint64_t ns_since(uint64_t t0)
+{
+	return (tv_cycles64() - t0) * 1000u / (TV_CORE_HZ / 1000000u);
+}
+
+/* The frame's checks on the page the raster shows: the box's centre white,
+   bar 1 red and, on the engine path, the opaque sprite's first pixel.
+   Returns 1 for a wrong frame, printed if fewer than four were before. */
+static int check_shown(int i, const SDL_Rect *box, int sprite, uint32_t before)
+{
+	const uint32_t *shown = (const uint32_t *)(uintptr_t)TV_VID_BASE;
+	uint32_t b = shown[(box->y + 64) * TV_VID_WIDTH + box->x + 64] & 0xffffffu;
+	uint32_t r = shown[16 * TV_VID_WIDTH + 3 * TV_VID_WIDTH / 16] & 0xffffffu;
+	uint32_t s = sprite ? shown[SPRITE_Y * TV_VID_WIDTH + SPRITE_X] & 0xffffffu
+	                    : 0x00ffffu;
+
+	if (b == 0xffffffu && r == 0xff0000u && s == 0x00ffffu)
+		return 0;
+	if (before >= 4)
+		return 1;
+	printf("BAD-FRAME %d base %08lx box %06lx bar %06lx sprite %06lx\n", i,
+	       (unsigned long)TV_VID_BASE, (unsigned long)b, (unsigned long)r,
+	       (unsigned long)s);
+	return 1;
+}
+
+/* G1's second half: VCMI's presentation path.  Returns 0 if every frame
+   was shown right. */
+static int engine_path(SDL_Renderer *ren)
+{
+	SDL_Texture *tex;
+	SDL_Surface *screen, *sprite, *glass;
+	void *pixels;
+	int pitch, i;
+	uint32_t shown_wrong = 0;
+	uint64_t t0, draw_ns = 0, copy_ns = 0, present_ns = 0;
+	uint32_t blits = 0;
+
+	tex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_ARGB8888,
+	                        SDL_TEXTUREACCESS_STREAMING, TV_VID_WIDTH,
+	                        TV_VID_HEIGHT);
+	if (!tex)
+		return fail("SDL_CreateTexture");
+	SDL_SetTextureBlendMode(tex, SDL_BLENDMODE_NONE);
+	/* As ScreenHandler does for the software renderer: lock once, keep the
+	   pointer, and let a surface alias the texture's memory. */
+	if (SDL_LockTexture(tex, NULL, &pixels, &pitch) != 0)
+		return fail("SDL_LockTexture");
+	SDL_UnlockTexture(tex);
+	screen = SDL_CreateRGBSurfaceFrom(pixels, TV_VID_WIDTH, TV_VID_HEIGHT, 32,
+	                                  pitch, RMASK, GMASK, BMASK, AMASK);
+	if (!screen)
+		return fail("SDL_CreateRGBSurfaceFrom");
+	SDL_SetSurfaceBlendMode(screen, SDL_BLENDMODE_NONE);
+	printf("engine path: texture pixels %08lx, pitch %d\n",
+	       (unsigned long)(uintptr_t)pixels, pitch);
+
+	sprite = SDL_CreateRGBSurface(0, SPRITE, SPRITE, 32, RMASK, GMASK, BMASK,
+	                              AMASK);
+	glass = SDL_CreateRGBSurface(0, SPRITE, SPRITE, 32, RMASK, GMASK, BMASK,
+	                             AMASK);
+	if (!sprite || !glass)
+		return fail("SDL_CreateRGBSurface");
+	for (int y = 0; y < SPRITE; y++)
+		for (int x = 0; x < SPRITE; x++) {
+			((uint32_t *)sprite->pixels)[y * sprite->pitch / 4 + x] =
+			    ((x ^ y) & 8) ? 0xff0000ffu : 0xff00ffffu;
+			((uint32_t *)glass->pixels)[y * glass->pitch / 4 + x] =
+			    0x80ff0000u;
+		}
+	SDL_SetSurfaceBlendMode(sprite, SDL_BLENDMODE_NONE);
+	SDL_SetSurfaceBlendMode(glass, SDL_BLENDMODE_BLEND);
+
+	for (i = 0; i < (int)FRAMES; i++) {
+		SDL_Rect bar, at;
+		int b;
+
+		t0 = tv_cycles64();
+		SDL_FillRect(screen, NULL, SDL_MapRGB(screen->format, 0, 0, 0));
+		for (b = 0; b < 8; b++) {
+			bar.x = (int)(b * TV_VID_WIDTH / 8);
+			bar.y = 0;
+			bar.w = (int)(TV_VID_WIDTH / 8);
+			bar.h = (int)(TV_VID_HEIGHT / 2);
+			SDL_FillRect(screen, &bar,
+			             SDL_MapRGB(screen->format, (b & 1) ? 255 : 0,
+			                        (b & 2) ? 255 : 0, (b & 4) ? 255 : 0));
+		}
+		at.x = SPRITE_X;
+		at.y = SPRITE_Y;
+		if (SDL_BlitSurface(sprite, NULL, screen, &at) != 0)
+			return fail("SDL_BlitSurface");
+		at.x = ALPHA_X + (i % 64);
+		at.y = ALPHA_Y;
+		if (SDL_BlitSurface(glass, NULL, screen, &at) != 0)
+			return fail("SDL_BlitSurface alpha");
+		blits += 2;
+		bar.x = (int)((i * 7u) % (TV_VID_WIDTH - 128u));
+		bar.y = (int)((i * 5u) % (TV_VID_HEIGHT - 128u));
+		bar.w = 128;
+		bar.h = 128;
+		SDL_FillRect(screen, &bar, SDL_MapRGB(screen->format, 255, 255, 255));
+		draw_ns += ns_since(t0);
+
+		/* ScreenHandler::presentScreenTexture */
+		t0 = tv_cycles64();
+		if (SDL_RenderCopy(ren, tex, NULL, NULL) != 0)
+			return fail("SDL_RenderCopy");
+		SDL_RenderFlush(ren);
+		copy_ns += ns_since(t0);
+
+		t0 = tv_cycles64();
+		SDL_RenderPresent(ren);
+		present_ns += ns_since(t0);
+
+		shown_wrong += check_shown(i, &bar, 1, shown_wrong);
+		if ((i % 30) == 29) {
+			printf("engine frame %d\n", i + 1);
+			fflush(stdout);
+		}
+	}
+
+	printf("engine path: %d frames, %lu blits; per frame: draw %lu us, "
+	       "RenderCopy+Flush %lu us, present %lu us, total %lu us\n",
+	       i, (unsigned long)blits,
+	       (unsigned long)(draw_ns / FRAMES / 1000u),
+	       (unsigned long)(copy_ns / FRAMES / 1000u),
+	       (unsigned long)(present_ns / FRAMES / 1000u),
+	       (unsigned long)((draw_ns + copy_ns + present_ns) / FRAMES / 1000u));
+	printf("engine path: shown page checked on %d frames, %lu wrong\n", i,
+	       (unsigned long)shown_wrong);
+
+	SDL_FreeSurface(glass);
+	SDL_FreeSurface(sprite);
+	SDL_FreeSurface(screen);
+	SDL_DestroyTexture(tex);
+	return shown_wrong ? 1 : 0;
 }
 
 int main(void)
@@ -126,26 +293,8 @@ int main(void)
 		flip_ns += (tv_cycles64() - t0) * 1000u / (TV_CORE_HZ / 1000000u);
 		flipped++;
 
-		/* The page the raster now shows must be this frame: the box's
-		   centre white and bar 1 red.  The flip wrote the D-cache back
-		   and invalidated it, so these reads come from the DDR3. */
-		{
-			const uint32_t *shown =
-			    (const uint32_t *)(uintptr_t)TV_VID_BASE;
-			uint32_t box = shown[(bar.y + 64) * TV_VID_WIDTH +
-			                     bar.x + 64] & 0x00ffffffu;
-			uint32_t red = shown[16 * TV_VID_WIDTH +
-			                     3 * TV_VID_WIDTH / 16] & 0x00ffffffu;
-			if (box != 0x00ffffffu || red != 0x00ff0000u) {
-				if (wrong < 4)
-					printf("BAD-FRAME %d base %08lx box %06lx "
-					       "bar %06lx\n", i,
-					       (unsigned long)TV_VID_BASE,
-					       (unsigned long)box,
-					       (unsigned long)red);
-				wrong++;
-			}
-		}
+		/* The page the raster now shows must be this frame. */
+		wrong += check_shown(i, &bar, 0, wrong);
 
 		while (SDL_PollEvent(&ev))
 			if (ev.type == SDL_QUIT)
@@ -173,6 +322,10 @@ int main(void)
 		rc = 1;
 	/* the frame buffer the driver handed out must be one of the two pages */
 	if ((uintptr_t)page0 != TV_VIDEO_BASE && TV_VID_BASE == 0)
+		rc = 1;
+
+	printf("renderer path done\n");
+	if (engine_path(ren) != 0)
 		rc = 1;
 
 	SDL_DestroyRenderer(ren);

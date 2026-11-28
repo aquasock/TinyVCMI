@@ -344,9 +344,16 @@ honest:
 - **G1, SDL on the board.** SDL2 plus the `tinyvcmi` driver draw and flip a test
   pattern at 60 Hz with the A25 idle, and a second run draws the same pattern
   from the engine's blitter path. This measures the driver, not the engine.
-  First half passed (entry 38): `firmware/apps/sdl_test` draws and flips with
-  the shown page checked on every frame, at 66.5 ms a frame rather than 60 Hz
-  because each frame redraws the whole screen; the user accepted the picture.
+  Passed (entries 38 and 42): `firmware/apps/sdl_test` draws and flips with
+  the shown page checked on every frame, at 66.5 ms a frame through the
+  renderer, rather than 60 Hz because each frame redraws the whole screen, and
+  at 183.4 ms through VCMI's own path (a streaming texture aliased by the
+  screen surface, SDL's blitter, `SDL_RenderCopy` and `SDL_RenderPresent`):
+  58.0 ms of drawing, 123.9 ms of `SDL_RenderCopy` copying the whole texture
+  onto the window surface, and 1.5 ms of present. VCMI keeps that screen
+  surface and redraws only what changed (`WindowHandler::simpleRedraw`), so
+  its frame cannot be a two-page flip; removing the copy means showing the
+  texture itself, single-buffered, which the user chose to try next.
 - **G2, main menu.** VCMI boots to its main menu from a minimal data set, on
   HDMI, with measured frame time. The user's acceptance test for this
   milestone is that menu, drawn and driven by the real keyboard and mouse.
