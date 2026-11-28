@@ -3,9 +3,14 @@
 # Build SDL2 2.32.10 for the AE350: rv32imac, bare metal, newlib, no OS.
 #
 #   build_sdl2.sh [OUT_DIR]        default build/sdl
+#   SDL_TRACE=1 build_sdl2.sh DIR  diagnostic build: every SDL and driver
+#                                  function entry can be printed on the UART
+#                                  (firmware/sdl/SDL_trace_tinyvcmi.c); build
+#                                  it into its own DIR, never build/sdl
 #
-# Fetches the release tarball if it is not already there, applies the two
-# patches in firmware/sdl (RISC-V atomics, dynamic API off for bare metal),
+# Fetches the release tarball if it is not already there, applies the three
+# patches in firmware/sdl (RISC-V atomics as LR/SC, dynamic API off for bare
+# metal, the tinyvcmi driver's bootstrap entry),
 # compiles SDL's own source list with the TinyVCMI SDL_config, and archives
 # libSDL2.a.  Nothing is written outside OUT_DIR; the tarball is not committed
 # (build/ is ignored) and the fetch is pinned to one release.
@@ -51,8 +56,16 @@ sdl=SDL2-$ver
      fi
      patch -p1 -s <"$f" || { echo "$(basename "$f") did not apply" >&2; exit 1; }
  }
+ # Earlier versions of the atomics patch, entry 37's one amoswap.w and a bare
+ # LR/SC loop, both hang on a D-cache miss (AE350-011); a tree patched with
+ # either must be re-extracted, since the current patch would land behind the
+ # old block and never be used.
+ if grep -q 'amoswap.w.aq\|"1: lr.w.aq' src/atomic/SDL_spinlock.c; then
+     echo "$sdl has an old spinlock patch; delete $out/$sdl" >&2
+     exit 1
+ fi
  apply_once "$root/firmware/sdl/sdl2-riscv-atomics.patch" \
-            'amoswap.w.aq' src/atomic/SDL_spinlock.c
+            '"1: lw      %2, 0(%3)' src/atomic/SDL_spinlock.c
  apply_once "$root/firmware/sdl/sdl2-baremetal-dynapi.patch" \
             'bare-metal RISC-V, statically linked' src/dynapi/SDL_dynapi.h
  apply_once "$root/firmware/sdl/sdl2-tinyvcmi-bootstrap.patch" \
@@ -60,6 +73,14 @@ sdl=SDL2-$ver
 
 port=$root/firmware/sdl
 arch="-march=rv32imac_zicsr_zifencei -mabi=ilp32 -O2 -g"
+trace=${SDL_TRACE:-0}
+if [[ $trace == 1 ]]; then
+    [[ $out != "$root/build/sdl" ]] || {
+        echo "SDL_TRACE=1 needs its own OUT_DIR, not build/sdl" >&2; exit 2; }
+    cflags_trace=-finstrument-functions
+else
+    cflags_trace=
+fi
 inc="-I$sdl/include -I$sdl/src -I$port -include $port/SDL_config_tinyvcmi.h"
 defs="-DSDL_BUILD_MAJOR_VERSION=2 -DSDL_BUILD_MINOR_VERSION=32 \
       -DSDL_BUILD_MICRO_VERSION=10 -DHAVE_MALLOC=1"
@@ -78,7 +99,8 @@ srcs=$( { ls $sdl/src/*.c
 fail=0
 for f in $srcs; do
     o=obj/$(echo "$f" | sed "s|$sdl/src/||; s|/|_|g; s|\.c$|.o|")
-    if ! $cc $arch $defs $inc -w -c -o "$o" "$f" 2>"logs/$(basename "$f").log"; then
+    if ! $cc $arch $cflags_trace $defs $inc -w -c -o "$o" "$f" \
+            2>"logs/$(basename "$f").log"; then
         echo "FAILED: $f"; sed -n '1,5p' "logs/$(basename "$f").log"; fail=1
     fi
 done
@@ -87,11 +109,20 @@ done
 # program's link.
 for f in $port/SDL_tinyvcmivideo.c $port/SDL_systimer_tinyvcmi.c; do
     o=obj/port_$(basename "$f" .c).o
-    if ! $cc $arch $defs $inc -I"$root/firmware/include" -w -c -o "$o" "$f" \
-            2>"logs/$(basename "$f").log"; then
+    if ! $cc $arch $cflags_trace $defs $inc -I"$root/firmware/include" -w \
+            -c -o "$o" "$f" 2>"logs/$(basename "$f").log"; then
         echo "FAILED: $f"; sed -n '1,5p' "logs/$(basename "$f").log"; fail=1
     fi
 done
+# The trace hook itself is never instrumented.
+if [[ $trace == 1 ]]; then
+    f=$port/SDL_trace_tinyvcmi.c
+    if ! $cc $arch $defs $inc -I"$root/firmware/include" -Wall -Wextra -Werror \
+            -c -o obj/port_SDL_trace_tinyvcmi.o "$f" \
+            2>"logs/$(basename "$f").log"; then
+        echo "FAILED: $f"; sed -n '1,5p' "logs/$(basename "$f").log"; fail=1
+    fi
+fi
 
 [[ $fail == 0 ]] || { echo "SDL2 build failed" >&2; exit 1; }
 $ar rcs libSDL2.a obj/*.o || exit 1

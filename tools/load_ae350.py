@@ -8,7 +8,10 @@ LOAD" line, sends the ELF file's loadable segments as one image with the
 protocol in firmware/include/tinyvcmi.h, then prints the program's output
 until it exits. Fails if the ROM or the program prints a line starting with
 BAD, the ROM reports NOBOOT, the program exits with a nonzero code, or an
---expect prefix never appears.
+--expect prefix never appears.  --hold-on-bad keeps printing for that many
+seconds after a BAD or NOBOOT line before failing, so a report that runs
+over several lines, or repeats because the reporter itself faulted, is seen
+whole.
 
 The image must already be handed over (tools/ddr3_write_probe.py handover),
 so that the UART is the AE350's.  In one-wire mode the port is the debug
@@ -87,13 +90,26 @@ def crc(data):
 
 
 class Board:
-    def __init__(self, link):
+    def __init__(self, link, hold=0.0):
         self.link = link
         self.text = bytearray()
+        self.hold = hold
 
     def check_line(self, line):
         if line.startswith((b"BAD", b"NOBOOT ")):
+            if self.hold > 0:
+                self.show_after(self.hold)
             raise LoadError(line.decode("ascii", "replace"))
+
+    def show_after(self, seconds):
+        """Print what follows a failure line for this long, an unfinished
+        line included."""
+        for line in self.lines(time.monotonic() + seconds):
+            print(line.decode("ascii", "replace"), flush=True)
+        if self.text:
+            print(self.text.decode("ascii", "replace") + " [no line end]",
+                  flush=True)
+            self.text.clear()
 
     def lines(self, deadline):
         """Complete lines received before the deadline."""
@@ -199,6 +215,10 @@ def main():
     parser.add_argument("--retries", type=int, default=5)
     parser.add_argument("--expect", action="append", default=[],
                         help="an output line must start with this; repeatable")
+    parser.add_argument("--hold-on-bad", type=float, default=0.0,
+                        metavar="S",
+                        help="after a BAD or NOBOOT line, keep printing for "
+                        "S seconds before failing")
     args = parser.parse_args()
 
     try:
@@ -216,7 +236,7 @@ def main():
     link.dtr = args.tinytang
     link.rts = False
     link.open()
-    board = Board(link)
+    board = Board(link, args.hold_on_bad)
     expected = [prefix.encode("ascii") for prefix in args.expect]
     run_limit = args.run_timeout or float("inf")
     try:

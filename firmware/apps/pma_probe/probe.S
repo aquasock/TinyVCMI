@@ -9,7 +9,7 @@
  * instruction and sets probe_fault so the caller knows the read failed.
  *
  * Only an illegal instruction is skipped. Any other trap is a real fault and
- * goes to tv_rt_trap as the runtime normally does.
+ * goes to tv_rt_trap_entry as the runtime normally does.
  */
 	.section .text
 	.globl	probe_handler_install
@@ -59,10 +59,5 @@ probe_handler:
 	lw	t1, 4(sp)
 	lw	t2, 8(sp)
 	addi	sp, sp, 16
-	la	sp, __stack_top
-	csrr	a0, mcause
-	csrr	a1, mepc
-	csrr	a2, mtval
-	call	tv_rt_trap
-4:	j	4b
+	j	tv_rt_trap_entry
 	.size	probe_handler, . - probe_handler

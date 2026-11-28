@@ -25,6 +25,19 @@
 
 static uint32_t *const page0 = (uint32_t *)TV_VIDEO_BASE;
 
+/* Defined only by the diagnostic SDL build (SDL_TRACE=1
+   tools/build_sdl2.sh, firmware/sdl/SDL_trace_tinyvcmi.c); weak, so against
+   the normal library it is absent and trace() does nothing. */
+extern volatile int tv_sdl_trace __attribute__((weak));
+
+static void trace(int on)
+{
+	if (&tv_sdl_trace) {
+		fflush(stdout);
+		tv_sdl_trace = on;
+	}
+}
+
 static int fail(const char *what)
 {
 	printf("BAD %s: %s\n", what, SDL_GetError());
@@ -39,7 +52,7 @@ int main(void)
 	SDL_Event ev;
 	SDL_version ver;
 	uint64_t t0, draw_ns = 0, flip_ns = 0;
-	uint32_t drawn = 0, flipped = 0;
+	uint32_t drawn = 0, flipped = 0, wrong = 0;
 	int i, rc = 0;
 
 	SDL_GetVersion(&ver);
@@ -55,6 +68,7 @@ int main(void)
 	printf("step B: %d video driver(s)\n", SDL_GetNumVideoDrivers());
 	fflush(stdout);
 
+	trace(1);
 	win = SDL_CreateWindow("TinyVCMI G1", SDL_WINDOWPOS_CENTERED,
 	                       SDL_WINDOWPOS_CENTERED, TV_VID_WIDTH,
 	                       TV_VID_HEIGHT, 0);
@@ -67,6 +81,7 @@ int main(void)
 	ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_SOFTWARE);
 	if (!ren)
 		return fail("SDL_CreateRenderer");
+	trace(0);
 	printf("step D: renderer ok\n"); fflush(stdout);
 	if (SDL_GetRendererInfo(ren, &info) != 0)
 		return fail("SDL_GetRendererInfo");
@@ -111,6 +126,27 @@ int main(void)
 		flip_ns += (tv_cycles64() - t0) * 1000u / (TV_CORE_HZ / 1000000u);
 		flipped++;
 
+		/* The page the raster now shows must be this frame: the box's
+		   centre white and bar 1 red.  The flip wrote the D-cache back
+		   and invalidated it, so these reads come from the DDR3. */
+		{
+			const uint32_t *shown =
+			    (const uint32_t *)(uintptr_t)TV_VID_BASE;
+			uint32_t box = shown[(bar.y + 64) * TV_VID_WIDTH +
+			                     bar.x + 64] & 0x00ffffffu;
+			uint32_t red = shown[16 * TV_VID_WIDTH +
+			                     3 * TV_VID_WIDTH / 16] & 0x00ffffffu;
+			if (box != 0x00ffffffu || red != 0x00ff0000u) {
+				if (wrong < 4)
+					printf("BAD-FRAME %d base %08lx box %06lx "
+					       "bar %06lx\n", i,
+					       (unsigned long)TV_VID_BASE,
+					       (unsigned long)box,
+					       (unsigned long)red);
+				wrong++;
+			}
+		}
+
 		while (SDL_PollEvent(&ev))
 			if (ev.type == SDL_QUIT)
 				i = (int)FRAMES;
@@ -131,7 +167,9 @@ int main(void)
 	       (unsigned long)TV_VID_BASE, (unsigned long)TV_VID_FRAMES,
 	       (unsigned long)TV_VID_LATE);
 
-	if (flipped != FRAMES)
+	printf("shown page checked on %lu frames, %lu wrong\n",
+	       (unsigned long)flipped, (unsigned long)wrong);
+	if (flipped != FRAMES || wrong)
 		rc = 1;
 	/* the frame buffer the driver handed out must be one of the two pages */
 	if ((uintptr_t)page0 != TV_VIDEO_BASE && TV_VID_BASE == 0)

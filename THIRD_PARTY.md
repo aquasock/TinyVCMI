@@ -27,7 +27,10 @@ and design lessons taken from sibling projects are recorded in
 - **Modifications:** three patches, all in `firmware/sdl/`, each carrying a
   TinyVCMI comment at the point of change:
   - `sdl2-riscv-atomics.patch` — `src/atomic/SDL_spinlock.c` gains an RV32A
-    `amoswap.w.aq` branch for `SDL_AtomicTryLock`.
+    branch for `SDL_AtomicTryLock`: an ordinary load of the lock word, then
+    `lr.w.aq`/`sc.w`, on every pass, because this A25 completes an atomic
+    only on a line already in its D-cache (AE350-011). Entry 37's version, one
+    `amoswap.w.aq`, hung on such a miss.
   - `sdl2-baremetal-dynapi.patch` — `src/dynapi/SDL_dynapi.h` disables the
     dynamic API for bare-metal RISC-V, as SDL does for PS2, PSP and RISC OS.
   - `sdl2-tinyvcmi-bootstrap.patch` — `src/video/SDL_video.c` declares and
@@ -37,6 +40,9 @@ and design lessons taken from sibling projects are recorded in
 
 `firmware/sdl/SDL_tinyvcmivideo.c`, `SDL_tinyvcmivideo.h` and
 `SDL_systimer_tinyvcmi.c` implement SDL's platform interfaces for the AE350.
+`firmware/sdl/SDL_trace_tinyvcmi.c` is a GCC `-finstrument-functions` hook
+linked only into the diagnostic build that `SDL_TRACE=1 tools/build_sdl2.sh`
+makes.
 They are this project's code, written against SDL's driver contract, and are
 released under the zlib licence so that they can be compiled as part of SDL;
 they are not derived from any SDL driver's source.

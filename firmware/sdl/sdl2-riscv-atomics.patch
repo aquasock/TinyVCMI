@@ -1,19 +1,31 @@
 --- a/src/atomic/SDL_spinlock.c
 +++ b/src/atomic/SDL_spinlock.c
-@@ -137,6 +137,17 @@
+@@ -137,6 +137,29 @@
          : "cc", "memory");
      return result == 0;
  
 +#elif defined(__riscv) && defined(__riscv_atomic)
-+    /* TinyVCMI: RV32A.  One atomic swap of 1 into the lock word, acquire
-+       order.  The A25 runs one hart with no preemption, so this is never
-+       contended, but it is the correct primitive and costs one instruction. */
-+    int result;
-+    __asm__ __volatile__("amoswap.w.aq %0, %1, (%2)"
-+                         : "=&r"(result)
-+                         : "r"(1), "r"(lock)
++    /* TinyVCMI: RV32A on the AE350's A25, which completes an atomic only on a
++       line already in its D-cache (AE350-011): an AMO on a line that is not
++       there never returns, and LR on such a line returns its value without
++       bringing the line in, so every SC after it fails.  An ordinary load
++       does bring the line in, so each pass loads the lock word first, then
++       reserves it with acquire order, gives up if it is held, and retries a
++       failed SC.  The A25 is one hart with no preemption, so nothing runs
++       between the load and the reservation to evict the line, and the loop
++       is never contended. */
++    int held, failed, line;
++    __asm__ __volatile__("1: lw      %2, 0(%3)\n"
++                         "   lr.w.aq %0, (%3)\n"
++                         "   bnez    %0, 2f\n"
++                         "   sc.w    %1, %4, (%3)\n"
++                         "   bnez    %1, 1b\n"
++                         "2:\n"
++                         : "=&r"(held), "=&r"(failed), "=&r"(line)
++                         : "r"(lock), "r"(1)
 +                         : "memory");
-+    return result == 0;
++    (void)line;
++    return held == 0;
 +
  #elif defined(__MACOSX__) || defined(__IPHONEOS__)
      /* Maybe used for PowerPC, but the Intel asm or gcc atomics are favored. */

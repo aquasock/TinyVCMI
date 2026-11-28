@@ -1284,3 +1284,47 @@ Establish the board's link before anything else: power-cycle the Tang, confirm t
 - User Test: FAIL
 
 ---
+
+## 38 COMMIT Unreleased 2026-11-27T21:24:58-07:00
+
+#### Coming From:
+
+Unreleased 434d4a2
+
+#### Purpose:
+
+Find and fix the fault that stopped entry 37's `sdl_test` after `VideoInit`, as the user approved, so that SDL2 draws and flips on the board.
+
+#### Outcome:
+
+SDL2 now draws and flips on HDMI through the `tinyvcmi` driver, which the user accepted as clean, and the fault was two defects of entry 37's port and one undocumented property of the A25. The board's link had come back on its own when the FT2232 re-enumerated at 20:21, but the FPGA answered core ID `0x00`, so seed 8 of `build/ae350/e1` (`ctrl.fs` SHA-256 `6757c049b4f0a2d7360ff19f0bacc543c92cabd1c0dc743d10ebad343c6bc5c6`) was reloaded, accepted on `DONE` in the loader's raw output, and before every run trained `error 0`, lanes `1111`, 422 trials, `d 1 b 2` and passed the 60 s soak and hand-over, warm and powered from the host's 5 V over USB-C OTG. The trap report was made independent of the memories it reports on: `firmware/rt/crt0.S` now holds `tv_rt_trap_entry`, which prints `BAD TRAP` with `mcause`, `mepc`, `mtval`, `ra`, `sp`, `gp` and `mstatus` using only immediates, computed hex digits and the UART's registers, marks the report in `mscratch` and prints `BAD TRAP2` and stops on a trap inside it, replacing the C `tv_rt_trap`, whose strings and hex table were in the DDR3; `firmware/apps/pma_probe/probe.S` jumps to it, and `tools/load_ae350.py --hold-on-bad S` keeps printing after a `BAD` or `NOBOOT` line. Rerun, `sdl_test` did not trap but spun inside `SDL_CreateWindow` with no STALL report, and `SDL_TRACE=1 tools/build_sdl2.sh DIR` was added to build SDL with `-finstrument-functions` and the hook `firmware/sdl/SDL_trace_tinyvcmi.c`, which prints each function entry straight to the UART while a program sets `tv_sdl_trace`; its trace ended entering `SDL_AtomicTryLock` from `SDL_malloc`, so entry 37's one-instruction `amoswap.w.aq` spinlock never returned. The new `firmware/apps/amo_probe` showed why, recorded as AE350-011: with the D-cache on, AMOs and LR/SC are correct on resident lines in the DDR3 and the block RAM, but on a line just written back and invalidated a bare AMO never returns, LR returns the value without allocating the line so 1,000 SC retries all fail, and an ordinary load first makes both correct, while any AMO with the D-cache off never returns. `firmware/sdl/sdl2-riscv-atomics.patch` now loads the lock word and runs `lr.w.aq`/`sc.w` on every pass, `tools/build_sdl2.sh` refuses a tree extracted under an older patch, and the probe's hanging cases build only with `make HANG=1`. `sdl_test` then passed with a picture the user called flickery, and a capture of `/dev/video0` at 1280x720 showed the raster alternating between never-drawn grey noise and the page being drawn: SDL builds `window->surface` itself over the pointer `CreateWindowFramebuffer` returns, while the driver flipped the pixels of a private surface nothing drew into. `firmware/sdl/SDL_tinyvcmivideo.c` now hands out the back page and repoints `window->surface->pixels` at the new back page after each flip, which matches SDL's renderer contract that the back buffer is undefined after a present, and `sdl_test` reads the page `TV_VID_BASE` shows after every present and fails unless the moving box and bar 1 are there. Its Makefile also pointed its include path at a nonexistent `build/sdl/port`, so the app had compiled against SDL's stock minimal config while the library used `firmware/sdl/SDL_config_tinyvcmi.h`, and it now includes `firmware/sdl`. On the board `sdl_test` (ELF SHA-256 `de60708aa63eb62a33e7d1fbefa01c09e0a6394d8abd070058fe1ec838d1fde8`) drew 1,620 rects and flipped 180 frames in 11.98 s, 45 us of drawing calls and 66.5 ms of present a frame, about 15 fps because the software renderer rasterises the whole screen at present time, with the shown page right on all 180 frames, `LATE` 1, `TinyVCMI G1 PASS` and exit 0; twelve consecutive captured frames all showed the full pattern, and the user reported it clean. Every other app and the boot ROM rebuild under the new runtime, and with the trace option in the script the normal SDL build still reproduced entry 37's 99 objects byte for byte, before the spinlock and driver changes. `docs/vcmi-port-plan.md`'s cycle C now names SDL2 as the vendored upstream release beside MiSTer's SDL2 2.32.10, SDL2_ttf 2.24.0, SDL2_image 2.8.12 and SDL2_mixer 2.8.1, with a recount of 266 `SDL_` and 49 `TTF_`/`IMG_`/`Mix_` identifiers of which only three are `IMG_`, and the load-time budget of 567 KB in 3.1 s; a new runtime item records that `std::atomic` compiles to AMOs while `shared_ptr` with this libstdc++ does not. `THIRD_PARTY.md` describes the new patch and the trace hook, and AE350-011 was added to `.ai/core-reference.md`. The board is left in one-wire mode with seed 8 trained, the raster off and the boot ROM at `LOAD`. `.ai/core.md` was not changed. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` unchanged, validated the new record against the reference schema with every YAML block parsing and 111 unique record IDs, and checked this entry's six sections, ordering, prose, Status values, numbering and the active log's 38 of 100 entries.
+
+#### Next Steps:
+
+G1's second half is next: draw the same pattern through the path VCMI uses, a streaming `ARGB8888` texture locked and written as a surface and presented with `SDL_RenderCopy` (VCMI-004), and measure the frame time the plan asks for, against this cycle's 66.5 ms for full-screen fills. Before any engine code, decide with the user how cycle D removes AMOs from the engine (AE350-011): the `rv32imc` multilib with `__atomic_*` as plain loads and stores, or a RAM port change once the A25's bus atomic is understood. The present cost, the whole screen rasterised and written back each frame, is the write path's again and is the case for SDL's dirty-rectangle and cache-off fill paths (AE350-010). Entry 36's closure and video-liveness findings, entry 31's lost DDR3 read, stages 3 and 4 of the read path, the static columns and entry 29's waiting items stand.
+
+#### Files Modified:
+
+- THIRD_PARTY.md
+- docs/vcmi-port-plan.md
+- firmware/apps/amo_probe/Makefile
+- firmware/apps/amo_probe/main.c
+- firmware/apps/pma_probe/probe.S
+- firmware/apps/sdl_test/Makefile
+- firmware/apps/sdl_test/main.c
+- firmware/rt/crt0.S
+- firmware/rt/syscalls.c
+- firmware/sdl/SDL_tinyvcmivideo.c
+- firmware/sdl/SDL_tinyvcmivideo.h
+- firmware/sdl/SDL_trace_tinyvcmi.c
+- firmware/sdl/sdl2-riscv-atomics.patch
+- tools/build_sdl2.sh
+- tools/load_ae350.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: PASS
+
+---

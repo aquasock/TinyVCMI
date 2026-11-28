@@ -24,8 +24,6 @@ extern int errno;
 extern char _end[], __heap_end[];
 
 void tv_rt_reboot(void) __attribute__((noreturn));
-void tv_rt_trap(uint32_t cause, uint32_t epc, uint32_t tval)
-	__attribute__((noreturn));
 
 int _close(int fd);
 int _fstat(int fd, struct stat *st);
@@ -192,19 +190,6 @@ void _exit(int code)
 	} else {
 		tv_put_dec((uint32_t)code);
 	}
-	tv_put_str("\r\n");
-	tv_wait_tx_idle();
-	tv_rt_reboot();
-}
-
-void tv_rt_trap(uint32_t cause, uint32_t epc, uint32_t tval)
-{
-	tv_put_str("\r\nBAD TRAP C=");
-	tv_put_hex(cause);
-	tv_put_str(" P=");
-	tv_put_hex(epc);
-	tv_put_str(" V=");
-	tv_put_hex(tval);
 	tv_put_str("\r\n");
 	tv_wait_tx_idle();
 	tv_rt_reboot();

@@ -7,7 +7,18 @@
  * by the video unit at 0xe8010000 (VIDEO-003).  SDL's own software renderer
  * does all the drawing: this driver only reports the display, hands out the
  * back page as the window's framebuffer, and turns UpdateWindowFramebuffer
- * into a page flip.  That is MiSTer's shape (sdl-driver/mister), chosen over
+ * into a page flip.
+ *
+ * SDL builds the window surface itself, once, over the pixel pointer
+ * CreateWindowFramebuffer returns (SDL_CreateWindowFramebuffer in
+ * SDL_video.c), and its renderer draws through that surface.  So a flip
+ * repoints window->surface's pixels at the new back page; a surface of the
+ * driver's own would be one nothing draws into, which is what the first
+ * version did, showing a never-drawn page and the page being drawn by turns.
+ * After a flip the back page holds the frame before last, which is SDL's
+ * renderer contract (the back buffer is undefined after a present, and every
+ * frame is drawn whole); a program that writes the window surface directly,
+ * without a renderer, must likewise redraw whole frames.  That is MiSTer's shape (sdl-driver/mister), chosen over
  * a hand-written renderer because SDL's software blitter is the path VCMI
  * 1.7.5 already runs on.
  *
@@ -36,7 +47,7 @@ static uint8_t *const page[2] = {
     (uint8_t *)TV_VIDEO_BASE,
     (uint8_t *)(TV_VIDEO_BASE + (4u << 20)),
 };
-static int front = 0;   /* the page the raster is showing */
+static int front = 0;   /* the page the raster shows; front ^ 1 is drawn */
 
 static int TINYVCMI_Available(void)
 {
@@ -119,42 +130,28 @@ void TINYVCMI_VideoQuit(_THIS)
 int TINYVCMI_CreateWindowFramebuffer(_THIS, SDL_Window *window, Uint32 *format,
                                      void **pixels, int *pitch)
 {
-    SDL_Surface *surface;
-    const Uint32 surface_format = SDL_PIXELFORMAT_ARGB8888;
-
-    /* Free the old framebuffer surface */
-    SDL_FreeSurface((SDL_Surface *)SDL_GetWindowData(window, TINYVCMI_SURFACE));
-    SDL_SetWindowData(window, TINYVCMI_SURFACE, NULL);
-
-    /* Create a new one over the back page: no allocation, the DDR3 is the
-       surface's memory. */
-    surface = SDL_CreateRGBSurfaceFrom((void *)page[front ^ 1],
-                                       window->w, window->h, 32,
-                                       TV_VID_STRIDE,
-                                       0x00FF0000, 0x0000FF00, 0x000000FF,
-                                       0xFF000000);
-    if (!surface) {
-        return -1;
+    (void)_this;
+    if (window->w != TV_VID_WIDTH || window->h != TV_VID_HEIGHT) {
+        return SDL_SetError("TinyVCMI: window must be %dx%d", TV_VID_WIDTH,
+                            TV_VID_HEIGHT);
     }
-    /* SDL_CreateRGBSurfaceFrom already marks the surface SDL_PREALLOC, which
-       is exactly right here: the DDR3 page is not the surface's to free, and
-       clearing the flag would make SDL_FreeSurface() free() a DDR3 address. */
-
-    SDL_SetWindowData(window, TINYVCMI_SURFACE, surface);
-    *format = surface_format;
-    *pixels = surface->pixels;
-    *pitch = surface->pitch;
+    /* No allocation: the back page of the DDR3 is the surface's memory, and
+       SDL marks a surface over given pixels SDL_PREALLOC, so it never frees
+       them. */
+    *format = SDL_PIXELFORMAT_ARGB8888;
+    *pixels = (void *)page[front ^ 1];
+    *pitch = TV_VID_STRIDE;
     return 0;
 }
 
 int TINYVCMI_UpdateWindowFramebuffer(_THIS, SDL_Window *window,
                                      const SDL_Rect *rects, int numrects)
 {
-    SDL_Surface *surface;
-
-    surface = (SDL_Surface *)SDL_GetWindowData(window, TINYVCMI_SURFACE);
-    if (!surface) {
-        return SDL_SetError("TinyVCMI: no framebuffer");
+    (void)_this;
+    (void)rects;
+    (void)numrects;
+    if (!window->surface || window->surface->pixels != page[front ^ 1]) {
+        return SDL_SetError("TinyVCMI: window surface is not the back page");
     }
 
     /* The pixels must be in the DDR3 before the raster can be pointed at
@@ -165,22 +162,25 @@ int TINYVCMI_UpdateWindowFramebuffer(_THIS, SDL_Window *window,
        to take it at the next vertical blank so the next frame draws into a
        page the raster is not showing.  The first flip is what starts the
        raster (see VideoInit). */
-    TV_VID_BASE = (uint32_t)(uintptr_t)surface->pixels;
+    TV_VID_BASE = (uint32_t)(uintptr_t)page[front ^ 1];
     TV_VID_CTRL = 1;
     while (TV_VID_STATUS & TV_VID_STATUS_PENDING) {
         /* the video unit acknowledges BASE at the next vertical blank */
     }
     front ^= 1;
 
-    /* Next frame draws into the other page. */
-    surface->pixels = (void *)page[front ^ 1];
+    /* The next frame draws into the other page, through the surface SDL's
+       renderer holds. */
+    window->surface->pixels = (void *)page[front ^ 1];
     return 0;
 }
 
 void TINYVCMI_DestroyWindowFramebuffer(_THIS, SDL_Window *window)
 {
-    SDL_FreeSurface((SDL_Surface *)SDL_GetWindowData(window, TINYVCMI_SURFACE));
-    SDL_SetWindowData(window, TINYVCMI_SURFACE, NULL);
+    /* Nothing was allocated: SDL frees its own surface struct and leaves
+       the DDR3 page alone. */
+    (void)_this;
+    (void)window;
 }
 
 #endif /* SDL_VIDEO_DRIVER_TINYVCMI */

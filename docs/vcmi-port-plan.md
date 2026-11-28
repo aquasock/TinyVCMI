@@ -88,6 +88,10 @@ library call at tens of cycles.
 ### SDL surface
 
 VCMI touches 260 distinct `SDL_` symbols plus 49 `TTF_`/`IMG_`/`Mix_` symbols.
+A recount on 2026-11-27 at the same commit, matching identifiers in every
+`.cpp` and `.h`, gave 266 `SDL_` and the same 49, of which 21 are `TTF_` and
+only three are `IMG_` (`IMG_Load_RW`, `IMG_SavePNG`, `IMG_GetError`); the
+renderer alone, `client/renderSDL`, uses 159 `SDL_` and `TTF_` identifiers.
 The presentation path is specific and favourable: VCMI renders into a plain
 `SDL_Surface`, creates one streaming `ARGB8888` texture, and — when the
 renderer calls itself `"software"` — locks that texture and makes the screen
@@ -125,6 +129,21 @@ same-sized window is a page flip rather than a copy.
 6. **Time.** `SDL_GetTicks` and `_gettimeofday` already exist on the cycle
    counter. The main loop needs a sleep that does not busy-wait the whole core
    when there is nothing to draw.
+7. **Atomics only on resident lines.** On this A25 an atomic completes only
+   on a line already in the D-cache (AE350-011, entry 38): an AMO on a line
+   that is not there, or any AMO with the D-cache off, never returns, and LR on
+   such a line returns its value without bringing the line in, so every SC
+   after it fails. An ordinary load does bring the line in. SDL's spinlock
+   therefore loads the lock word, then runs LR/SC, on every pass. The engine
+   is the larger exposure:
+   with the xpack toolchain's libstdc++ (no gthreads, so `shared_ptr` counts
+   under the single-threaded lock policy and emits no AMO), `std::atomic`'s
+   read-modify-write operations still compile to AMOs, `fetch_add` to
+   `amoadd.w.aqrl`, and VCMI uses `std::atomic`. Before engine code runs,
+   cycle D must either build against the toolchain's `rv32imc` multilib with
+   `__atomic_*` supplied as plain loads and stores (sound here, with one hart
+   and no preemption), or find out what the RAM port must answer for the
+   A25's bus atomic.
 
 ## Video and the redraw budget
 
@@ -432,9 +451,18 @@ before it has a result.
    `tv_dcache_save_off` (entry 28, 104 ms to 73 ms a screen). What remains is
    the crossing itself: accepting more than one transfer at a time would change
    the 59.9-cycle charge, at a closure cost of about 11 MHz to stay inside.
-2. **C. SDL and the video driver.** SDL2, SDL_image, SDL_ttf and the `tinyvcmi`
-   driver; a test program that flips pages and takes injected input. Hardware:
-   G1.
+2. **C. SDL and the video driver.** SDL2 first, then SDL_ttf and a minimal
+   SDL_image, with the `tinyvcmi` driver and a test program that flips pages
+   and takes injected input. Hardware: G1. As MiSTer does, SDL2 is the
+   upstream library and not a shim: MiSTer vendors SDL2 2.32.10, SDL2_ttf
+   2.24.0, SDL2_image 2.8.12 and SDL2_mixer 2.8.1 and patches them
+   (`MiSTer-VCMI/work/src`, `sdl-driver/*.patch`), and this port builds the
+   same SDL2 release from its pinned tarball with `tools/build_sdl2.sh` and the
+   patches in `firmware/sdl` (entry 37). SDL_image need decode only what
+   `IMG_Load_RW` is handed. The image size is a budget from the start:
+   `sdl_test` is 567 KB of text, mostly `libSDL2.a`, and loads in 3.1 s at
+   2 Mbaud (185 KB/s), so the engine's load time over the link scales with
+   what it links and belongs to cycle F's question.
 3. **D. The engine, to the menu.** VCMI built for `rv32imac` with MiSTer's
    option set, the internal connection over the new event loop, a minimal data
    set, and the menu on screen. Hardware: G2.

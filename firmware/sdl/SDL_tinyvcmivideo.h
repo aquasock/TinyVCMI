@@ -14,9 +14,6 @@
 
 #include "video/SDL_sysvideo.h"
 
-/* The SDL_Surface over the DDR3 page, held as window data. */
-#define TINYVCMI_SURFACE "_SDL_TinyVCMISurface"
-
 int TINYVCMI_VideoInit(_THIS);
 void TINYVCMI_VideoQuit(_THIS);
 int TINYVCMI_CreateWindowFramebuffer(_THIS, SDL_Window *window, Uint32 *format,
