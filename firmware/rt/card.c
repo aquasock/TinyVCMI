@@ -204,20 +204,28 @@ static uint32_t le32(const uint8_t *p)
 }
 
 /* Send "TinyVCMI FILE <op> <address> <room> <nums...> <path>" and take the
- * reply into reply_buf; the reply's status, or -EIO if none came. */
+ * reply into reply_buf; the reply's status, or -EIO if none came.  READ and
+ * LIST replies carry count bytes after the header; a STAT reply is the
+ * header alone, its count the entry's kind. */
 static int request(const char *op, const uint32_t *nums, int n,
 		   const char *path, uint32_t room, uint32_t *size,
 		   uint32_t *count)
 {
+	const int has_body = strcmp(op, "STAT") != 0;
+
 	uint64_t t0 = tv_cycles64();
 
 	fflush(stdout);
 	fflush(stderr);
 	tv_wait_tx_idle();
 	for (int attempt = 0; attempt < TRIES; attempt++) {
-		if (attempt)
-			stats.retries++;
 		rx_clear();
+		/* A retry ends whatever part of the last request arrived, so
+		 * that TinyTang reads this one as a line of its own. */
+		if (attempt) {
+			stats.retries++;
+			tv_put_str("\r\n");
+		}
 		tv_put_str("TinyVCMI FILE ");
 		tv_put_str(op);
 		tv_put_char(' ');
@@ -238,7 +246,8 @@ static int request(const char *op, const uint32_t *nums, int n,
 		int status = (int)le32(reply_buf + 4);
 		*size = le32(reply_buf + 8);
 		*count = le32(reply_buf + 12);
-		if (status == 0 && REPLY_HEADER + *count != (uint32_t)got)
+		if (status == 0 &&
+		    (uint32_t)got != REPLY_HEADER + (has_body ? *count : 0u))
 			continue;
 		stats.bytes += (uint32_t)got;
 		stats.cycles += tv_cycles64() - t0;
@@ -346,8 +355,12 @@ static struct slot *block_of(const struct file *f, uint32_t block)
 	return victim;
 }
 
+/* The service's path for a name under /card, "/card" itself being its root
+ * (the empty path); NULL for any other name. */
 static const char *card_path(const char *name)
 {
+	if (strcmp(name, "/card") == 0)
+		return "";
 	return strncmp(name, "/card/", 6) == 0 ? name + 6 : NULL;
 }
 

@@ -109,11 +109,13 @@ same-sized window is a page flip rather than a copy.
    `std::condition_variable` sit on top of it. Blocking waits yield; a
    CPU-bound thread that never blocks starves the rest, which the AI thread
    must be measured against, not assumed to survive.
-2. **A read-only file layer.** A packed asset archive in the DDR3 plus
-   `open`/`read`/`lseek`/`fstat`/`opendir`/`readdir`/`closedir` over it, so
-   Boost.Filesystem and minizip work unmodified. Writes go to an in-RAM
-   writable area for config and saves. Persistence of saves back to the card is
-   a later cycle.
+2. **A read-only file layer.** Built (entry 47): `firmware/rt/card.c` gives
+   `open`/`read`/`lseek`/`fstat`/`stat`/`opendir`/`readdir`/`closedir` for
+   paths under `/card`, read from the SD card through TinyTang's card file
+   service (PROT-005) with 4 MiB of 64 KiB read cache in the DDR3, so
+   Boost.Filesystem and minizip can work unmodified. Writes still need an
+   in-RAM writable area for config and saves; the card layer refuses them with
+   `EROFS`. Persistence of saves back to the card is a later cycle.
 3. **An event loop.** A replacement for `boost::asio::io_context` backed by the
    cycle counter and the cooperative scheduler, carrying the in-memory
    connection and VCMI's timers. No sockets are needed for single-player.
@@ -290,20 +292,18 @@ A 345 MiB staged set is therefore 30 minutes at 2 Mbaud, 9.6 at 5 Mbaud and
 have to become writable for the two faster rates, which is a fabric change plus
 a firmware handshake, not a host-side tweak.
 
-Two delivery options remain:
-
-1. **Load-time images.** The existing boot protocol carries the program and any
-   number of data images; the loader sends them at one rate. Simplest, needs no
-   new protocol, and the board is normally powered continuously, so the DDR3
-   keeps its contents between program loads and only a power cycle costs the
-   reload. At 2 Mbaud the staged 260 MiB of `Data` alone is 23 minutes, which
-   makes this the slowest option per power cycle but the fastest to build. Sending
-   a subset of `Maps` shortens the tail without changing the mechanism.
-2. **A BL616 file service.** A new frame command by which the AE350 asks the
-   card for a named block and caches it in the DDR3. Best long-term behaviour,
-   and it pages the data that is already staged on the card, but it is a
-   TinyTang change, so it needs the user's approval and a second repository in
-   scope.
+The data is delivered by a card file service, chosen over a whole load at boot
+(about 30 minutes at 2 Mbaud) and built in entries 46 and 47. In 2-wire mode a
+program run by TinyTang's `ae350run` asks for a stat, a directory page or a
+range of up to 64 KiB of a file under `root/media/vcmi` by one text line, and
+TinyTang answers in the boot ROM's load protocol (PROT-005). On the board it
+reads `H3bitmap.lod`'s header, its 4,908-entry table and two entries
+byte-exact against the host's copy, and the first MiB at 240 KB/s from the card
+and in 121 ms from the cache (`firmware/apps/card_test`). VCMI's `config` and
+`Mods` are not yet on the card, and `ae350run` still serves only addresses
+below `0x42000000` (TinyNES's 32 MiB, `AE350_SDRAM_END` in TinyTang's
+`ae350_load.h`), which a program larger than that, or a reply buffer above it,
+exceeds.
 
 ## Input
 
@@ -400,9 +400,9 @@ before it has a result.
 4. **E. A map.** Asset loading at scale, save and config writes in RAM, the
    battle AI thread's behaviour under cooperative scheduling, and frame-time
    measurement on the adventure map.
-5. **F. The link at speed.** Programmable UART divisor and, if the user wants
-   it, the BL616 file service, so a power cycle does not cost minutes of asset
-   load.
+5. **F. The link at speed.** Programmable UART divisor and register `0x1C`, so
+   the file service (built in entry 47) and program loads run at 5 or 10 Mbaud
+   instead of 2.
 6. **G. The read path's remaining cost.** Reads are now the expensive half of
    drawing: a copy costs about four fills and an alpha blend five, a miss that
    prefetch does not cover still waits 336 to 397 ns, and scattered reads gain
@@ -424,14 +424,5 @@ before it has a result.
   Recommended: keep the engine at 1280x720. A full-screen fill now runs at
   27.8 fps with the raster on, and a smaller canvas buys only its pixel ratio,
   2.6 times at 800x600; decide it from the engine's measured frame time.
-- Assets: the data is staged and verified on the card at
-  `root/media/vcmi/data`; what remains open is whether the first milestone loads
-  it whole at boot or pages it from the card through a BL616 file service.
-  Recommended: load `Data` and the chosen maps at boot first, and add the file
-  service when the load time starts to cost real cycles. At the current 2 Mbaud
-  a full boot-time send is about 30 minutes, which is the argument for the file
-  service sooner rather than later.
-- Whether TinyTang firmware changes are in scope, which only the link-at-speed
-  cycle needs.
 - Audio: deferred in this plan; say now if it is not deferrable.
 - A frame-rate floor for acceptance, so "visibly running" has a number.

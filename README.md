@@ -23,6 +23,12 @@ deliverable.
 - **SDL2 2.32.10 draws and flips on the board** through the `tinyvcmi` video
   driver (`firmware/sdl/`), the first half of the port plan's gate G1
   (`firmware/apps/sdl_test`).
+- **Programs read the Heroes III data from the SD card** in 2-wire mode:
+  under TinyTang's `ae350run`, `open`, `read`, `stat` and `readdir` on paths
+  under `/card` go to `root/media/vcmi` on the card through TinyTang's card
+  file service, with a read cache in the DDR3 (`firmware/rt/card.c`,
+  `firmware/apps/card_test`, run with `tools/tang_ae350run.py`); it needs
+  TinyTang `44353b6` or later.
 - Everything since v0.1.0 is unreleased. `.ai/core-log.md` carries the live
   state and the next steps; `docs/vcmi-port-plan.md` carries the plan for the
   engine itself.

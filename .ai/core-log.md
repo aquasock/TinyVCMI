@@ -1601,3 +1601,36 @@ On TinyTang's console (`ffff:5454`, by its `/dev/serial/by-id` name), run `platf
 - User Test: NOT RUN
 
 ---
+
+## 47 COMMIT Unreleased 2026-11-28T06:33:26-07:00
+
+#### Coming From:
+
+Unreleased 3c89c3e
+
+#### Purpose:
+
+Prove and fix the card file service that entry 46 built and flashed untested, the rest of cycle 2 of the approved plan, so that TinyVCMI's runtime reads the Heroes III data from the SD card.
+
+#### Outcome:
+
+The service now works on the board, byte-exact against the host's copy of the data. Entry 46's flash had taken: after the user powered the board up in 2-wire mode `platform` reported `8a52baf-dirty.bc74fa9`, and seed 8 of `build/ae350/e1` (`tinyvcmi.bin`) was tangloaded, trained `error 0`, lanes `1111`, 422 trials, `d 1 b 2`, and handed over with a clean 60 s soak. The first `card_test` runs found three defects and one measurement problem. TinyTang's STAT put the entry's kind in the reply's `count`, which also set the bytes sent after the header, so the sender's CRC pass read past the reply and every STAT failed with `cannot read the file`. `firmware/rt/card.c` mapped only `/card/...`, so `opendir("/card")` failed locally with ENOENT, and it checked `16 + count` against a STAT reply. Request lines lost bytes: one arrived cut short and joined to its retry, one damaged STAT parsed as another path and drew ENOENT, and a program's `EXIT` line vanished. The A25's side, `exts_uart` straight to the pin, has no FIFO to lose. TinyTang's desk layer, on after every boot, ran its terminal emulator over each console write inside `taskENTER_CRITICAL`, and so over each program line ae350run echoes. With interrupts off, UART1's receive FIFO, taken as 32 bytes and about 160 us at 2 Mbaud, overflowed. With `osd desk off` a run lost nothing in 13 requests. `tools/tang_ae350run.py` had waited a second time for a prompt that had arrived in the same read as `tangput: wrote`. TinyTang `44353b6` (local, not yet pushed; only `ports/bl616/tang_fpga_uart.c`, `ports/bl616/tang_osd_desk.c` and host-test files, with the uncommitted `third_party/tinydesk` edits built with as before) does four things. It sends a STAT reply as the header alone. It runs the desk feed under `vTaskSuspendAll`, since no interrupt touches the emulator. Its receive interrupt counts the FIFO's sticky overflow flag and clears it. And ae350run marks a line damaged when an overflow or ring drop occurred while it arrived or when it ran past the line buffer, now 320 bytes, and refuses a damaged file request so the program asks again; it also prints a run's overflow count at the end. `tb_tang_fpga_uart` had not compiled since `6519c3e`, its FatFS stub lacking the directory calls; its stubs now have them and the test checks the overflow count, damaged and long lines and every reply's length. Three planted faults (the old STAT length, a damage mark that never fires, an uncounted overflow) failed 11, 4 and 3 checks. TinyTang's host gate passed 57 of 57. `card.c` now maps `/card` to the root, checks the body length only for READ and LIST, and starts a retry with a line end; every app rebuilds with it. The firmware (`tinytang_bl616.bin`, 1,067,168 bytes, SHA-256 `f31957e730c8731d74d4cbcdef29c3a948fbc6c636e8b2ca6a2968f4f8c6d9c2`, identity `44353b6-dirty.131fec9`) was installed with TinyTang's `tools/tinytang_flash.py`, which reported `OK committing` and the loader's reset. The board was power-cycled into 2-wire mode with `/home/vash/Desktop/reboot_in 2_wire.py`, which the user provided this cycle, and `platform` and `crash` then reported the new identity and no reset kept. Retrained the same way and handed over, `card_test` (ELF SHA-256 `d874569d3ee53e8759af6747b29827537b82ffd7051a2cfd3af27081a66f3f48`) ran three times under ae350run with the desk layer on, each identically: `/card` and `/card/data/Data` listed with stat of each entry, `H3bitmap.lod` 105,724,954 bytes, its table CRC-32 `11a88b4a`, its first and last entries `d6fa06dd` and `933cfb62` and its first MiB `8f25ebe5`, all equal to MiSTer-VCMI's `work/h3-extract` copy. The first MiB took 4,368 ms from the card (240 KB/s) and 121 ms from the cache, with 33 requests, no retry, no overflow reported, the ENOENT and EINVAL refusals right, `TinyVCMI CARD OK, 0 wrong` and `EXIT 0`. The card's `bl616-firmware.bin`, which the desktop's Software Update installs and which held a 699,008-byte older build, was replaced with the same image over the console, and read back with `tangget` equal by SHA-256. TinyTang's `tinytang_card_firmware.py` writes only to a card mounted on the host, so it was not used. PROT-004 was revised in place, and PROT-005 (the service's contract and these measurements) and PROT-006 (the receive loss and its guard) were added to `.ai/core-reference.md`. `docs/vcmi-port-plan.md` records the file layer as built and the asset delivery as decided, and the README states the new capability. Reading the loader found that ae350run serves only addresses below `0x42000000` (`AE350_SDRAM_END`, TinyNES's 32 MiB), which the engine will exceed. The board is left in 2-wire mode with TinyVCMI's image loaded, the A25 at its boot ROM's `LOAD` and the desk layer on. The user did not test this cycle on the board. `.ai/core.md` was not changed. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` unchanged and that no settled log entry was altered, validated the revised and new records against the reference schema with every YAML block parsing and 115 unique record IDs, and checked this entry's six sections, ordering, prose, Status values, numbering and the active log's 47 of 100 entries.
+
+#### Next Steps:
+
+Push TinyTang `44353b6` with this cycle's TinyVCMI commit. Then the approved plan continues: copy VCMI's `config` and `Mods` to the card's `root/media/vcmi`; raise ae350run's `AE350_SDRAM_END` toward the DDR3's 1 GiB in TinyTang, so that a program and its reply buffers may lie above 32 MiB; then the 10 Mbaud link (register `0x1C` and a programmable divisor, watching the overflow count ae350run now prints), the threaded libstdc++, the libraries and VCMI. The write layer for config and saves remains to be built beside the read-only card layer. The fence decision (AE350-012), read path stages 3 and 4, entry 36's closure and video-liveness findings, entry 31's lost DDR3 read, the static columns and entry 29's waiting items stand.
+
+#### Files Modified:
+
+- README.md
+- docs/vcmi-port-plan.md
+- firmware/rt/card.c
+- tools/tang_ae350run.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: NOT RUN
+
+---

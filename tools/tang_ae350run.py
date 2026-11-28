@@ -66,7 +66,9 @@ def main() -> int:
         if b"tangput: wrote" not in out:
             print(out.decode("utf-8", "replace"))
             return 1
-        read_until(ser, PROMPT, 10.0)
+        # The prompt can arrive in the same read as "tangput: wrote".
+        if PROMPT not in out.split(WROTE, 1)[1]:
+            read_until(ser, PROMPT, 10.0)
 
         ser.write(f"ae350run {remote}\r\n".encode())
         buf = b""
