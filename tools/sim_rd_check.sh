@@ -29,3 +29,19 @@ iverilog -g2012 -s tb_pos -o "$out/tb_pos.vvp" \
     }
 vvp -n "$out/tb_pos.vvp" | tee "$out/sim_pos.log"
 grep -q "^PASS" "$out/sim_pos.log"
+
+# the mid-stream arm's mutant: the hit and position flags no longer gated at
+# their own edge, so the last pre-arm comparison lands one cycle after the
+# counters were zeroed and is reported as a READ after the arm.  Scenario 13
+# must catch it.
+iverilog -g2012 -s tb_check -DMUT_HITGATE -o "$out/tb_check_stale.vvp" \
+    "$src/tb_check.v" "$src/rd_check.v" >"$out/iverilog_stale.log" 2>&1 || {
+        tail -30 "$out/iverilog_stale.log" >&2
+        exit 1
+    }
+vvp -n "$out/tb_check_stale.vvp" >"$out/sim_stale.log" 2>&1 || true
+if grep -q "^PASS" "$out/sim_stale.log"; then
+    echo "FAIL  the hitgate mutant passes"
+    exit 1
+fi
+grep -m1 "^FAIL" "$out/sim_stale.log" | sed 's/^/PASS  the hitgate mutant fails: /'

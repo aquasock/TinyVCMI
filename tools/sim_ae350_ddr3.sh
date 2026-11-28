@@ -61,8 +61,11 @@ done
 # vid_pix and the TMDS encoders at their real clocks against the same kind
 # of request port, with CPU traffic beside them, checks every pixel of three
 # frames, two page flips, LATE and the TMDS symbols, and must pass; then
-# three mutants must fail: the arbiter routing a word by the wrong read's
-# tag, each pixel pair swapped, and one disparity update's sign wrong.
+# four mutants must fail: the arbiter routing a word by the wrong read's
+# tag, each pixel pair swapped, one disparity update's sign wrong, and
+# ready back in the arbiter's request-register enable, which reloads the
+# register in the cycle it retires a request and loses the one just
+# committed (ddr3_arb's own invariant must fail it).
 vrun() {    # name, defines...
     local name=$1; shift
     iverilog -g2012 -Wall -Wno-timescale -s tb_video -o "$out/video_$name.vvp" "$@" \
@@ -73,7 +76,7 @@ vrun() {    # name, defines...
 }
 line=$(vrun base); echo "$line"; [[ $line == PASS* ]] || rc=1
 grep -E "^      " "$out/video_base.log"
-for m in tag:MUT_TAG pair:MUT_PAIR disparity:MUT_DISP; do
+for m in tag:MUT_TAG pair:MUT_PAIR disparity:MUT_DISP load:MUT_LOAD; do
     line=$(vrun "${m%%:*}" "-D${m##*:}")
     if [[ $line == FAIL* ]]; then echo "PASS  the ${m%%:*} mutant fails: $line"
     else echo "FAIL  the ${m%%:*} mutant passes: $line"; rc=1; fi

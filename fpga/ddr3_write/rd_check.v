@@ -38,7 +38,10 @@
 //            A lane that delivers an earlier READ's burst shows here as a
 //            steady non-zero lag, which a stream of one pattern could never
 //            reveal.  Before 2026-10-25 LAGS was 3 and four patterns had to
-//            be distinct.
+//            be distinct.  Since 2026-11-27 the LAGS patterns are looked up
+//            one PCLK after the check, from the registered selection, and
+//            compared the PCLK after that, so a lag is counted one PCLK
+//            later than before; the counts are the same.
 //
 //   log      at the same offset `lat`, every READ from the log_skip * 1024th
 //            after `arm` on is written to a 1024-entry log: its location and
@@ -62,7 +65,11 @@
 // arrival measured now.  The two burst positions of the classifier are
 // 8 + PIPE and 16 + PIPE, the arrivals formerly reported as 11 and 19.
 // Offsets below 1 are checked at 1.  The check runs three stages behind the
-// capture, which READs at least eight cycles apart leave room for.
+// capture, which READs at least eight cycles apart leave room for; the
+// four-lane compare behind it is registered again (`all_r`), so the histogram
+// and the position classifier each land one PCLK later than the offsets they
+// name, and the position classifier two.  Both are counters the host reads
+// after random mode has ended.
 module rd_check #(
     parameter integer PIPE = 4,     // documented above; not a knob
     parameter integer LAGS = 8      // earlier READs the lag classifier names
@@ -305,6 +312,12 @@ module rd_check #(
     reg fresh_r = 1'b0;
     always @(posedge pclk) begin
         fresh_r <= fresh && !clr;
+        // the four-lane compare's pair of selectors, one cycle on (hist
+        // below).  Plain copies: at the edge an `arm` clears on they still
+        // hold the last pre-arm cycle, which is why hit, m11 and m19 are
+        // gated with clr_h at their own edge below, and ev19 with clr.
+        ex_v_d <= ex_v;
+        ex_h_d <= ex_h;
         // pattern and address only mean something where ex_v is set
         ex_pat <= {ex_pat[247:0], issue_pat};
         ex_addr <= {ex_addr[340:0], issue_idx, issue_col};
@@ -337,25 +350,51 @@ module rd_check #(
     // hist: every offset compares every cycle
     // ------------------------------------------------------------------
     reg [31:0]  hit = 32'd0;
+    reg [31:0]  all_r = 32'd0;      // all four lanes held that READ's pattern
+    reg [31:0]  ex_v_d = 32'd0, ex_h_d = 32'd0;   // ex_v and ex_h, one cycle on
     reg [511:0] hcnt = 512'd0;
     integer j, hl;
-    reg all, all_any;
+    reg all_any;
     // the two positions an isolated burst lands in, named for their PIPE 3
     // offsets: m11 at 8 + PIPE, m19 at 16 + PIPE
     localparam integer POS_A = 8 + PIPE, POS_B = 16 + PIPE;
     reg m11 = 1'b0, m19 = 1'b0;     // this READ matched at that offset
+    // The four lanes' compares against the selected pattern, and the AND over
+    // them, are registered first (all_r), with ex_h and ex_v beside them: in
+    // front of hit, m11 and m19 that cone was 2.1 ns over 100 MHz on ten seeds
+    // of twelve (2026-11-27 sweep).  all_r[j] and ex_h_d[j] are the same
+    // cycle's comparators and the same READ, so hit[j] still names the READ
+    // marked j cycles ago and the offsets are unchanged; the count lands one
+    // PCLK later, which is all hcnt cares about.
     always @(posedge pclk) begin
         for (j = 0; j < 32; j = j + 1) begin
             all_any = 1'b1;
             for (hl = 0; hl < 4; hl = hl + 1)
                 if (!pins_b3[hl] || canon_b3[8*hl +: 8] != ex_pat[8*j +: 8])
                     all_any = 1'b0;
-            all = ex_h[j] && all_any;
-            hit[j] <= all && !clr_h;
+            all_r[j] <= all_any && !clr_h;
+        end
+        for (j = 0; j < 32; j = j + 1) begin
+            // the gate belongs here, not only on all_r: all_r is made a cycle
+            // before this pairing, so at the edge an `arm` clears on, all_r
+            // and ex_h_d still hold the last pre-arm comparison, and the hit
+            // they make lands one cycle after hcnt was zeroed.  A mid-stream
+            // arm counted one phantom hit per matching offset without it
+            // (tb_check scenario 13); MUT_HITGATE is that omission.
+`ifdef MUT_HITGATE
+            hit[j] <= all_r[j] && ex_h_d[j];
+`else
+            hit[j] <= all_r[j] && ex_h_d[j] && !clr_h;
+`endif
             // The two positions an isolated burst lands in, for every READ,
             // not only the ones the histogram counts.
-            if (j == POS_A) m11 <= all_any && ex_v[POS_A] && !clr_h;
-            if (j == POS_B) m19 <= all_any && ex_v[POS_B] && !clr_h;
+`ifdef MUT_HITGATE
+            if (j == POS_A) m11 <= all_r[j] && ex_v_d[j];
+            if (j == POS_B) m19 <= all_r[j] && ex_v_d[j];
+`else
+            if (j == POS_A) m11 <= all_r[j] && ex_v_d[j] && !clr_h;
+            if (j == POS_B) m19 <= all_r[j] && ex_v_d[j] && !clr_h;
+`endif
         end
         if (clr)
             hcnt <= 512'd0;
@@ -374,42 +413,55 @@ module rd_check #(
     // that check, so the host can see whether the two positions occupy
     // disjoint phases (a refresh epoch) or both appear at every phase (a
     // per-READ property, which a fixed latency cannot cover).
-    // m11 and m19 are registered from the check cycle, so both describe one
-    // READ only on the cycle after its offset-19 check: that is `ev19`.
+    // m11 and m19 are registered from the check cycle and, since all_r, one
+    // stage later again, so both describe one READ only two cycles after its
+    // offset-19 check: that is `ev19`.
     reg  [7:0] m11_d = 8'd0;
     reg        ev19 = 1'b0;
+    reg  [9:0] refi_d = 10'd0;      // the phase one PCLK earlier, so the
+                                    // event's phase is still the check's
     wire [1:0] cls_w = {m19, m11_d[7]};
-    // pos_range takes the event two PCLK later: the event, its class and its
-    // phase are registered, then the selected class's compares, and only then
-    // is the range written.  The phase, the class and the range compared and
-    // written in one PCLK put it 2.6 to 3.6 ns over 100 MHz fully timed
-    // (TOOL-065), and the compare alone still 1.7 ns.  Events come one per
-    // isolated READ, at least 8 PCLK apart, so no event is compared against
-    // a range its predecessor has yet to write.
+    // pos_range takes the event four PCLK later: the event, its class and its
+    // phase are registered (pr), then the four classes' compares are
+    // registered beside their class (pr1), then the class's pair is selected
+    // (pr2), and only then is the range written.  The 16-bit compares and the
+    // class select in one PCLK put pr2_gt 2.1 ns over 100 MHz fully timed
+    // (2026-11-27 sweep; the compares alone are 4.3 ns of the 10 ns budget),
+    // and with the phase, class and range in one PCLK it was 2.6 to 3.6 ns
+    // over (TOOL-065).  Events come one per isolated READ, at least 8 PCLK
+    // apart, so no event is compared against a range its predecessor has yet
+    // to write: a range is written four PCLK after its event and first read
+    // again by the next event, eight later.
     reg        pr_v = 1'b0;
     reg  [1:0] pr_cls = 2'd0;
     reg  [9:0] pr_refi = 10'd0;
+    reg  [3:0] pr1_lt = 4'd0, pr1_gt = 4'd0;   // per class, one cycle on
+    reg  [1:0] pr1_cls = 2'd0;
+    reg  [9:0] pr1_refi = 10'd0;
+    reg        pr1_v = 1'b0;
     reg        pr2_v = 1'b0, pr2_lt = 1'b0, pr2_gt = 1'b0;
     reg  [1:0] pr2_cls = 2'd0;
     reg  [9:0] pr2_refi = 10'd0;
-    reg  [3:0] ph_lt, ph_gt;
     integer pc;
-    always @(*)
-        for (pc = 0; pc < 4; pc = pc + 1) begin
-            ph_lt[pc] = {6'd0, pr_refi} < pos_range[32*pc +: 16];
-            ph_gt[pc] = {6'd0, pr_refi} > pos_range[32*pc + 16 +: 16];
-        end
     always @(posedge pclk) begin
         m11_d <= {m11_d[6:0], m11};
-        ev19  <= ex_v[POS_B] && !clr;
+        ev19  <= ex_v_d[POS_B] && !clr;
+        refi_d <= refi;
         pr_v <= ev19 && !clr;
         pr_cls <= cls_w;
-        pr_refi <= refi;
-        pr2_v <= pr_v && !clr;
-        pr2_lt <= ph_lt[pr_cls];
-        pr2_gt <= ph_gt[pr_cls];
-        pr2_cls <= pr_cls;
-        pr2_refi <= pr_refi;
+        pr_refi <= refi_d;
+        for (pc = 0; pc < 4; pc = pc + 1) begin
+            pr1_lt[pc] <= pr_refi < pos_range[32*pc +: 16];
+            pr1_gt[pc] <= pr_refi > pos_range[32*pc + 16 +: 16];
+        end
+        pr1_cls <= pr_cls;
+        pr1_refi <= pr_refi;
+        pr1_v <= pr_v && !clr;
+        pr2_v <= pr1_v && !clr;
+        pr2_lt <= pr1_lt[pr1_cls];
+        pr2_gt <= pr1_gt[pr1_cls];
+        pr2_cls <= pr1_cls;
+        pr2_refi <= pr1_refi;
         if (clr) begin
             n_both <= 32'd0;
             n_only11 <= 32'd0;
@@ -454,10 +506,6 @@ module rd_check #(
     reg  [7:0]   sel_pat = 8'd0;
     reg  [10:0]  sel_addr = 11'd0;
     reg  [PW-1:0] sel_prev = {PW{1'b0}};
-    // the LAGS earlier READs' patterns, looked up here beside their indices:
-    // looked up in the next stage, in front of the compares, they put
-    // ck_older 1.7 ns over 100 MHz fully timed (TOOL-065)
-    reg  [8*LAGS-1:0] sel_prev_pat = {8*LAGS{1'b0}};
     integer sp;
     always @(posedge pclk) begin
         lat_m2 <= (lat < 5'd2) ? 5'd0 : lat - 5'd2;
@@ -497,8 +545,6 @@ module rd_check #(
         sel_addr <= sel_addr_block[11*sel_low +: 11];
         sel_rhi <= sel_rhi_block[3*sel_low +: 3];
         sel_prev <= sel_prev_block[PW*sel_low +: PW];
-        for (sp = 0; sp < LAGS; sp = sp + 1)
-            sel_prev_pat[8*sp +: 8] <= rom(sel_prev_block[PW*sel_low + 4*sp +: 4]);
     end
 
     // first: does each lane hold the READ's pattern
@@ -512,6 +558,11 @@ module rd_check #(
     // and does it hold one of the LAGS READs' before it
     reg         ck_distinct = 1'b0;
     reg [4*LAGS-1:0] ck_older = {4*LAGS{1'b0}};  // lane l, lag k = 1..LAGS at LAGS l + k - 1
+    // its LAGS earlier READs' patterns, looked up here from the registered
+    // selection: beside the 264-bit mux in the stage before, the lookup put
+    // this cone 1.0 ns over 100 MHz (2026-11-27 sweep); in front of the
+    // compares a stage later it put ck_older 1.7 ns over (TOOL-065)
+    reg  [8*LAGS-1:0] ck_prev_pat = {8*LAGS{1'b0}};
     // and, for the log, what each lane held
     reg [31:0]  ck_canon = 32'd0;
     reg [3:0]   ck_pins = 4'd0;
@@ -526,11 +577,15 @@ module rd_check #(
         ck_rhi <= sel_rhi;
         ck_pat <= sel_pat;
         ck_addr <= sel_addr;
+        for (sp = 0; sp < LAGS; sp = sp + 1)
+            ck_prev_pat[8*sp +: 8] <= rom(sel_prev[4*sp +: 4]);
         for (cl = 0; cl < 4; cl = cl + 1) begin
             ck_cls[cl] <= pins_b3[cl] && canon_b3[8*cl +: 8] == sel_pat;
+            // one stage on: this check's own capture, registered, and its LAGS
+            // patterns, so the rom is not in front of this compare
             for (ck_k = 0; ck_k < LAGS; ck_k = ck_k + 1)
-                ck_older[LAGS*cl + ck_k] <= pins_b3[cl] &&
-                                            canon_b3[8*cl +: 8] == sel_prev_pat[8*ck_k +: 8];
+                ck_older[LAGS*cl + ck_k] <= ck_pins[cl] &&
+                                            ck_canon[8*cl +: 8] == ck_prev_pat[8*ck_k +: 8];
         end
         ck_distinct <= sel_prev[4*LAGS];
         ck_rot <= crot_b3;
@@ -543,11 +598,25 @@ module rd_check #(
     reg         lg_v = 1'b0;
     reg [4*LC-1:0] lg_hit = {4*LC{1'b0}};  // lane l, lag k at LC l + k
     reg         lg_seen;
+    // ck_older is one stage behind the check, so the check's class, its
+    // distinct flag and its valid are carried beside it: every lag count lands
+    // one PCLK later, on counters the host reads after random mode has ended.
+    reg  [3:0]  lg_cls = 4'd0;
+    reg         lg_dist = 1'b0;
+    reg         lg_ck = 1'b0;
     integer lgl, lgk;
     always @(posedge pclk) begin
-        lg_v <= !clr && ck_v && ck_distinct;
+        if (clr) begin
+            lg_ck <= 1'b0;
+            lg_dist <= 1'b0;
+        end else begin
+            lg_ck <= ck_v;
+            lg_dist <= ck_distinct;
+        end
+        lg_cls <= ck_cls;
+        lg_v <= !clr && lg_ck && lg_dist;
         for (lgl = 0; lgl < 4; lgl = lgl + 1) begin
-            lg_seen = ck_cls[lgl];
+            lg_seen = lg_cls[lgl];
             lg_hit[LC*lgl] <= lg_seen;
             for (lgk = 1; lgk <= LAGS; lgk = lgk + 1) begin
                 lg_hit[LC*lgl + lgk] <= !lg_seen && ck_older[LAGS*lgl + lgk - 1];

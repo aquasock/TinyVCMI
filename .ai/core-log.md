@@ -1177,3 +1177,39 @@ Close stage 2's timing before any load: shorten the `bus_clk` path from `DDR_HAD
 - User Test: NOT RUN
 
 ---
+
+## 35 COMMIT Unreleased 2026-11-27T18:53:00-07:00
+
+#### Coming From:
+
+Unreleased 8d9a9b3
+
+#### Purpose:
+
+Close stage 2's timing so the four-way read buffer can be loaded, and measure it on the board against stage 1.
+
+#### Outcome:
+
+Stage 2 closes every clock on three of twelve seeds and roughly halves a sequential read's cost on the board. `fpga/ae350_ddr3/ahb_ram.sv` tests HWRITE before the DDR3 window compare, so the compare no longer reaches HRDATA's mux on a read's zero-wait path; the same edit fixes a defect the review found in the old block, a write accepted while `sd_zw` was high being answered with no wait state, nothing posted and its data dropped, which the bench never drove. `fpga/ae350_ddr3/ddr3_arb.v` loads its request register only while that register is empty, so `ddr3_ctl`'s ready reaches one flop instead of 314 clock enables, and its two in-flight counts register their increments before the adders; a review of the first, more elaborate form found it could lose or duplicate a request across a stall, so the single-register form is what was kept, at one request every two PCLK against the video's one per 13.9 and the CPU's one per 6.9. `fpga/ddr3_write/rd_check.v` registers the four-lane compare (`all_r`) and a per-class phase stage (`pr1`), and moves the older-pattern ROM behind the selection register into the check stage, which took `pclk` from 91 failing endpoints at -1.00 ns to 8 at -0.43 ns on the widest seed; the `clr_h` gate had to stay on `hit`, `m11` and `m19` at their own edge, because a mid-stream `arm` otherwise reported the last pre-arm comparison one cycle after the counters were zeroed. `tools/ddr3_sta.py` now times `bus_clk` and `pix_clk` as well as `pclk`, `mclk` and `core.rx.clk`, which is why the bus path had never appeared in the census; the 50 MHz pin's only sink is one IBUF whose output net is `core.rx.clk`, already timed at 20 ns. Every gate passed: `tools/sim_rd_check.sh` with a new scenario 13 (an arm mid-stream) and its `MUT_HITGATE` mutant, `tools/sim_ddr3_ctrl.sh` with its six mutants, `tools/sim_ddr3_lockstep.sh` equal to `0d3bce3` on every output, and `tools/sim_ae350_ddr3.sh` with seventeen passes including a new `MUT_LOAD` in `ddr3_arb` whose invariant catches a request loaded in the cycle it was taken. The sweep `build/ae350/d1` closed no seed but passed `bus_clk` on ten of twelve, and `build/ae350/e1`, after the counter fix, closed `pclk` on five and every clock on three: seeds 3 (106.69 MHz `pclk`, 75.09 `bus_clk`), 4 (100.68, 75.22) and 8 (102.90, 75.64), each with GB10 at all four AE350 taps, all 306 DDR3 tables equal and the 469 `DFFN`/18 `DFFNS` boundary intact. On the warm board both seeds trained `error 0`, lanes `1111`, 422 trials, `d 1 b 2` with 7 CALIB pulses a lane, and handed over to a booting A25 (`TinyVCMI DDR3 OK 1024M-64K`, `AE350 C OK`, `LOAD`); `rd_lat` then gave, per 32-byte line, sequential-8 549.7 ns at prefetch depth 0 and 233.5 at depth 2, sequential-1 538.6 and 206.0, and scattered 583.4 at every depth, against stage 1's 538.6, 508.0 and 553.1. Seed 3 is not usable: its first video flip never acknowledged (`BAD FLIP STUCK status 00000002`) and `vid_probe` died there, while seed 8 ran 2,641 frames with 2,641 flips and LATE 0 over 45 s, and the stage 1 image `build/ae350/b2/s2` also ran clean, so the fault is that placement's and not the RTL, which no gate catches because the flip handshake is in the pixel-clock raster and not on a timed path. The board is left on seed 8 in one-wire mode with the boot ROM at `LOAD`, and the user has not yet tested it. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering and the active log's 35 of 100 entries.
+
+#### Next Steps:
+
+The user is to test seed 8's image on the HDMI picture and the flips, and a seed now needs a video-liveness check before it is loaded, since the placement with the most timing margin is the one whose flip hangs and nothing in the flow tests the pixel-clock handshake. The nine seeds that still miss `pclk` fail mostly on `glue.bist.rcnt`'s enable (up to -1.61 ns), `core.check.all_r` and `glue.ctl.rdy`, and the five that miss `bus_clk` fail on the STALL report's formatter (`soc.regs.hold`, up to -3.4 ns through the 111-character barrel shift) and on `soc.ram.hrdata`, so closing more seeds means registering the report's formatter and shortening the `rcnt` enable before anything else is attempted. Scattered reads are slower than stage 1's 553.1 ns at 583.4 and were not investigated, `docs/ahb-bridge-design.md` still describes the pre-rewrite bridge and should be rewritten now that the port's measurements exist, and the placement finding deserves a reference record of its own. Entry 31's lost DDR3 read is still open and deferred, as are stages 3 and 4, the static columns and entry 29's waiting items.
+
+#### Files Modified:
+
+- fpga/ae350_ddr3/ahb_ram.sv
+- fpga/ae350_ddr3/ddr3_arb.v
+- fpga/ddr3_write/rd_check.v
+- fpga/ddr3_write/tb_check.v
+- tools/ddr3_sta.py
+- tools/sim_ae350_ddr3.sh
+- tools/sim_rd_check.sh
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: NOT RUN
+
+---

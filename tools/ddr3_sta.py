@@ -42,7 +42,13 @@ RAM_CLK_DO = 0.392
 BSRAM_CLK_DO = 2.82    # SDP read data after its clock, as nextpnr times it
 SETUP = 0.044
 RAM_SETUP = 0.043
-PERIODS = {"pclk": 10.0, "mclk": 2.5, "core.rx.clk": 20.0}
+# Every constrained clock in fpga/ae350_ddr3/open.sdc whose domain has
+# register-to-register paths.  clk50 is here as core.rx.clk: the 50 MHz pin's
+# only sink in the routed netlist is one IBUF, and its output net is that name,
+# which is where nextpnr times the domain (20 ns, as the SDC's clk50).  pix_clk5
+# is left out: it reaches only the OSER10s' FCLK, so it has no register paths.
+PERIODS = {"pclk": 10.0, "mclk": 2.5, "core.rx.clk": 20.0,
+           "bus_clk": 13.333, "pix_clk": 13.468}
 
 
 # --------------------------------------------------------------------------

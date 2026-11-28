@@ -5,18 +5,23 @@
 // (v_, reads only) before the CPU's bridge (c_, ahb_ddr3_pclk).
 //
 // The request going to the controller is a register, so no client's logic
-// reaches into ddr3_ctl's request FIFO through a mux in the same PCLK; it is
-// loaded whenever it is empty or the controller takes it, with the video's
-// request if there is one, the CPU's otherwise.  The video's request is first
-// taken into a one-entry slot whose ready, v_ready, is a register, so the
-// fetcher's next request does not wait on ddr3_ctl's ready across the die:
-// that path, rdy to vid_fetch's v_valid, was the worst on six seeds of
-// sixteen.  The slot costs the video a PCLK and limits it to a read every
-// two PCLK, eight times what the screen needs.  The CPU's ready is high in
-// the PCLK its request is copied, so it holds valid and its fields until
-// then, as ddr3_ctl's own port asks.  The video fetcher limits itself to as
-// many reads as its FIFO has room for (video_ddr3.v), so it cannot hold the
-// CPU off for longer than that many words.
+// reaches into ddr3_ctl's request FIFO through a mux in the same PCLK.  It is
+// loaded only while it is empty, so no signal from ddr3_ctl's ready reaches
+// its 314 clock enables: ready used to be in the load condition, and
+// x_ready's route to those enables was 2.67 ns over 100 MHz on eight seeds of
+// core-log entry 34's sweep.  Ready now reaches one flop, the clear of
+// x_valid, and a request a client is ready to make is taken in the PCLK the
+// register is free, so the accepted rate is a request every two PCLK, against
+// the video's one line read per 145 ns and the CPU's one posted write per
+// 69 ns.  The video's request is first taken into a one-entry slot whose
+// ready, v_ready, is a register, so the fetcher's next request does not wait
+// on ddr3_ctl's ready across the die: that path, rdy to vid_fetch's v_valid,
+// was the worst on six seeds of sixteen.  The slot costs the video a PCLK and
+// limits it to a read every two PCLK, eight times what the screen needs.  The
+// CPU's ready is high in the PCLK its request is copied, so it holds valid
+// and its fields until then, as ddr3_ctl's own port asks.  The video fetcher
+// limits itself to as many reads as its FIFO has room for (video_ddr3.v), so
+// it cannot hold the CPU off for longer than that many words.
 //
 // ddr3_ctl returns reads in the order it took them, so a FIFO of one bit per
 // read taken says whose each returning word is.  It must hold every read the
@@ -71,17 +76,24 @@ module ddr3_arb #(
     reg  x_vid = 1'b0;                  // the request held is the video's
     reg  v_slot = 1'b0;                 // the video's request, taken
     reg  [24:0] v_slot_addr = 25'd0;
-    wire load = !x_valid || x_ready;    // the register is free at this edge
+    wire load = !x_valid;               // the register is free at this edge
+`ifdef MUT_LOAD
+    // the mutant: ready back in the enable.  The register is then reloaded in
+    // the very cycle it retires, and the request just committed is lost; the
+    // invariant below must fail it.
+    wire load_m = !x_valid || x_ready;
+`else
+    wire load_m = load;
+`endif
     assign v_ready = !v_slot;
     assign c_ready = load && !v_slot;
+`ifndef SYNTHESIS
+    wire loaded = load_m && (v_slot || c_valid);      // the invariant's, below
+`endif
 
     always @(posedge pclk) begin
-        if (v_valid && !v_slot) begin
-            v_slot <= 1'b1;
-            v_slot_addr <= v_addr;
-        end
-        if (load) begin
-            x_valid <= !rst && (v_slot || c_valid);
+        if (load_m && (v_slot || c_valid)) begin
+            x_valid <= 1'b1;
             x_vid <= v_slot;
             x_we <= !v_slot && c_we;
             x_addr <= v_slot ? v_slot_addr : c_addr;
@@ -89,6 +101,12 @@ module ddr3_arb #(
             x_wmask <= c_wmask;
             if (v_slot)
                 v_slot <= 1'b0;
+        end
+        if (x_valid && x_ready)
+            x_valid <= 1'b0;
+        if (v_valid && !v_slot) begin
+            v_slot <= 1'b1;
+            v_slot_addr <= v_addr;
         end
         if (rst) begin
             x_valid <= 1'b0;
@@ -131,18 +149,51 @@ module ddr3_arb #(
     reg  [5:0] c_fl = 6'd0, v_fl = 6'd0;
     reg        c_err = 1'b0, v_err = 1'b0;
     wire       r_vid = tag[t_r];
+    // The counts' increments are registered first.  In front of the adders the
+    // tag read (tag[t_r], a 32-bit select by a counter) and the push's x_ready
+    // term were 2.8 ns over 100 MHz on ten seeds of twelve, and the counts are
+    // the STALL report's diagnostics, not the datapath: they are one PCLK late
+    // and identical once settled.  c_err and v_err read the count as it stands
+    // before this cycle's change, which is the count the word returned into.
+    reg        c_inc = 1'b0, c_dec = 1'b0, v_inc = 1'b0, v_dec = 1'b0;
     always @(posedge pclk) begin
-        c_fl <= c_fl + (push && !x_vid) - (x_rvalid && !r_vid);
-        v_fl <= v_fl + (push && x_vid) - (x_rvalid && r_vid);
-        if (x_rvalid && !r_vid && c_fl == 6'd0) c_err <= 1'b1;
-        if (x_rvalid && r_vid && v_fl == 6'd0) v_err <= 1'b1;
+        c_inc <= push && !x_vid;
+        v_inc <= push && x_vid;
+        c_dec <= x_rvalid && !r_vid;
+        v_dec <= x_rvalid && r_vid;
+        c_fl <= c_fl + c_inc - c_dec;
+        v_fl <= v_fl + v_inc - v_dec;
+        if (c_dec && c_fl == 6'd0) c_err <= 1'b1;
+        if (v_dec && v_fl == 6'd0) v_err <= 1'b1;
         if (rst) begin
             c_fl <= 6'd0;
             v_fl <= 6'd0;
+            c_inc <= 1'b0;
+            c_dec <= 1'b0;
+            v_inc <= 1'b0;
+            v_dec <= 1'b0;
             c_err <= 1'b0;
             v_err <= 1'b0;
         end
     end
+`ifndef SYNTHESIS
+    // A held request lives until the controller takes it, and nothing is
+    // loaded while one is held.  The first clause fails MUT_LOAD, which
+    // reloads the register in the cycle the old request retires and so loses
+    // the new one; the second fails a register cleared while the controller
+    // was not ready.  Neither can be true of the real logic, where the load
+    // needs an empty register and the clear needs x_ready.
+    reg held = 1'b0;
+    always @(posedge pclk) begin
+        if (!rst && loaded && x_valid && x_ready)
+            $display("FAIL  ddr3_arb: a request was loaded in the cycle it was taken");
+        held <= !rst && x_valid && !x_ready;
+        if (!rst && held && !x_valid)
+            $display("FAIL  ddr3_arb: a held request was dropped before it was taken");
+        if ((!rst && loaded && x_valid && x_ready) || (!rst && held && !x_valid))
+            $finish;
+    end
+`endif
     assign dbg = {c_err, v_err, x_vid, v_slot, x_valid, x_ready, c_fl, v_fl, t_w, t_r};
 
 `ifndef SYNTHESIS

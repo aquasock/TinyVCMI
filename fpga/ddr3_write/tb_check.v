@@ -449,8 +449,35 @@ module tb_check;
         exp_sel <= 1'b0;
         $display("     12: address data: %0d/%0d good, row bits logged", good, total);
 
+        // 13: an arm that lands while a burst is still in flight reports
+        // nothing about it.  The two selectors that meet the registered
+        // compare are sampled a cycle before ex_v and ex_h clear, so an arm
+        // must clear them too, or the run that straddles it is counted once
+        // in hist and once in the position classifier as if it happened after
+        // the arm.  `run` always drains 64 PCLK first, which is why this is
+        // driven here: the arm comes out of a live stream.
+        rearm;
+        nissued = 0;
+        running = 1;
+        wait (nissued == 40);
+        running = 0;
+        repeat (12) @(posedge pclk);
+        @(posedge pclk) arm <= 1'b1;
+        @(posedge pclk) arm <= 1'b0;
+        repeat (12) @(posedge pclk);
+        if (hist_n != 16'd0) fail("a fresh READ counted after an arm mid-stream");
+        for (q = 0; q < 32; q = q + 1)
+            if (h(q) != 16'd0) begin
+                $display("     13: hist[%0d] = %0d, hist_n %0d", q, h(q), hist_n);
+                fail("a pre-arm burst counted in hist after the arm");
+            end
+        if (n_both != 32'd0 || n_only11 != 32'd0 ||
+            n_only19 != 32'd0 || n_other != 32'd0)
+            fail("a pre-arm READ classified as a position after the arm");
+        $display("     13: an arm mid-stream reports no pre-arm READ");
+
         if (errors == 0)
-            $display("PASS  latency, lock, jump, predicted move, pin faults, lane slips, lag and RVALID as specified");
+            $display("PASS  latency, lock, jump, predicted move, pin faults, lane slips, lag, RVALID and a mid-stream arm as specified");
         else
             $display("FAIL  %0d error(s)", errors);
         $finish;

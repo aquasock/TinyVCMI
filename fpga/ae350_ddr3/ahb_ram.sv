@@ -155,16 +155,28 @@ module ahb_ram #(
                     sd_rd <= sd_win && !hwrite;
                     fetch <= !hprot0 && !hwrite;
                     lanes <= lane_mask(haddr[2:0], hsize);
-                    if (sd_win && hwrite && sd_post_ok) begin
-                        sd_post <= 1'b1;            // posted in its data phase
+                    // HWRITE first, so the window compare cannot reach
+                    // HRDATA's mux: a read's zero-wait answer is selected by
+                    // registers and HADDR[4:0] alone (0.07 ns over 75 MHz
+                    // was the compare plus the die-crossing route out of
+                    // HADDR into this mux, the worst bus_clk path on every
+                    // seed of core-log entry 34's sweep).  A write's post
+                    // and the wait-state choice still read sd_win, one flop
+                    // from the compare and from HADDR, and HRDATA is not
+                    // written on any of those paths.
+                    if (hwrite) begin
+                        if (sd_win && sd_post_ok)
+                            sd_post <= 1'b1;        // posted in its data phase
+                        else begin
+                            hready <= 1'b0;
+                            stage <= sd_win ? 5'b10000 : 5'b00001;
+                        end
                     end else if (sd_zw) begin
                         hrdata <= sd_ldata;         // from the line buffer
                     end else begin
                         hready <= 1'b0;
                         if (!sd_win)
                             stage <= 5'b00001;
-                        else if (hwrite)
-                            stage <= 5'b10000;
                         else begin
                             sd_req <= 1'b1;
                             stage <= 5'b01000;
