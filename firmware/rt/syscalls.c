@@ -4,9 +4,9 @@
  * runtime programs: standard output and error go to the UART (\n sent as
  * \r\n), standard input reads it, the heap runs from _end to the block RAM
  * at the top of the DDR3, time is the core cycle counter. There are no files
- * or directories: opening, stat and directory calls fail. _exit and traps
- * report on the UART and restart the boot ROM, which waits for the next
- * program.
+ * or directories but those under /card/, which card.c reads from the SD
+ * card through TinyTang's file service (PROT-004). _exit and traps report on
+ * the UART and restart the boot ROM, which waits for the next program.
  */
 #include <dirent.h>
 #include <errno.h>
@@ -24,6 +24,18 @@ extern int errno;
 extern char _end[], __heap_end[];
 
 void tv_rt_reboot(void) __attribute__((noreturn));
+
+/* card.c: files and directories under /card/, read through TinyTang's card
+   file service; descriptors 3 and up are its files. */
+int tv_rt_file_open(const char *name, int flags);
+int tv_rt_file_read(int fd, char *buf, int len);
+int tv_rt_file_lseek(int fd, int offset, int whence);
+int tv_rt_file_close(int fd);
+int tv_rt_file_fstat(int fd, struct stat *st);
+int tv_rt_file_stat(const char *name, struct stat *st);
+DIR *tv_rt_opendir(const char *name);
+struct dirent *tv_rt_readdir(DIR *dir);
+int tv_rt_closedir(DIR *dir);
 
 int _close(int fd);
 int _fstat(int fd, struct stat *st);
@@ -59,6 +71,8 @@ int _read(int fd, char *buf, int len)
 	int count = 0;
 	uint32_t value;
 
+	if (fd >= 3)
+		return tv_rt_file_read(fd, buf, len);
 	if (fd != 0) {
 		errno = EBADF;
 		return -1;
@@ -88,14 +102,17 @@ void *_sbrk(ptrdiff_t increment)
 
 int _close(int fd)
 {
-	(void)fd;
+	if (fd >= 3)
+		return tv_rt_file_close(fd);
 	errno = EBADF;
 	return -1;
 }
 
 int _fstat(int fd, struct stat *st)
 {
-	if (fd < 0 || fd > 2) {
+	if (fd >= 3)
+		return tv_rt_file_fstat(fd, st);
+	if (fd < 0) {
 		errno = EBADF;
 		return -1;
 	}
@@ -110,49 +127,37 @@ int _isatty(int fd)
 
 int _lseek(int fd, int offset, int whence)
 {
-	(void)fd;
-	(void)offset;
-	(void)whence;
+	if (fd >= 3)
+		return tv_rt_file_lseek(fd, offset, whence);
 	errno = ESPIPE;
 	return -1;
 }
 
+/* Only /card/ has files; see card.c. */
 int _open(const char *name, int flags, int mode)
 {
-	(void)name;
-	(void)flags;
 	(void)mode;
-	errno = ENOENT;
-	return -1;
+	return tv_rt_file_open(name, flags);
 }
 
 int _stat(const char *name, struct stat *st)
 {
-	(void)name;
-	(void)st;
-	errno = ENOENT;
-	return -1;
+	return tv_rt_file_stat(name, st);
 }
 
 DIR *opendir(const char *name)
 {
-	(void)name;
-	errno = ENOENT;
-	return 0;
+	return tv_rt_opendir(name);
 }
 
 struct dirent *readdir(DIR *dir)
 {
-	(void)dir;
-	errno = EBADF;
-	return 0;
+	return tv_rt_readdir(dir);
 }
 
 int closedir(DIR *dir)
 {
-	(void)dir;
-	errno = EBADF;
-	return -1;
+	return tv_rt_closedir(dir);
 }
 
 int _getpid(void)

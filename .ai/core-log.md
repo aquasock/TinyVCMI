@@ -1564,3 +1564,40 @@ None.
 - User Test: NOT RUN
 
 ---
+
+## 46 COMMIT Unreleased 2026-11-27T22:37:12-07:00
+
+#### Coming From:
+
+Unreleased 5227ce1
+
+#### Purpose:
+
+Build the card file service that lets TinyVCMI's runtime read the Heroes III data from the SD card through TinyTang, cycle 2 of the approved plan, and hand the unfinished cycle to the next agent at the user's direction.
+
+#### Outcome:
+
+Both halves of the service are written and build, the BL616 was flashed with them, and nothing has yet been tested on the board, because the user stopped the cycle for a handoff while the flash was being confirmed. TinyTang `6519c3e` (pushed to aquasock/TinyTang, only `ports/bl616/tang_fpga_uart.c`; the uncommitted `third_party/tinydesk` edits, which are not ours, were built with but not committed, as the user chose) adds `TinyVCMI` to `ae350run`'s program names and, in its follow loop, `ae350_file_service` answering `TinyVCMI FILE READ <address> <room> <offset> <length> <path>`, `STAT <address> <room> <path>` and `LIST <address> <room> <index> <path>` (hex numbers, paths relative to `/sd/root/media/vcmi`, the empty path its root, `..` and absolute paths refused) with a 16-byte `TVF1` header (status as a negative errno, size, count) and data pushed to the address in the boot ROM's load protocol, a READ streamed from FatFS and a LIST paged from an index in at most 4 KiB. TinyVCMI's `firmware/rt/card.c` and `firmware/rt/include/tv_card.h` add the runtime's receiver for that protocol, `tv_card_stat`, `tv_card_read` (64 KiB a request) and `tv_card_list`, and `open`, `read`, `lseek`, `close`, `fstat`, `stat`, `opendir`, `readdir` and `closedir` for paths under `/card/` through 64 slots of 64 KiB of read cache, read-only (EROFS for writing); `firmware/rt/syscalls.c` routes to it and `firmware/rt/rt.mk` builds it. `firmware/apps/card_test` (built, not run) lists `/card` and `/card/data/Data`, reads `H3bitmap.lod`'s header, table and two entries through `fopen`, times the first MiB from the card and from the cache, and checks the refusals, printing CRC-32s to check against the host's copy (MiSTer-VCMI's `work/h3-extract/Data` has files of the same sizes). The new `tools/tang_ae350run.py` puts an ELF on the card in `/root/tinyvcmi` and runs it under `ae350run`, following its output to the prompt. Flashing found a defect in `tools/tang_console.py put`: it ended the `tangput` command with `\r\n` and the shell took the `\n` as the file's first byte, so the card copy was the file shifted by one with its last byte lost, which `tangflash` refused as `not a BL616 boot image`; both tools now end that command with `\r`, and a re-put read back with `tangget` matched the build byte for byte (`tinytang_bl616.bin`, 1,063,072 bytes, SHA-256 `d77aaaf1d978237065a20b3d076f78a0d1c97bab1fafde631622b82f54536c81`, at `/root/tinyvcmi/tinytang_bl616-fileservice.bin`). `tangflash` of that copy ran and the console disconnected, which is how the BL616's reset after a committed image looks, but the board was not checked afterwards: the next agent must confirm `platform` reports `8a52baf-dirty` or later and not `c3f369c-dirty.36ce645`, which it reported before. The board was in 2-wire mode with the TinyVCMI image (`tinyvcmi.bin`, seed 8 of `build/ae350/e1`) loaded and handed over before the flash; after the BL616 reset the FPGA may hold the desktop core instead. The card's `bl616-firmware.bin`, which TinyTang's Software Update installs, was not refreshed and is older than the flashed firmware if the flash took. `.ai/core.md` was not changed. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` unchanged and that no settled log entry was altered, and checked this entry's six sections, ordering, prose, Status values, numbering and the active log's 46 of 100 entries.
+
+#### Next Steps:
+
+On TinyTang's console (`ffff:5454`, by its `/dev/serial/by-id` name), run `platform` and confirm the new firmware; if the console does not return, the user must power-cycle the board in 2-wire mode. Then `tangload /root/cores/console138k/tinyvcmi.bin`, train and hand over with `tools/ddr3_write_probe.py --port /dev/ttyACMn ctrl` and `handover --soak 60` (the probe sends `fpgapipe` only for a `ttyACM` port name), run `tools/tang_ae350run.py build/firmware/apps/card_test/card_test.elf`, check its CRC-32s against the host's `H3bitmap.lod`, and fix what fails; then refresh the card's `bl616-firmware.bin` with TinyTang's `tools/tinytang_card_firmware.py`, record a PROT record of the service, and log the cycle with the user's test. After that the approved plan continues: the 10 Mbaud link, the threaded libstdc++, the libraries and VCMI. Entry 45's waiting items stand.
+
+#### Files Modified:
+
+- firmware/apps/card_test/Makefile
+- firmware/apps/card_test/main.c
+- firmware/rt/card.c
+- firmware/rt/include/tv_card.h
+- firmware/rt/rt.mk
+- firmware/rt/syscalls.c
+- tools/tang_ae350run.py
+- tools/tang_console.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: NOT RUN
+- User Test: NOT RUN
+
+---

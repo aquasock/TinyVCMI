@@ -80,7 +80,9 @@ def main() -> int:
         if args.cmd == "put":
             data = open(args.local, "rb").read()
             digest = hashlib.sha256(data).hexdigest()
-            line = f"tangput {len(data)} {args.remote}\r\n".encode()
+            # "\r" alone: the shell ends the line at "\r", and a "\n" after
+            # it would be taken as the file's first byte (core-log entry 46).
+            line = f"tangput {len(data)} {args.remote}\r".encode()
             ser.write(line)
             read_until(ser, READY, 15.0)
             ser.write(data)

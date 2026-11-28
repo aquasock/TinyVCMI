@@ -54,7 +54,7 @@ LDFLAGS   += $(ARCHFLAGS) -nostdlib -static -T $(RT_DIR)/link.ld \
 LDLIBS    += -Wl,--start-group -lstdc++ -lsupc++ -lm -lc -lgcc -Wl,--end-group
 
 RT_SOURCES := $(RT_DIR)/crt0.S $(RT_DIR)/syscalls.c $(RT_DIR)/atomic.c \
-              $(ROOT)/firmware/common/uart.c
+              $(RT_DIR)/card.c $(ROOT)/firmware/common/uart.c
 objects     = $(patsubst %,$(BUILD)/obj/%.o,$(subst /,_,$(1)))
 RT_OBJECTS := $(call objects,$(notdir $(RT_SOURCES)))
 APP_OBJECTS := $(call objects,$(SOURCES))
