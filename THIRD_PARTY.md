@@ -43,6 +43,39 @@ and design lessons taken from sibling projects are recorded in
     over the window surface's own pixels and skips a copy of such a texture
     onto itself, so that VCMI's screen is drawn straight into the shown page.
 
+## GCC 15.2.0 (libgcc, libstdc++) with POSIX threads, on newlib 4.5.0
+
+- **Use:** the C++ runtime of programs built with `RT_THREADS := 1`
+  (`firmware/rt/rt.mk`), so that `std::thread`, `std::mutex`,
+  `std::condition_variable`, `std::shared_mutex`, `thread_local` and the
+  rest exist for VCMI. The xPack toolchain's own libraries were configured
+  `--disable-threads` and have none of them.
+- **Licence:** libgcc and libstdc++ are GPL-3.0-or-later with the GCC
+  Runtime Library Exception 3.1, which lets the programs linked with them be
+  distributed under their own terms, as with the xPack toolchain's copies.
+  newlib (libc, libm) is under its own permissive licences, unchanged from
+  the xPack's build. GMP, MPFR, MPC and ISL are used only by the compiler on
+  the host and do not reach the AE350.
+- **Not committed:** `tools/build_toolchain_threads.sh` fetches the GCC
+  tarball (SHA-256 pinned; its GNU signature by RSA key
+  `7F74F97C103468EE5D750B583AB00996FC26A641` verified on 2026-11-28), runs
+  GCC's own `contrib/download_prerequisites`, copies the xPack's newlib
+  headers and `rv32imc/ilp32` libraries into a private sysroot, and builds
+  everything under `build/toolchain/`, which is ignored.
+- **Source:** <https://ftp.gnu.org/gnu/gcc/gcc-15.2.0/>, and the newlib
+  4.5.0.20241231 the xPack `riscv-none-elf-gcc` 15.2.0-1 ships.
+- **Modifications:** two, both made by the build script with a `TinyVCMI`
+  marker at the point of change and none to the compiler's or libraries'
+  code: the sysroot copy's `sys/features.h` turns on newlib's POSIX thread,
+  timeout, reader-writer lock, timer, monotonic clock and clock selection
+  options, so that `<pthread.h>` and `<time.h>` declare what
+  `firmware/rt/pthread.c` provides; and libstdc++'s generated `configure`
+  gains a case for bare-metal `elf` targets that marks `nanosleep`,
+  `sched_yield` and the monotonic and real-time clocks present, which it
+  cannot test by linking in a cross build.
+- **Obligations:** none beyond the exception's, for programs; the
+  toolchain itself, if passed on, goes with its source.
+
 ## SDL2_ttf 2.24.0, with FreeType 2.13.2
 
 - **Use:** VCMI's TrueType fonts (`config/fonts.json`), opened with

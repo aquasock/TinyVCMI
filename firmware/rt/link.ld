@@ -49,7 +49,9 @@ SECTIONS
 		KEEP(*(.fini_array))
 		PROVIDE_HIDDEN(__fini_array_end = .);
 	} > ddr3
-	.data : { *(.data .data.*) } > ddr3
+	/* .tm_clone_table: crtbegin and crtend of the threaded GCC carry it
+	 * (empty); GNU ld's own scripts keep it in .data. */
+	.data : { *(.data .data.*) KEEP(*(.tm_clone_table)) } > ddr3
 	.sdata : {
 		__global_pointer$ = . + 0x800;
 		*(.srodata.cst16) *(.srodata.cst8) *(.srodata.cst4)

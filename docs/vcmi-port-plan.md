@@ -103,12 +103,18 @@ same-sized window is a page flip rather than a copy.
 
 ## What the AE350 runtime needs
 
-1. **Threads.** A pthread-compatible shim: create/join, mutex, recursive mutex,
-   condition variable, thread-local storage, and a cooperative scheduler with
-   per-thread stacks in the DDR3. `std::thread`, `std::mutex` and
-   `std::condition_variable` sit on top of it. Blocking waits yield; a
-   CPU-bound thread that never blocks starves the rest, which the AI thread
-   must be measured against, not assumed to survive.
+1. **Threads.** Built (entry 49): `firmware/rt/pthread.c` is a cooperative
+   POSIX thread layer (threads on 1 MiB DDR3 stacks, plain, recursive and
+   error-checking mutexes, condition variables, reader-writer locks, keys,
+   once routines, sleeps and the monotonic and real-time clocks on the cycle
+   counter), and `tools/build_toolchain_threads.sh` builds GCC 15.2.0's
+   libgcc and libstdc++ with POSIX threads on it, used by programs that set
+   `RT_THREADS := 1`. `firmware/apps/thread_test` passes every facility VCMI
+   uses on the board, a create and join costing about 3.4 us. Blocking waits
+   yield; a CPU-bound thread that never blocks starves the rest, which the
+   AI thread must be measured against, not assumed to survive. The first
+   thread keeps crt0's 64 KiB block-RAM stack, so the engine's main should
+   run on a thread of its own with a larger one.
 2. **A read-only file layer.** Built (entry 47): `firmware/rt/card.c` gives
    `open`/`read`/`lseek`/`fstat`/`stat`/`opendir`/`readdir`/`closedir` for
    paths under `/card`, read from the SD card through TinyTang's card file

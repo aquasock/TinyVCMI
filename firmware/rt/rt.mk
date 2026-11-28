@@ -13,6 +13,12 @@
 #   make BUILD=<dir>      choose the output directory
 #   make OPT=<flags>      optimise with <flags> in place of -O2
 #   make RT_MARCH=<arch>  build for <arch> in place of rv32imc_zicsr_zifencei
+#   RT_THREADS := 1       (in the app's Makefile) compile with the threaded
+#                         GCC 15.2.0 that tools/build_toolchain_threads.sh
+#                         builds into build/toolchain/gcc-posix, whose
+#                         libstdc++ has std::thread and its kin, and link
+#                         firmware/rt/pthread.c, the cooperative threads under
+#                         them.  Binutils stay the xPack's either way.
 #
 # Programs are built without the A extension: on this A25 an AMO on a line
 # not in the D-cache never completes (AE350-011).  The compiler and the
@@ -27,8 +33,14 @@ BUILD     ?= $(ROOT)/build/firmware/apps/$(APP)
 
 RISCV_BIN ?= $(HOME)/tools/xpack-riscv-none-elf-gcc-15.2.0-1/bin
 CROSS     ?= $(RISCV_BIN)/riscv-none-elf-
-CC        := $(CROSS)gcc
-CXX       := $(CROSS)g++
+RT_THREADS ?= 0
+ifeq ($(RT_THREADS),1)
+GCC_CROSS ?= $(ROOT)/build/toolchain/gcc-posix/bin/riscv-none-elf-
+else
+GCC_CROSS ?= $(CROSS)
+endif
+CC        := $(GCC_CROSS)gcc
+CXX       := $(GCC_CROSS)g++
 SIZE      := $(CROSS)size
 OBJDUMP   := $(CROSS)objdump
 # The arch's base letters, before any _z extension: an A-free arch has no a.
@@ -46,6 +58,9 @@ ASFLAGS   += $(ARCHFLAGS) -g
 
 # No default start files or libgloss: crt0 and syscalls.c stand in for them,
 # crtbegin and crtend frame .eh_frame and .init_array for the unwinder.
+# crtbegin comes before every object: the frames the unwinder registers start
+# at its __EH_FRAME_BEGIN__, and an object's .eh_frame linked ahead of it is
+# never found, so an exception thrown through that object's code terminates.
 crtfile    = $(shell $(CC) $(ARCHFLAGS) -print-file-name=$(1))
 LDFLAGS   += $(ARCHFLAGS) -nostdlib -static -T $(RT_DIR)/link.ld \
              -Wl,--gc-sections -Wl,--orphan-handling=error \
@@ -55,6 +70,11 @@ LDLIBS    += -Wl,--start-group -lstdc++ -lsupc++ -lm -lc -lgcc -Wl,--end-group
 
 RT_SOURCES := $(RT_DIR)/crt0.S $(RT_DIR)/syscalls.c $(RT_DIR)/atomic.c \
               $(RT_DIR)/card.c $(ROOT)/firmware/common/uart.c
+ifeq ($(RT_THREADS),1)
+RT_SOURCES += $(RT_DIR)/pthread.c $(RT_DIR)/thread_switch.S
+# pthread_once's cleanup must run when a C++ once routine throws through it.
+CFLAGS    += -fexceptions
+endif
 objects     = $(patsubst %,$(BUILD)/obj/%.o,$(subst /,_,$(1)))
 RT_OBJECTS := $(call objects,$(notdir $(RT_SOURCES)))
 APP_OBJECTS := $(call objects,$(SOURCES))
@@ -66,8 +86,8 @@ all: $(BUILD)/$(APP).elf
 
 $(BUILD)/$(APP).elf: $(RT_OBJECTS) $(APP_OBJECTS) $(LIB_OBJECTS) \
 		$(EXTRA_OBJECTS) $(RT_DIR)/link.ld
-	$(CXX) $(LDFLAGS) -o $@ $(call crtfile,crti.o) $(RT_OBJECTS) \
-	    $(call crtfile,crtbegin.o) $(APP_OBJECTS) $(LIB_OBJECTS) \
+	$(CXX) $(LDFLAGS) -o $@ $(call crtfile,crti.o) \
+	    $(call crtfile,crtbegin.o) $(RT_OBJECTS) $(APP_OBJECTS) $(LIB_OBJECTS) \
 	    $(EXTRA_OBJECTS) $(LDLIBS) \
 	    $(call crtfile,crtend.o) $(call crtfile,crtn.o)
 ifeq ($(RT_HAS_A),)

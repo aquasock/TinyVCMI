@@ -1668,3 +1668,41 @@ The approved plan's next cycle is the link at speed: a programmable divisor in `
 - User Test: NOT RUN
 
 ---
+
+## 49 COMMIT Unreleased 2026-11-28T07:27:36-07:00
+
+#### Coming From:
+
+Unreleased e944126
+
+#### Purpose:
+
+Give the AE350 runtime the C++ threads VCMI needs, the threaded libstdc++ that is the first of the software cycles the user chose to do before the link at speed.
+
+#### Outcome:
+
+C++ threads now run on the A25. The user chose to defer the link at speed (option A of the proposal after entry 48: an ae350run-level rate switch, a divisor register in `exts_uart`, and a DDR3 image rebuild) until after the software cycles (option C), because no game core negotiates a faster link today, TinyVCMI's fabric has no frame parser, and any fabric change reopens the placement qualification. The xPack toolchain was configured `--disable-threads --disable-tls`, so its libstdc++ has no `std::thread`, `std::mutex` or `std::condition_variable`, and libgcc's emulated TLS keeps one copy of every `thread_local`. VCMI uses `thread_local` in 9 files, among them per-thread AI callback pointers, plus `shared_mutex`, `condition_variable`, `recursive_mutex`, `call_once`, `promise` and `sleep_for`. The new `tools/build_toolchain_threads.sh` builds GCC 15.2.0 from its tarball, SHA-256 `438fd996826b0c82485a29da03a72d71d6e3541a83ec702df4271f6fe025d24e`, whose GNU signature by Richard Biener's RSA key `7F74F97C103468EE5D750B583AB00996FC26A641` verified good against ftp.gnu.org's keyring. It configures `--enable-threads=posix --disable-tls` for `rv32imc_zicsr_zifencei/ilp32` alone, with the xPack's binutils, against a private copy of the xPack's newlib 4.5.0.20241231 whose `sys/features.h` gains a marked block of POSIX thread and clock options, and builds the compiler, libgcc and libstdc++ into `build/toolchain/gcc-posix` in about 4 minutes. A second marked change, a case for bare-metal `elf` in libstdc++'s generated `configure`, enables `nanosleep`, `sched_yield` and the monotonic and real-time clocks, which libstdc++ cannot link-test in a cross build; without it `this_thread::yield()` compiled to nothing, which the first board run showed as `shared_mutex` readers that never overlapped. The new `firmware/rt/pthread.c` with `thread_switch.S` is a cooperative scheduler: threads on 1 MiB DDR3 stacks, switched at every wait by saving `ra`, `sp` and `s0`..`s11`. On top of it sit mutexes (plain, recursive, error-checking, timed), condition variables with FIFO waiters, reader-writer locks preferring writers, keys whose destructors run newest first so libgcc's emutls storage outlives `thread_local` destructors, a `pthread_once` that a throwing routine leaves unrun, and `clock_gettime`, `clock_nanosleep`, `nanosleep`, `usleep`, `sleep` and `sysconf` on the cycle counter. Handles hold pointers, and newlib's static initializers are allocated on first use. `firmware/rt/rt.mk` gains `RT_THREADS := 1`, which compiles with the threaded GCC, links `pthread.c` and `thread_switch.S`, and builds the runtime's C with `-fexceptions`. The first board run also found that `rt.mk` linked the runtime's objects ahead of `crtbegin.o`, whose `__EH_FRAME_BEGIN__` starts the frame table the unwinder registers, so the first exception through `pthread_once` called `terminate`; `crtbegin.o` now comes first for every program. `firmware/rt/link.ld` keeps the threaded crtbegin's `.tm_clone_table` in `.data`. The new `firmware/apps/thread_test` (ELF 184 KB of text) ran on seed 8 of `build/ae350/e1` under TinyTang `c46548b`, trained and handed over in entry 48, to `TinyVCMI THREADS OK, 0 wrong` and `EXIT 0` twice. It passed eight threads joined, 3,000 mutex increments with no overlap while yielding inside the lock, a 1,000-item two-consumer queue, `recursive_mutex` to depth 6, `shared_mutex` with four readers together and an exclusive writer, `thread_local` fresh in each thread with three destructors at exit, `call_once` run again after a throw, a future, `sleep_for` 50 ms in 50.00 ms and `wait_for` 20 ms in 20.01 ms, independent exceptions in two threads, and 1,000 create-join rounds in 3.4 ms with 16,000 bytes in use before and after; `hardware_concurrency()` returns 0, which VCMI never calls. Every app rebuilds, and `card_test`, `atomic_test` and `sdl_test` (`G1 PASS`, 57.1 ms and 3.12 ms a frame), built by the xPack toolchain with the new link order, passed again on the board. `THIRD_PARTY.md` records the toolchain under the GCC Runtime Library Exception, `docs/vcmi-port-plan.md` marks the threads item built, and TOOL-076 was added to `.ai/core-reference.md`. The board is left in 2-wire mode with TinyVCMI's image loaded, the A25 at its boot ROM's `LOAD` and the desk layer on. The user did not test this cycle on the board. `.ai/core.md` was not changed. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` unchanged and that no settled log entry was altered, validated the new record against the reference schema with every YAML block parsing and 116 unique record IDs, and checked this entry's six sections, ordering, prose, Status values, numbering and the active log's 49 of 100 entries.
+
+#### Next Steps:
+
+The libraries VCMI links, built with the threaded toolchain for `rv32imc`: Boost 1.90's filesystem, locale (or its one use replaced), date_time (likewise), program_options and asio headers, zlib, minizip-ng, oneTBB and libsquish, with SDL2, SDL2_ttf and SDL2_image rebuilt by that toolchain so everything shares one sysroot; then VCMI itself compiled and linked, with its main moved onto a thread with a large DDR3 stack since crt0's is 64 KiB of block RAM. After the engine runs, the link at speed (option A). The fence decision (AE350-012), read path stages 3 and 4, entry 36's closure and video-liveness findings, entry 31's lost DDR3 read, the static columns and entry 29's waiting items stand.
+
+#### Files Modified:
+
+- THIRD_PARTY.md
+- docs/vcmi-port-plan.md
+- firmware/apps/thread_test/Makefile
+- firmware/apps/thread_test/main.cpp
+- firmware/rt/link.ld
+- firmware/rt/pthread.c
+- firmware/rt/rt.mk
+- firmware/rt/thread_switch.S
+- tools/build_toolchain_threads.sh
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: NOT RUN
+
+---
