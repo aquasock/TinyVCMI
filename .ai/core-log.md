@@ -1328,3 +1328,33 @@ G1's second half is next: draw the same pattern through the path VCMI uses, a st
 - User Test: PASS
 
 ---
+
+## 39 COMMIT Unreleased 2026-11-27T21:31:41-07:00
+
+#### Coming From:
+
+Unreleased 609b584
+
+#### Purpose:
+
+Bring the README up to date with the project's state since v0.1.0 and with the latest measurements of the DDR3 as the A25's memory, at the user's request.
+
+#### Outcome:
+
+The README, last revised at entry 15 and describing only the v0.1.0 controller, now states the current state (the AE350 running from the DDR3, 1280x720 scanout, SDL2 drawing and flipping) and carries a section of the A25's DDR3 results against the first image that ran it, with what changed and the limits still measured; the v0.1.0 section is kept, and short build and run notes and a pointer to `THIRD_PARTY.md` were added. So that every figure is from the image the README names, `write_cost`, `vcmi_bench`, `rd_lat` and `ddr3_test` were rebuilt from `609b584` and run again on seed 8 of `build/ae350/e1` (`ctrl.fs` SHA-256 `6757c049b4f0a2d7360ff19f0bacc543c92cabd1c0dc743d10ebad343c6bc5c6`), still trained and handed over from entry 38, warm and powered from the host's 5 V over USB-C OTG, every run exiting 0. Against the first image (entries 17, 23 and 24) a dependent miss over 4 MiB is 437.3 cycles against 503.0, a streamed line read 154.4 against 477.2, a stored line with write-back 180.2 against 662.6, a sequential line read 175.0 against 513.3, a full-line store 180.4 with the video off and 234.4 with the 720p raster running against 738.0, a 32-bit whole-screen fill 36.0 ms against 113 ms, and the A25's 1022 MiB array test 35.65 s a seed against 102.95 s, with 0 failures on both seeds; `rd_lat`'s per-line figures at prefetch depths 0 to 3 reproduced entry 35's to 0.1 cycle. Two defects in `firmware/apps/write_cost` were found and worked around in the README rather than fixed in this documentation cycle: it never writes `TV_VID_CTRL` although it prints "video off", so a run after `vcmi_bench`, which leaves the raster on, measures with scanout, which is why the unlogged run at 19:02 after entry 36 gave 233.0 cycles where this cycle's gave 180.4, as a run of `vcmi_bench` then `write_cost` confirmed at 234.4; and its ns column prints cycles per line, not nanoseconds, so the README converts at 750 MHz. The alpha blend measured 152.4 cycles where the 19:02 build of the same source gave 138.9, which the README attributes to the program's placement. `AE350-004`, `AE350-006`, `AE350-007` and `AE350-009` in `.ai/core-reference.md` still hold the first image's figures, and `docs/vcmi-port-plan.md`'s redraw budget and `docs/ahb-bridge-design.md` are older than the current bridge; none was revised here. The board is left in one-wire mode with seed 8 trained, the raster off after `rd_lat` and `ddr3_test`, and the boot ROM at `LOAD`. `.ai/core.md` was not changed. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` unchanged, and validated this entry's six sections, ordering, prose, Status values, numbering and the active log's 39 of 100 entries.
+
+#### Next Steps:
+
+Fix `firmware/apps/write_cost` to set the video state it reports and to print nanoseconds, then revise `AE350-004`, `AE350-006`, `AE350-007` and `AE350-009` in place with this cycle's figures and rewrite `docs/ahb-bridge-design.md` and the port plan's redraw budget to match the current bridge. Entry 38's next steps stand: G1's second half through a streaming texture and `SDL_RenderCopy`, and the user's decision on removing AMOs from the engine (AE350-011), with entry 36's closure and video-liveness findings, entry 31's lost DDR3 read, stages 3 and 4 of the read path, the static columns, the unexplained scattered-read cost and entry 29's waiting items.
+
+#### Files Modified:
+
+- README.md
+
+#### Status:
+
+- Build: N/A
+- Deployment: N/A
+- User Test: N/A
+
+---
