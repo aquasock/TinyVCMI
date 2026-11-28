@@ -3,31 +3,29 @@
  * SDL video driver for TinyVCMI.  Licensed under the zlib licence, as SDL2
  * is; see THIRD_PARTY.md.
  *
- * 1280x720 ARGB8888, from two 4 MiB pages of the DDR3 at 0x7f000000, flipped
- * by the video unit at 0xe8010000 (VIDEO-003).  SDL's own software renderer
+ * 1280x720 ARGB8888 from one 4 MiB page of the DDR3 at 0x7f000000, shown by
+ * the video unit at 0xe8010000 (VIDEO-003).  SDL's own software renderer
  * does all the drawing: this driver only reports the display, hands out the
- * back page as the window's framebuffer, and turns UpdateWindowFramebuffer
- * into a page flip.
+ * page as the window's framebuffer, and turns UpdateWindowFramebuffer into a
+ * D-cache write-back.
  *
- * SDL builds the window surface itself, once, over the pixel pointer
- * CreateWindowFramebuffer returns (SDL_CreateWindowFramebuffer in
- * SDL_video.c), and its renderer draws through that surface.  So a flip
- * repoints window->surface's pixels at the new back page; a surface of the
- * driver's own would be one nothing draws into, which is what the first
- * version did, showing a never-drawn page and the page being drawn by turns.
- * After a flip the back page holds the frame before last, which is SDL's
- * renderer contract (the back buffer is undefined after a present, and every
- * frame is drawn whole); a program that writes the window surface directly,
- * without a renderer, must likewise redraw whole frames.  That is MiSTer's shape (sdl-driver/mister), chosen over
- * a hand-written renderer because SDL's software blitter is the path VCMI
- * 1.7.5 already runs on.
+ * The display is single-buffered on purpose.  VCMI 1.7.5 draws into one
+ * screen surface that it keeps for the whole run and redraws only what
+ * changed (WindowHandler::simpleRedraw), and that surface aliases a
+ * streaming texture which it copies over the whole window every frame; the
+ * copy cost 123.9 of a 183.4 ms frame (core-log entry 42).  With
+ * sdl2-tinyvcmi-zerocopy.patch the software renderer makes such a texture
+ * over this page and skips copying it onto itself, so VCMI draws straight
+ * into the picture and presenting costs only the write-back.  The price is
+ * that the raster can show an update half drawn; two pages flipped would
+ * not, but VCMI's persistent surface cannot alternate between them (entry
+ * 42), and the user chose this over a fabric copy engine or dirty-region
+ * copies.
  *
- * A page flip is only legal once the pixels are in memory the video fetch can
- * see, so the A25's D-cache is written back and invalidated before BASE moves
- * (tv_dcache_wbinval, AE350-004).  The flip then waits for STATUS's pending
- * bit to clear, which is the video unit acknowledging BASE at the next
- * vertical blank, so a caller that flips faster than 60 Hz is paced by the
- * raster rather than tearing.
+ * A present writes the D-cache back and invalidates it, so the pixels are
+ * in the DDR3 the video fetch reads (tv_dcache_wbinval, AE350-004).  It does
+ * not wait for vertical blank: nothing flips, so there is nothing to wait
+ * for, and pacing is the program's.  The first present starts the raster.
  */
 #include "SDL_internal.h"
 
@@ -40,14 +38,10 @@
 
 #define TINYVCMIVID_DRIVER_NAME "tinyvcmi"
 
-/* The two pages the video unit can show, TV_VIDEO_BASE and 4 MiB above it
-   (the runtime reserves 16 MiB for frame buffers below the block RAM). */
-#define PAGE_BYTES (TV_VID_STRIDE * TV_VID_HEIGHT)
-static uint8_t *const page[2] = {
-    (uint8_t *)TV_VIDEO_BASE,
-    (uint8_t *)(TV_VIDEO_BASE + (4u << 20)),
-};
-static int front = 0;   /* the page the raster shows; front ^ 1 is drawn */
+/* The page the video unit shows (the runtime reserves 16 MiB for frame
+   buffers below the block RAM). */
+static uint8_t *const page = (uint8_t *)TV_VIDEO_BASE;
+static int shown = 0;   /* the raster has been started on the page */
 
 static int TINYVCMI_Available(void)
 {
@@ -117,7 +111,7 @@ int TINYVCMI_VideoInit(_THIS)
        then died the junk would stay on screen for good: a program must not be
        able to leave the display showing a half-built frame.  The first
        UpdateWindowFramebuffer enables it, with a finished picture ready. */
-    front = 0;
+    shown = 0;
 
     return 0;
 }
@@ -135,11 +129,10 @@ int TINYVCMI_CreateWindowFramebuffer(_THIS, SDL_Window *window, Uint32 *format,
         return SDL_SetError("TinyVCMI: window must be %dx%d", TV_VID_WIDTH,
                             TV_VID_HEIGHT);
     }
-    /* No allocation: the back page of the DDR3 is the surface's memory, and
-       SDL marks a surface over given pixels SDL_PREALLOC, so it never frees
-       them. */
+    /* No allocation: the page is the surface's memory, and SDL marks a
+       surface over given pixels SDL_PREALLOC, so it never frees them. */
     *format = SDL_PIXELFORMAT_ARGB8888;
-    *pixels = (void *)page[front ^ 1];
+    *pixels = (void *)page;
     *pitch = TV_VID_STRIDE;
     return 0;
 }
@@ -150,28 +143,18 @@ int TINYVCMI_UpdateWindowFramebuffer(_THIS, SDL_Window *window,
     (void)_this;
     (void)rects;
     (void)numrects;
-    if (!window->surface || window->surface->pixels != page[front ^ 1]) {
-        return SDL_SetError("TinyVCMI: window surface is not the back page");
+    if (!window->surface || window->surface->pixels != page) {
+        return SDL_SetError("TinyVCMI: window surface is not the page");
     }
 
-    /* The pixels must be in the DDR3 before the raster can be pointed at
-       them. */
+    /* The pixels must be in the DDR3 before the raster reads them. */
     tv_dcache_wbinval();
 
-    /* Hand the page that was just drawn to the video unit, then wait for it
-       to take it at the next vertical blank so the next frame draws into a
-       page the raster is not showing.  The first flip is what starts the
-       raster (see VideoInit). */
-    TV_VID_BASE = (uint32_t)(uintptr_t)page[front ^ 1];
-    TV_VID_CTRL = 1;
-    while (TV_VID_STATUS & TV_VID_STATUS_PENDING) {
-        /* the video unit acknowledges BASE at the next vertical blank */
+    if (!shown) {
+        TV_VID_BASE = (uint32_t)(uintptr_t)page;
+        TV_VID_CTRL = 1;
+        shown = 1;
     }
-    front ^= 1;
-
-    /* The next frame draws into the other page, through the surface SDL's
-       renderer holds. */
-    window->surface->pixels = (void *)page[front ^ 1];
     return 0;
 }
 

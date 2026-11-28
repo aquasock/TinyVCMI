@@ -352,8 +352,11 @@ honest:
   58.0 ms of drawing, 123.9 ms of `SDL_RenderCopy` copying the whole texture
   onto the window surface, and 1.5 ms of present. VCMI keeps that screen
   surface and redraws only what changed (`WindowHandler::simpleRedraw`), so
-  its frame cannot be a two-page flip; removing the copy means showing the
-  texture itself, single-buffered, which the user chose to try next.
+  its frame cannot be a two-page flip. The texture is now the shown page
+  itself, single-buffered (entry 43, `sdl2-tinyvcmi-zerocopy.patch`): the copy
+  is skipped, a full redraw costs 57.1 ms and an update of one 128-pixel box
+  3.05 ms, and the picture tears only while the whole screen is being
+  redrawn; the user saw the update pass clean.
 - **G2, main menu.** VCMI boots to its main menu from a minimal data set, on
   HDMI, with measured frame time. The user's acceptance test for this
   milestone is that menu, drawn and driven by the real keyboard and mouse.

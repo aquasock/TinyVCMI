@@ -1,0 +1,66 @@
+--- a/src/render/software/SDL_render_sw.c
++++ b/src/render/software/SDL_render_sw.c
+@@ -107,9 +107,34 @@
+         return SDL_SetError("Unknown texture format");
+     }
+ 
++#ifdef SDL_VIDEO_DRIVER_TINYVCMI
++    /* TinyVCMI: a streaming texture the size and format of the window is
++       made over the window surface's own pixels, the frame buffer page the
++       raster shows, so that VCMI's screen surface, which aliases the
++       texture, is drawn straight into the picture and SDL_RenderCopy of it
++       has nothing to copy (see SDL_RENDERCMD_COPY).  The tinyvcmi driver is
++       single-buffered for this reason (firmware/sdl/SDL_tinyvcmivideo.c). */
++    {
++        SDL_Surface *win = SW_ActivateRenderer(renderer);
++
++        if (texture->access == SDL_TEXTUREACCESS_STREAMING && win &&
++            win->w == texture->w && win->h == texture->h &&
++            win->format->format == texture->format) {
++            texture->driverdata =
++                SDL_CreateRGBSurfaceFrom(win->pixels, texture->w, texture->h,
++                                         bpp, win->pitch, Rmask, Gmask,
++                                         Bmask, Amask);
++        } else {
++            texture->driverdata =
++                SDL_CreateRGBSurface(0, texture->w, texture->h, bpp, Rmask,
++                                     Gmask, Bmask, Amask);
++        }
++    }
++#else
+     texture->driverdata =
+         SDL_CreateRGBSurface(0, texture->w, texture->h, bpp, Rmask, Gmask,
+                              Bmask, Amask);
++#endif
+     SDL_SetSurfaceColorMod(texture->driverdata, texture->color.r, texture->color.g, texture->color.b);
+     SDL_SetSurfaceAlphaMod(texture->driverdata, texture->color.a);
+     SDL_SetSurfaceBlendMode(texture->driverdata, texture->blendMode);
+@@ -799,6 +824,28 @@
+                     dstrect->y += drawstate.viewport->y;
+                 }
+ 
++#ifdef SDL_VIDEO_DRIVER_TINYVCMI
++                /* TinyVCMI: a texture made over the window surface's pixels
++                   (SW_CreateTexture), copied onto the same rectangle with no
++                   blending or modulation, is already there: skip the
++                   full-screen copy. */
++                {
++                    SDL_BlendMode mode;
++                    Uint8 a, r, g, b;
++
++                    SDL_GetSurfaceBlendMode(src, &mode);
++                    SDL_GetSurfaceAlphaMod(src, &a);
++                    SDL_GetSurfaceColorMod(src, &r, &g, &b);
++                    if (src->pixels == surface->pixels &&
++                        src->pitch == surface->pitch &&
++                        srcrect->x == dstrect->x && srcrect->y == dstrect->y &&
++                        srcrect->w == dstrect->w && srcrect->h == dstrect->h &&
++                        mode == SDL_BLENDMODE_NONE && a == 255 && r == 255 &&
++                        g == 255 && b == 255) {
++                        break;
++                    }
++                }
++#endif
+                 if ( srcrect->w == dstrect->w && srcrect->h == dstrect->h ) {
+                     SDL_BlitSurface(src, srcrect, surface, dstrect);
+                 } else {

@@ -22,7 +22,13 @@
  *             frame drawn into that surface with SDL's blitter (SDL_FillRect
  *             and SDL_BlitSurface, an opaque sprite and an alpha-blended
  *             one); then SDL_RenderCopy of the whole texture, SDL_RenderFlush
- *             and SDL_RenderPresent, timed as three parts.
+ *             and SDL_RenderPresent, timed as three parts.  The texture
+ *             must be the page the raster shows, so that the copy is
+ *             skipped (sdl2-tinyvcmi-zerocopy.patch, core-log entry 43).
+ *   update    the engine path as VCMI mostly draws: the whole frame once,
+ *             then per frame only the box's old rectangle restored from a
+ *             background copy and the box drawn at its new place, which is
+ *             what a single-buffered display tears least on.
  *
  * After every present the page the raster shows is read back and must hold
  * the frame just drawn.
@@ -66,6 +72,7 @@ static int fail(const char *what)
 
 /* The engine path's sprite and where it goes: an opaque 64x64 checker the
    box never crosses in FRAMES frames, and a half-transparent red one. */
+#define UPDATE_FRAMES 600u /* the update pass, ten seconds at 60 Hz */
 #define SPRITE   64
 #define SPRITE_X 1100
 #define SPRITE_Y 560
@@ -83,10 +90,16 @@ static uint64_t ns_since(uint64_t t0)
 static int check_shown(int i, const SDL_Rect *box, int sprite, uint32_t before)
 {
 	const uint32_t *shown = (const uint32_t *)(uintptr_t)TV_VID_BASE;
+	const int rx = 3 * TV_VID_WIDTH / 16, ry = 16;
+	/* A sample the box covers is the box's, so it is not checked. */
+#define UNDER_BOX(px, py) ((px) >= box->x && (px) < box->x + box->w && \
+                           (py) >= box->y && (py) < box->y + box->h)
 	uint32_t b = shown[(box->y + 64) * TV_VID_WIDTH + box->x + 64] & 0xffffffu;
-	uint32_t r = shown[16 * TV_VID_WIDTH + 3 * TV_VID_WIDTH / 16] & 0xffffffu;
-	uint32_t s = sprite ? shown[SPRITE_Y * TV_VID_WIDTH + SPRITE_X] & 0xffffffu
-	                    : 0x00ffffu;
+	uint32_t r = UNDER_BOX(rx, ry) ? 0xff0000u
+	           : shown[ry * TV_VID_WIDTH + rx] & 0xffffffu;
+	uint32_t s = (!sprite || UNDER_BOX(SPRITE_X, SPRITE_Y)) ? 0x00ffffu
+	           : shown[SPRITE_Y * TV_VID_WIDTH + SPRITE_X] & 0xffffffu;
+#undef UNDER_BOX
 
 	if (b == 0xffffffu && r == 0xff0000u && s == 0x00ffffu)
 		return 0;
@@ -128,6 +141,14 @@ static int engine_path(SDL_Renderer *ren)
 	SDL_SetSurfaceBlendMode(screen, SDL_BLENDMODE_NONE);
 	printf("engine path: texture pixels %08lx, pitch %d\n",
 	       (unsigned long)(uintptr_t)pixels, pitch);
+	/* The tinyvcmi driver is single-buffered and the software renderer,
+	   patched (sdl2-tinyvcmi-zerocopy.patch), makes a window-sized
+	   streaming texture over the shown page, so SDL_RenderCopy has nothing
+	   to copy.  Anywhere else, the copy is back. */
+	if ((uintptr_t)pixels != TV_VIDEO_BASE) {
+		printf("BAD engine path: the texture is not the shown page\n");
+		return 1;
+	}
 
 	sprite = SDL_CreateRGBSurface(0, SPRITE, SPRITE, 32, RMASK, GMASK, BMASK,
 	                              AMASK);
@@ -203,6 +224,71 @@ static int engine_path(SDL_Renderer *ren)
 	       (unsigned long)((draw_ns + copy_ns + present_ns) / FRAMES / 1000u));
 	printf("engine path: shown page checked on %d frames, %lu wrong\n", i,
 	       (unsigned long)shown_wrong);
+
+	/* The update pass: a background made once, then only what moves. */
+	{
+		SDL_Surface *bg = SDL_CreateRGBSurface(0, TV_VID_WIDTH,
+		                                       TV_VID_HEIGHT, 32, RMASK,
+		                                       GMASK, BMASK, AMASK);
+		SDL_Rect bar, at, box, old;
+		uint32_t up_wrong = 0;
+		uint64_t up_ns = 0;
+		int b;
+
+		if (!bg)
+			return fail("SDL_CreateRGBSurface background");
+		SDL_SetSurfaceBlendMode(bg, SDL_BLENDMODE_NONE);
+		SDL_FillRect(bg, NULL, SDL_MapRGB(bg->format, 0, 0, 0));
+		for (b = 0; b < 8; b++) {
+			bar.x = (int)(b * TV_VID_WIDTH / 8);
+			bar.y = 0;
+			bar.w = (int)(TV_VID_WIDTH / 8);
+			bar.h = (int)(TV_VID_HEIGHT / 2);
+			SDL_FillRect(bg, &bar,
+			             SDL_MapRGB(bg->format, (b & 1) ? 255 : 0,
+			                        (b & 2) ? 255 : 0, (b & 4) ? 255 : 0));
+		}
+		at.x = SPRITE_X;
+		at.y = SPRITE_Y;
+		SDL_BlitSurface(sprite, NULL, bg, &at);
+		at.x = ALPHA_X;
+		at.y = ALPHA_Y;
+		SDL_BlitSurface(glass, NULL, bg, &at);
+		SDL_BlitSurface(bg, NULL, screen, NULL);
+		old.w = old.h = 0;
+		old.x = old.y = 0;
+
+		/* Ten seconds at the display's 60 Hz, so the picture can be
+		   watched: each frame waits for the next raster frame, outside
+		   the timed part. */
+		for (i = 0; i < (int)UPDATE_FRAMES; i++) {
+			uint32_t f = TV_VID_FRAMES;
+
+			while (TV_VID_FRAMES == f)
+				;
+			t0 = tv_cycles64();
+			if (old.w)
+				SDL_BlitSurface(bg, &old, screen, &old);
+			box.x = (int)((i * 7u) % (TV_VID_WIDTH - 128u));
+			box.y = (int)((i * 5u) % (TV_VID_HEIGHT - 128u));
+			box.w = box.h = 128;
+			SDL_FillRect(screen, &box,
+			             SDL_MapRGB(screen->format, 255, 255, 255));
+			old = box;
+			if (SDL_RenderCopy(ren, tex, NULL, NULL) != 0)
+				return fail("SDL_RenderCopy");
+			SDL_RenderFlush(ren);
+			SDL_RenderPresent(ren);
+			up_ns += ns_since(t0);
+			up_wrong += check_shown(i, &box, 1, up_wrong);
+		}
+		printf("update path: %d frames; per frame %lu us; shown page "
+		       "checked on %d frames, %lu wrong\n", i,
+		       (unsigned long)(up_ns / UPDATE_FRAMES / 1000u), i,
+		       (unsigned long)up_wrong);
+		SDL_FreeSurface(bg);
+		shown_wrong += up_wrong;
+	}
 
 	SDL_FreeSurface(glass);
 	SDL_FreeSurface(sprite);

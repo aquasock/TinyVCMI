@@ -24,7 +24,7 @@ and design lessons taken from sibling projects are recorded in
 - **Source:** <https://github.com/libsdl-org/SDL>, release
   `release-2.32.10`. The tarball's SHA-256 is pinned in
   `tools/build_sdl2.sh`.
-- **Modifications:** three patches, all in `firmware/sdl/`, each carrying a
+- **Modifications:** four patches, all in `firmware/sdl/`, each carrying a
   TinyVCMI comment at the point of change:
   - `sdl2-riscv-atomics.patch` — `src/atomic/SDL_spinlock.c` gains an RV32A
     branch for `SDL_AtomicTryLock`: an ordinary load of the lock word, then
@@ -38,6 +38,10 @@ and design lessons taken from sibling projects are recorded in
     dynamic API for bare-metal RISC-V, as SDL does for PS2, PSP and RISC OS.
   - `sdl2-tinyvcmi-bootstrap.patch` — `src/video/SDL_video.c` declares and
     registers the `tinyvcmi` driver in SDL's bootstrap table.
+  - `sdl2-tinyvcmi-zerocopy.patch` — `src/render/software/SDL_render_sw.c`,
+    for the `tinyvcmi` driver only, makes a window-sized streaming texture
+    over the window surface's own pixels and skips a copy of such a texture
+    onto itself, so that VCMI's screen is drawn straight into the shown page.
 
 ## SDL2 drivers written for this project
 

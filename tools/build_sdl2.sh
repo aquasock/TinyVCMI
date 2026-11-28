@@ -13,9 +13,10 @@
 #                                  (firmware/sdl/SDL_trace_tinyvcmi.c); build
 #                                  it into its own DIR, never build/sdl
 #
-# Fetches the release tarball if it is not already there, applies the three
+# Fetches the release tarball if it is not already there, applies the four
 # patches in firmware/sdl (RISC-V atomics as LR/SC, dynamic API off for bare
-# metal, the tinyvcmi driver's bootstrap entry),
+# metal, the tinyvcmi driver's bootstrap entry, and the software renderer's
+# zero-copy streaming texture),
 # compiles SDL's own source list with the TinyVCMI SDL_config, and archives
 # libSDL2.a.  Nothing is written outside OUT_DIR; the tarball is not committed
 # (build/ is ignored) and the fetch is pinned to one release.
@@ -74,7 +75,9 @@ sdl=SDL2-$ver
  apply_once "$root/firmware/sdl/sdl2-baremetal-dynapi.patch" \
             'bare-metal RISC-V, statically linked' src/dynapi/SDL_dynapi.h
  apply_once "$root/firmware/sdl/sdl2-tinyvcmi-bootstrap.patch" \
-            'TINYVCMI_bootstrap' src/video/SDL_video.c) || exit 1
+            'TINYVCMI_bootstrap' src/video/SDL_video.c
+ apply_once "$root/firmware/sdl/sdl2-tinyvcmi-zerocopy.patch" \
+            'TinyVCMI: a streaming texture' src/render/software/SDL_render_sw.c) || exit 1
 
 port=$root/firmware/sdl
 march=${SDL_MARCH:-rv32imc_zicsr_zifencei}

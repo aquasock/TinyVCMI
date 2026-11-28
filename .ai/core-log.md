@@ -1462,3 +1462,38 @@ Build the single-buffered present the user chose: make the streaming texture's p
 - User Test: NOT RUN
 
 ---
+
+## 43 COMMIT Unreleased 2026-11-27T22:05:21-07:00
+
+#### Coming From:
+
+Unreleased 40603dd
+
+#### Purpose:
+
+Remove the full-screen `SDL_RenderCopy` from VCMI's present by showing its texture itself on a single-buffered display, as the user chose in entry 42.
+
+#### Outcome:
+
+VCMI's presentation path no longer copies the screen, and the user saw its incremental updates clean on HDMI. The new `firmware/sdl/sdl2-tinyvcmi-zerocopy.patch`, applied by `tools/build_sdl2.sh` and compiled only with the `tinyvcmi` driver, changes SDL's software renderer in two places: `SW_CreateTexture` makes a streaming texture the size and format of the window over the window surface's own pixels, and `SDL_RENDERCMD_COPY` skips a copy whose source pixels and pitch are the window surface's, with identical rectangles, no blending and no colour or alpha modulation, since it would copy memory onto itself. `firmware/sdl/SDL_tinyvcmivideo.c` is now single-buffered, its window surface always the page at `0x7f000000` and a present only the D-cache write-back, the raster started on the first, with no wait for vertical blank since nothing flips. `firmware/apps/sdl_test` fails if the texture is not the shown page, gains an update pass that draws the frame once and then for 600 frames, paced to the raster, restores only the box's old rectangle from a background copy and draws the box anew, as VCMI's `simpleRedraw` does, and skips any sample of its shown-page check that the box covers. On seed 8 of `build/ae350/e1` (`ctrl.fs` SHA-256 `6757c049b4f0a2d7360ff19f0bacc543c92cabd1c0dc743d10ebad343c6bc5c6`), still trained and handed over from entry 38, warm and powered from the host's 5 V over USB-C OTG, `sdl_test` (ELF SHA-256 `825d230404515362350bf00aea8e1cfd108011b370fb72cef6d28615211487b2`) gave the renderer pass 55.7 ms a frame against 66.6, the full-redraw engine pass 57.1 ms against 183.4, of which `SDL_RenderCopy` and flush are now 28 us against 123.9 ms and the present 90 us, and the update pass 3.05 ms a frame, with the shown page right on every frame of all three passes, `TinyVCMI G1 PASS` and exit 0, the full-redraw passes to within 0.1 ms over three runs and the update pass identically over the two that had it. Captures from `/dev/video0` showed the expected cost: the two full-redraw passes, which clear and redraw the whole screen every frame, tear badly, with frames caught half drawn or blank, while twelve consecutive frames of the update pass were whole with the box moving one step a frame. The user watched the last run and reported the last 10 seconds, the update pass, perfect. VCMI-004 in `.ai/core-reference.md` was revised in place, its consequence's page-flip proposal replaced by the measured single-buffered present and its statement given `simpleRedraw`'s persistent surface; `docs/vcmi-port-plan.md`'s G1 and `THIRD_PARTY.md`'s patch list were updated. The board is left in one-wire mode with seed 8 trained, the raster on the test's last frame and the boot ROM at `LOAD`. `.ai/core.md` was not changed. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` unchanged and that no settled log entry was altered, validated the revised record against the reference schema with 112 unique record IDs, and checked this entry's six sections, ordering, prose, Status values, numbering and the active log's 43 of 100 entries.
+
+#### Next Steps:
+
+The SDL side of cycle C is ready for the engine: next are SDL_ttf and a minimal SDL_image for what `IMG_Load_RW` is handed, then cycle B's runtime pieces the engine needs (the cooperative thread shim, the read-only file layer and the event loop) and the asset delivery choice, before cycle D builds VCMI for `rv32imc`. A full-screen redraw still tears and costs about 57 ms, which is the drawing itself; if tearing on total redraws proves objectionable in the engine, the fabric copy engine of entry 42 remains the fix. The fence decision (AE350-012), read path stages 3 and 4, the copy's and scattered reads' costs, entry 36's closure and video-liveness findings, entry 31's lost DDR3 read, the static columns and entry 29's waiting items stand.
+
+#### Files Modified:
+
+- THIRD_PARTY.md
+- docs/vcmi-port-plan.md
+- firmware/apps/sdl_test/main.c
+- firmware/sdl/SDL_tinyvcmivideo.c
+- firmware/sdl/sdl2-tinyvcmi-zerocopy.patch
+- tools/build_sdl2.sh
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: PASS
+
+---
