@@ -299,11 +299,12 @@ range of up to 64 KiB of a file under `root/media/vcmi` by one text line, and
 TinyTang answers in the boot ROM's load protocol (PROT-005). On the board it
 reads `H3bitmap.lod`'s header, its 4,908-entry table and two entries
 byte-exact against the host's copy, and the first MiB at 240 KB/s from the card
-and in 121 ms from the cache (`firmware/apps/card_test`). VCMI's `config` and
-`Mods` are not yet on the card, and `ae350run` still serves only addresses
-below `0x42000000` (TinyNES's 32 MiB, `AE350_SDRAM_END` in TinyTang's
-`ae350_load.h`), which a program larger than that, or a reply buffer above it,
-exceeds.
+and in 121 ms from the cache (`firmware/apps/card_test`). VCMI 1.7.5's `config` and
+`Mods` sit beside the data in `data/config` and `data/Mods`, as MiSTer lays
+them out, copied from the pinned source with `tools/tang_put_tree.py` and read
+back equal (entry 48). `ae350run` runs a TinyVCMI program anywhere in the DDR3
+up to `0x7fff0000` from TinyTang `c46548b` (PROT-004), which
+`firmware/apps/big_test`, a 35.7 MB image, proves.
 
 ## Input
 

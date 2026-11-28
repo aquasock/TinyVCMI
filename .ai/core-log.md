@@ -1634,3 +1634,37 @@ Push TinyTang `44353b6` with this cycle's TinyVCMI commit. Then the approved pla
 - User Test: NOT RUN
 
 ---
+
+## 48 COMMIT Unreleased 2026-11-28T07:09:02-07:00
+
+#### Coming From:
+
+Unreleased 5214756
+
+#### Purpose:
+
+Finish cycle 2 of the approved plan by putting VCMI's own config and Mods on the card beside the game data, and lift the 32 MiB limit entry 47 found in ae350run so that a TinyVCMI program as large as the engine can run from the card.
+
+#### Outcome:
+
+The card now holds everything the engine reads, and ae350run runs a TinyVCMI program anywhere in the DDR3. MiSTer-VCMI's `scripts/bundle.sh` puts VCMI's `config` and `Mods` in the same `data` folder as `Data`, `Maps` and `Mp3`, so they went to `/root/media/vcmi/data/config` and `data/Mods`. They were taken from `work/vcmi-src` at the pin `6901839`, clean and identical to MiSTer's install. The new `tools/tang_put_tree.py` drives TinyTang's console through `tools/tinytang_sync.py`'s `Console`, makes each directory one level at a time, puts every file, reads every file back with `tangget` and compares it byte for byte, and prints one SHA-256 over the sorted path and digest list. `config` (204 files, 1,278,144 bytes, 167 s, tree `c1c5dbf33e3421061cf00ef0189b29f774f8a7b3f37a3751ca54701896faf47c`) and `Mods` (388 files, 7,427,039 bytes, 405 s, tree `2d4571113a486de60327428ca38287f10e06b0940d3fa994b758244d3e04a895`) read back equal in full; the folder was not listed before the copy, so whether either was already there is not known. In TinyTang `c46548b`, `ae350_link_t` gains an `end`, 0 keeping `AE350_SDRAM_END` (`0x42000000`) for every existing caller, `ae350_elf_parse_within` parses against a given end, and `ae350_run` parses against the new `AE350_DDR3_END` (`0x7fff0000`, the window TinyVCMI's boot ROM accepts) and then, when the boot ROM names itself, holds the program and every image of the run to that core's memory, the DDR3 for TinyVCMI and the 32 MiB SDRAM for the rest. `ae350_send_image` had also accepted an address past the end, its length check wrapping, which it now refuses. `tb_ae350_load` checks both windows and that start; two planted faults failed 3 and 1 checks; TinyTang's host gate passed 57 of 57. The new `firmware/apps/big_test` carries 34 MiB of initialised data (`pad.S`), so its image is 35,705,216 bytes ending at `0x4221f480` with `card.c`'s reply buffer at `0x4220f100`; it checks every pad word and reads `H3bitmap.lod`'s table through that buffer. Under `44353b6` ae350run refused it with `not inside the AE350's SDRAM`. The firmware (`tinytang_bl616.bin`, 1,067,168 bytes, SHA-256 `6f8b955bef1ced1ccbbaae714e7e573a96f9bd0bafef46b5a69c79977d5f6a39`, identity `c46548b-dirty.131fec9`) was installed with `tools/tinytang_flash.py` and the board power-cycled into 2-wire mode with the relay script; `platform` and `crash` reported the new identity and no reset kept. Seed 8 of `build/ae350/e1` was tangloaded, trained `error 0`, lanes `1111`, 422 trials, `d 1 b 2`, and handed over with a clean 60 s soak. `big_test` then ran to `TinyVCMI BIG OK, 0 wrong` and `EXIT 0`: 0 of 8,912,896 pad words wrong and the table CRC-32 `11a88b4a`. Before the send, ae350run spends about 10 s reading the 35.7 MB file for its CRC while the boot ROM repeats its `LOAD` banner each second. `card_test` passed again unchanged (33 requests, no retry, 240 KB/s). The card's `bl616-firmware.bin` was replaced with the same image over the console and read back with `tangget` equal by SHA-256. PROT-004 and PROT-005 were revised in place with revision notes, and `docs/vcmi-port-plan.md` records the card's contents and the window. The board is left in 2-wire mode with TinyVCMI's image loaded, the A25 at its boot ROM's `LOAD` and the desk layer on. The user did not test this cycle on the board. `.ai/core.md` was not changed. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` unchanged and that no settled log entry was altered, validated the two revised records against the reference schema with every YAML block parsing and 115 unique record IDs, and checked this entry's six sections, ordering, prose, Status values, numbering and the active log's 48 of 100 entries.
+
+#### Next Steps:
+
+The approved plan's next cycle is the link at speed: a programmable divisor in `exts_uart` and register `0x1C` so that TinyTang runs the link at 5 or 10 Mbaud, measured against the receive overflow count ae350run now prints (PROT-006), since every program load and card read is bound by today's 187 to 240 KB/s. Then the threaded libstdc++, the libraries and VCMI, the engine's write layer for config and saves beside the read-only card layer. The fence decision (AE350-012), read path stages 3 and 4, entry 36's closure and video-liveness findings, entry 31's lost DDR3 read, the static columns and entry 29's waiting items stand.
+
+#### Files Modified:
+
+- docs/vcmi-port-plan.md
+- firmware/apps/big_test/Makefile
+- firmware/apps/big_test/main.c
+- firmware/apps/big_test/pad.S
+- tools/tang_put_tree.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: NOT RUN
+
+---
